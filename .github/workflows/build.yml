@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build g++ qt6-base-dev qt6-connectivity-dev
+      - name: Configure
+        run: cmake --preset linux-debug -DFLOW8_REQUIRE_BLUETOOTH=ON
+      - name: Build
+        run: cmake --build --preset linux-debug
+      - name: Test
+        run: ctest --preset linux-debug
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          modules: qtconnectivity
+          cache: true
+      - name: Configure
+        run: cmake --preset windows-debug -DFLOW8_REQUIRE_BLUETOOTH=ON
+      - name: Build
+        run: cmake --build --preset windows-debug
+      - name: Test
+        run: ctest --preset windows-debug
