@@ -172,7 +172,9 @@ PacketParseResult parsePacket(const QByteArrayView raw)
     packet.payload = QByteArray(raw.data() + headerSize, raw.size() - headerSize - 1);
     packet.raw = QByteArray(raw.data(), raw.size());
     packet.evidence = packetEvidence(packet.type);
-    packet.payloadEvidence = model::EvidenceStatus::Unknown;
+    const auto descriptor = apkCommandDescriptor(packet.type);
+    packet.payloadEvidence = descriptor.has_value()
+        ? descriptor->payloadEvidence : model::EvidenceStatus::Unknown;
     return {
         .packet = std::move(packet),
         .error = std::nullopt,

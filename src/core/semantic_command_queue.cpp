@@ -19,6 +19,31 @@ SemanticCommandQueue::Command::routeLevelCommand() const noexcept
     };
 }
 
+std::optional<protocol::GainCommand>
+SemanticCommandQueue::Command::gainCommand() const noexcept
+{
+    if (kind != Kind::Gain) {
+        return std::nullopt;
+    }
+    return protocol::GainCommand {
+        .inputEndpoint = sourceEndpoint,
+        .gainDb = gainDb,
+        .semanticEvidence = model::EvidenceStatus::VerifiedFromApk,
+    };
+}
+
+std::optional<SemanticCommandQueue::EncodeResult>
+SemanticCommandQueue::Command::encodePacket() const noexcept
+{
+    if (const auto routeCommand = routeLevelCommand(); routeCommand.has_value()) {
+        return EncodeResult {protocol::encodeRouteLevel(*routeCommand)};
+    }
+    if (const auto inputGainCommand = gainCommand(); inputGainCommand.has_value()) {
+        return EncodeResult {protocol::encodeGain(*inputGainCommand)};
+    }
+    return std::nullopt;
+}
+
 bool SemanticCommandQueue::enqueueRouteLevel(
     const int sourceIndex, const model::RoutingDestination destination,
     const double normalized)
@@ -67,6 +92,40 @@ bool SemanticCommandQueue::enqueueDestinationMaster(
 {
     const auto endpoint = model::endpointForDestination(destination);
     return enqueueRouteLevel(endpoint, endpoint, normalized);
+}
+
+bool SemanticCommandQueue::enqueueGain(const int sourceIndex, const double gainDb)
+{
+    const auto sourceEndpoint = model::inputEndpointForIndex(sourceIndex);
+    if (!sourceEndpoint.has_value()) {
+        return false;
+    }
+    return enqueueGain(*sourceEndpoint, gainDb);
+}
+
+bool SemanticCommandQueue::enqueueGain(
+    const model::EndpointId inputEndpoint, const double gainDb)
+{
+    if (!model::isGainCapableInputEndpoint(inputEndpoint)
+        || !std::isfinite(gainDb)
+        || gainDb < model::inputGainMinimumDb
+        || gainDb > model::inputGainMaximumDb) {
+        return false;
+    }
+    for (auto& command : pending_) {
+        if (command.kind == Kind::Gain
+            && command.sourceEndpoint == inputEndpoint) {
+            command.gainDb = gainDb;
+            return true;
+        }
+    }
+    pending_.append(Command {
+        .kind = Kind::Gain,
+        .sourceEndpoint = inputEndpoint,
+        .gainDb = gainDb,
+        .action = {},
+    });
+    return true;
 }
 
 bool SemanticCommandQueue::enqueueDiscrete(QString action)

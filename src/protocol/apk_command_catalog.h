@@ -60,9 +60,10 @@ struct ApkCommandDescriptor {
     const char* semanticName;
     model::EvidenceStatus evidence {model::EvidenceStatus::VerifiedFromApk};
     // Native packet construction confirms that the command ID is the first
-    // byte of the raw packet envelope. This does not reveal payload fields.
+    // byte of the raw packet envelope.
     bool commandByteConfirmed {true};
-    // Always false until a complete payload is documented independently.
+    // True only for commands whose complete outbound schema has been
+    // recovered. Currently this is Gain (0x02) and RouteLevel (0x06).
     bool payloadLayoutKnown {};
     model::EvidenceStatus payloadEvidence {model::EvidenceStatus::Unknown};
 };

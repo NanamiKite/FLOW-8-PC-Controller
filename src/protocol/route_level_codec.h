@@ -7,13 +7,13 @@
 #include <QByteArray>
 #include <QString>
 
+#include <array>
 #include <optional>
 
 namespace flow8::protocol {
 
-// Transport-neutral semantic input to the 0x06 codec boundary. Endpoint
-// values are the APK-confirmed semantic IDs; this structure is not a BLE
-// payload definition.
+// Transport-neutral semantic input to the APK-confirmed 0x06 codec. The
+// endpoint enum keeps protocol numbers out of UI and mixer code.
 struct RouteLevelCommand {
     model::EndpointId sourceEndpoint {model::EndpointId::Input1};
     model::EndpointId destinationEndpoint {model::EndpointId::MainLr};
@@ -29,23 +29,22 @@ struct RouteLevelCommand {
     }
 };
 
-// Facts known about command 0x06 after the APK/native handoff. The internal
-// xairbt_cmd fields are known semantically, but none of the false wire fields
-// may be promoted without the descriptor mapping or a verified capture.
+// Facts recovered from the pinned APK/native serializer. This metadata says
+// nothing about acceptance by a physical FLOW 8.
 struct RouteLevelPayloadSchema {
     ApkCommandId command {ApkCommandId::RouteLevel};
     model::EvidenceStatus commandEvidence {model::EvidenceStatus::VerifiedFromApk};
     model::EvidenceStatus semanticEvidence {model::EvidenceStatus::VerifiedFromApk};
-    model::EvidenceStatus payloadEvidence {model::EvidenceStatus::Unknown};
+    model::EvidenceStatus payloadEvidence {model::EvidenceStatus::VerifiedFromApk};
     bool sourceEndpointSemanticKnown {true};
     bool destinationEndpointSemanticKnown {true};
     bool normalizedInputDomainKnown {true};
     bool normalizedToDbBeforeSerializationObserved {true};
-    bool wireFieldOrderKnown {};
-    bool wireFieldWidthsKnown {};
-    bool wireValueEncodingKnown {};
-    bool wireByteOrderKnown {};
-    bool commandFragmentationKnown {};
+    bool wireFieldOrderKnown {true};
+    bool wireFieldWidthsKnown {true};
+    bool wireValueEncodingKnown {true};
+    bool wireByteOrderKnown {true};
+    bool commandFragmentationKnown {true};
 };
 
 enum class RouteLevelCodecError {
@@ -53,7 +52,6 @@ enum class RouteLevelCodecError {
     InvalidDestinationEndpoint,
     InvalidRouteRelationship,
     InvalidNormalizedValue,
-    UnknownPayloadLayout,
 };
 
 struct RouteLevelEncodeResult {
@@ -72,9 +70,19 @@ struct RouteLevelEncodeResult {
 [[nodiscard]] std::optional<RouteLevelCodecError> validateRouteLevelCommand(
     const RouteLevelCommand& command) noexcept;
 
-// A valid semantic command currently returns UnknownPayloadLayout. In
-// particular, this function never calls frameSingleFragment with an empty or
-// guessed payload and never reuses the legacy reference 0x06 layout.
+// APK x86_64 uses binary32 throughout this conversion. The PC API rejects
+// non-finite/out-of-range values before narrowing double to float; that
+// rejection is a PC safety rule, not an APK-behaviour claim.
+[[nodiscard]] std::optional<float> routeLevelNormalizedToDb(double normalized) noexcept;
+
+// The format-3 table is generated at compile time from the documented native
+// binary32 fader curve sampled over all 256 byte codes. Encoding still uses
+// the recovered table search rather than an arithmetic byte shortcut.
+[[nodiscard]] const std::array<float, 256>& routeLevelFix8DbTable() noexcept;
+[[nodiscard]] std::optional<quint8> encodeRouteLevelFix8(float decibels) noexcept;
+
+// Encodes the APK-confirmed single-fragment raw packet:
+// 06 01 endpointA endpointB level checksum.
 [[nodiscard]] RouteLevelEncodeResult encodeRouteLevel(
     const RouteLevelCommand& command) noexcept;
 

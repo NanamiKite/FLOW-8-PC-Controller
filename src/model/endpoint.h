@@ -43,6 +43,31 @@ enum class EndpointId : quint8 {
     }
 }
 
+// APK channel capability bit 0x04 is present for conventional analog inputs
+// 0..5 and absent for the BT/USB strip (6). This is a product/semantic guard;
+// the native wire serializer itself can mechanically emit endpoint 6.
+[[nodiscard]] constexpr bool isGainCapableInputEndpoint(
+    const EndpointId endpoint) noexcept
+{
+    switch (endpoint) {
+    case EndpointId::Input1:
+    case EndpointId::Input2:
+    case EndpointId::Input3:
+    case EndpointId::Input4:
+    case EndpointId::Input56:
+    case EndpointId::Input78:
+        return true;
+    case EndpointId::BluetoothUsb:
+    case EndpointId::Monitor1:
+    case EndpointId::Monitor2:
+    case EndpointId::Fx1:
+    case EndpointId::Fx2:
+    case EndpointId::MainLr:
+        return false;
+    }
+    return false;
+}
+
 [[nodiscard]] constexpr std::optional<EndpointId> inputEndpointForIndex(
     const int inputIndex) noexcept
 {
