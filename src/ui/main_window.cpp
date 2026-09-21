@@ -42,6 +42,19 @@ QString applicationStyle()
         QLabel[class="sessionTitle"] { font-size: 25px; font-weight: 720; }
         QLabel[class="sectionLabel"] { color: #bfc5cf; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; }
         QLabel[class="secondaryText"] { color: #8e96a2; }
+        QWidget[class="capabilityGrid"] {
+            background: #1a1d22; border: 1px solid #30353d; border-radius: 7px;
+        }
+        QLabel[class="capabilityName"] {
+            color: #a5adb8; font-size: 10px; font-weight: 650;
+        }
+        QLabel[class="capabilityValue"] {
+            color: #939ba6; background: #23272e; border: 1px solid #343a43;
+            border-radius: 4px; padding: 3px 7px; font-size: 10px; font-weight: 650;
+        }
+        QLabel[class="capabilityValue"][available="true"] {
+            color: #c8f0d5; background: #1b3023; border-color: #315c40;
+        }
         QLabel[class="parameterValue"] {
             color: #eef1f5; background: #22262c; border: 1px solid #343943;
             border-radius: 5px; padding: 4px 7px; font-weight: 650;

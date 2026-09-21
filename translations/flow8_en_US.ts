@@ -222,6 +222,11 @@
     </message>
     <message>
         <location filename="../src/ui/ui_text.cpp" line="49"/>
+        <source>4-band Parametric EQ</source>
+        <translation>4-band Parametric EQ</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="50"/>
         <source>9-band EQ</source>
         <translation>9-band EQ</translation>
     </message>

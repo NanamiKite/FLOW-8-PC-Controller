@@ -51,7 +51,7 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     , device_(device)
     , title_(new QLabel(this))
     , metadata_(new QLabel(this))
-    , inputCapabilities_(new QLabel(this))
+    , inputCapabilities_(new QWidget(this))
     , evidenceNote_(new QLabel(this))
     , syntheticBadge_(new QLabel(this))
     , currentRouteLabel_(new QLabel(this))
@@ -84,7 +84,8 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     setMinimumHeight(290);
     title_->setProperty("class", QStringLiteral("inspectorTitle"));
     metadata_->setProperty("class", QStringLiteral("secondaryText"));
-    inputCapabilities_->setWordWrap(true);
+    inputCapabilities_->setObjectName(QStringLiteral("inputCapabilities"));
+    inputCapabilities_->setProperty("class", QStringLiteral("capabilityGrid"));
 
     auto* channelPage = createPage(tabs_);
     auto* channelLayout = new QVBoxLayout(channelPage);
@@ -150,6 +151,33 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     channelForm->addRow(channelFormLabels_[9], mute_);
     channelForm->addRow(channelFormLabels_[10], solo_);
     channelLayout->addLayout(channelForm);
+
+    auto* capabilityLayout = new QGridLayout(inputCapabilities_);
+    capabilityLayout->setContentsMargins(10, 8, 10, 8);
+    capabilityLayout->setHorizontalSpacing(10);
+    capabilityLayout->setVerticalSpacing(6);
+    for (int index = 0; index < 7; ++index) {
+        auto* name = new QLabel(inputCapabilities_);
+        auto* value = new QLabel(inputCapabilities_);
+        name->setObjectName(QStringLiteral("capabilityName%1").arg(index));
+        value->setObjectName(QStringLiteral("capabilityValue%1").arg(index));
+        name->setProperty("class", QStringLiteral("capabilityName"));
+        value->setProperty("class", QStringLiteral("capabilityValue"));
+        value->setProperty("available", false);
+        value->setWordWrap(true);
+        capabilityNames_.append(name);
+        capabilityValues_.append(value);
+    }
+    for (int index = 0; index < 6; ++index) {
+        const int row = index / 2;
+        const int column = (index % 2) * 2;
+        capabilityLayout->addWidget(capabilityNames_[index], row, column);
+        capabilityLayout->addWidget(capabilityValues_[index], row, column + 1);
+    }
+    capabilityLayout->addWidget(capabilityNames_[6], 3, 0);
+    capabilityLayout->addWidget(capabilityValues_[6], 3, 1, 1, 3);
+    capabilityLayout->setColumnStretch(1, 1);
+    capabilityLayout->setColumnStretch(3, 1);
     channelLayout->addWidget(inputCapabilities_);
     auto* ezGainRow = new QHBoxLayout;
     ezGainSelected_->setObjectName(QStringLiteral("ezGainSelected"));
@@ -420,14 +448,40 @@ void InspectorWidget::refresh()
         .arg(channel->stereoPair ? uiText("Stereo Pair") : uiText("Mono"),
              channel->spatialControl == model::SpatialControl::Balance
                  ? uiText("Balance") : uiText("Pan")));
-    inputCapabilities_->setText(uiText(
-        "Gain: %1   48 V: %2   Phase: %3   Low Cut: %4   EQ: 4-band parametric   "
-        "Compressor: %5   Sends: MON1 / MON2 / FX1 / FX2")
-        .arg(channel->capabilities.gain ? uiText("Available") : uiText("Unavailable"),
-             channel->capabilities.phantom48V ? uiText("Available") : uiText("Not supported"),
-             channel->capabilities.phase ? uiText("Available") : uiText("Unavailable"),
-             channel->capabilities.lowCut ? uiText("Available") : uiText("Unavailable"),
-             channel->capabilities.compressor ? uiText("Available") : uiText("Unavailable")));
+    const auto setCapability = [this](const int index, const QString& text,
+                                      const bool available) {
+        if (index < 0 || index >= capabilityValues_.size()) {
+            return;
+        }
+        auto* value = capabilityValues_[index];
+        value->setText(text);
+        if (value->property("available").toBool() != available) {
+            value->setProperty("available", available);
+            value->style()->unpolish(value);
+            value->style()->polish(value);
+        }
+    };
+    const auto availabilityText = [](const bool available) {
+        return available ? uiText("Available") : uiText("Not supported");
+    };
+    setCapability(0, availabilityText(channel->capabilities.gain),
+                  channel->capabilities.gain);
+    setCapability(1, availabilityText(channel->capabilities.phantom48V),
+                  channel->capabilities.phantom48V);
+    setCapability(2, availabilityText(channel->capabilities.phase),
+                  channel->capabilities.phase);
+    setCapability(3, availabilityText(channel->capabilities.lowCut),
+                  channel->capabilities.lowCut);
+    setCapability(4, channel->capabilities.equalizer
+            ? uiText("4-band Parametric EQ") : uiText("Not supported"),
+        channel->capabilities.equalizer);
+    setCapability(5, availabilityText(channel->capabilities.compressor),
+                  channel->capabilities.compressor);
+    const bool hasSends = channel->capabilities.monitorSends
+        || channel->capabilities.fxSends;
+    setCapability(6, hasSends ? QStringLiteral("MON1 / MON2 / FX1 / FX2")
+                              : uiText("Not supported"),
+                  hasSends);
     currentRouteLabel_->setText(uiText("%1 → %2 Send")
         .arg(inputDisplayName(channel->inputId), destinationName(selectedDestination_)));
     {
@@ -593,6 +647,14 @@ void InspectorWidget::retranslateUi()
     for (int index = 0; index < channelFormLabels_.size(); ++index) {
         channelFormLabels_[index]->setText(
             uiText(channelLabels[static_cast<std::size_t>(index)]));
+    }
+    const std::array<const char*, 7> capabilityNames {
+        "Gain", "Phantom Power", "Polarity", "Low Cut", "Equalizer",
+        "Compressor", "Sends",
+    };
+    for (int index = 0; index < capabilityNames_.size(); ++index) {
+        capabilityNames_[index]->setText(
+            uiText(capabilityNames[static_cast<std::size_t>(index)]));
     }
     channelVisible_->setText(uiText("Visible in Mixer and Stage"));
     ezGainSelected_->setText(uiText("EZ-GAIN Selected"));

@@ -41,7 +41,9 @@ private:
     model::RoutingDestination selectedDestination_ {model::RoutingDestination::Main};
     QLabel* title_ {};
     QLabel* metadata_ {};
-    QLabel* inputCapabilities_ {};
+    QWidget* inputCapabilities_ {};
+    QVector<QLabel*> capabilityNames_;
+    QVector<QLabel*> capabilityValues_;
     QLabel* evidenceNote_ {};
     QLabel* syntheticBadge_ {};
     QLabel* currentRouteLabel_ {};

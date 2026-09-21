@@ -121,6 +121,30 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QTRY_VERIFY(inspector->isVisible());
     QCOMPARE(inspector->selectedChannel(), 0);
     QCOMPARE(inspector->selectedDestination(), flow8::model::RoutingDestination::Main);
+    for (int capability = 0; capability < 7; ++capability) {
+        auto* capabilityName = inspector->findChild<QLabel*>(
+            QStringLiteral("capabilityName%1").arg(capability));
+        auto* capabilityValue = inspector->findChild<QLabel*>(
+            QStringLiteral("capabilityValue%1").arg(capability));
+        QVERIFY(capabilityName != nullptr);
+        QVERIFY(capabilityValue != nullptr);
+        QVERIFY(!capabilityName->text().isEmpty());
+        QVERIFY(!capabilityValue->text().isEmpty());
+    }
+    QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("capabilityValue4"))->text(),
+             flow8::ui::uiText("4-band Parametric EQ"));
+    QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("capabilityValue6"))->text(),
+             QStringLiteral("MON1 / MON2 / FX1 / FX2"));
+    QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("capabilityValue1"))
+                 ->property("available").toBool(),
+             true);
+    inspector->setSelectedChannel(2);
+    QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("capabilityValue1"))
+                 ->property("available").toBool(),
+             false);
+    QCOMPARE(inspector->findChild<QLabel*>(QStringLiteral("capabilityValue1"))->text(),
+             flow8::ui::uiText("Not supported"));
+    inspector->setSelectedChannel(0);
     auto* inspectorPhantom = inspector->findChild<QCheckBox*>(
         QStringLiteral("inspectorPhantom"));
     QVERIFY(inspectorPhantom != nullptr);
