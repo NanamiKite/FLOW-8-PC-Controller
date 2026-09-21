@@ -26,6 +26,60 @@ include(Platform)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Core Widgets)
 find_package(Qt6 6.2 QUIET COMPONENTS Bluetooth)
 
+set(FLOW8_LRELEASE_EXECUTABLE "" CACHE FILEPATH "Path to the Qt 6 lrelease executable")
+if(NOT FLOW8_LRELEASE_EXECUTABLE)
+    set(_flow8_qt_bin_hint "")
+    if(TARGET Qt6::qmake)
+        get_target_property(_flow8_qmake_executable Qt6::qmake IMPORTED_LOCATION)
+        get_filename_component(_flow8_qt_bin_hint "${_flow8_qmake_executable}" DIRECTORY)
+    endif()
+    find_program(FLOW8_LRELEASE_EXECUTABLE
+        NAMES lrelease6 lrelease-qt6 lrelease
+        HINTS "${_flow8_qt_bin_hint}"
+        DOC "Path to the Qt 6 lrelease executable"
+    )
+endif()
+if(NOT FLOW8_LRELEASE_EXECUTABLE)
+    message(FATAL_ERROR
+        "Qt 6 lrelease was not found. Install the Qt Linguist tools "
+        "(Ubuntu: qt6-l10n-tools) or set FLOW8_LRELEASE_EXECUTABLE."
+    )
+endif()
+execute_process(
+    COMMAND "${FLOW8_LRELEASE_EXECUTABLE}" -version
+    RESULT_VARIABLE _flow8_lrelease_result
+    OUTPUT_VARIABLE _flow8_lrelease_output
+    ERROR_VARIABLE _flow8_lrelease_error
+)
+if(NOT _flow8_lrelease_result EQUAL 0
+   OR NOT "${_flow8_lrelease_output}${_flow8_lrelease_error}" MATCHES "version 6\\.")
+    message(FATAL_ERROR
+        "FLOW8_LRELEASE_EXECUTABLE must be a working Qt 6 lrelease executable. "
+        "Detected: ${_flow8_lrelease_output}${_flow8_lrelease_error}"
+    )
+endif()
+
+set(FLOW8_TRANSLATIONS_DIR "${CMAKE_CURRENT_BINARY_DIR}/translations")
+set(FLOW8_TRANSLATION_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/translations/flow8_en_US.ts"
+    "${CMAKE_CURRENT_SOURCE_DIR}/translations/flow8_zh_CN.ts"
+)
+set(FLOW8_TRANSLATION_BINARIES)
+foreach(_flow8_ts IN LISTS FLOW8_TRANSLATION_SOURCES)
+    get_filename_component(_flow8_translation_name "${_flow8_ts}" NAME_WE)
+    set(_flow8_qm "${FLOW8_TRANSLATIONS_DIR}/${_flow8_translation_name}.qm")
+    add_custom_command(
+        OUTPUT "${_flow8_qm}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${FLOW8_TRANSLATIONS_DIR}"
+        COMMAND "${FLOW8_LRELEASE_EXECUTABLE}" "${_flow8_ts}" -qm "${_flow8_qm}"
+        DEPENDS "${_flow8_ts}"
+        COMMENT "Compiling ${_flow8_translation_name}.qm"
+        VERBATIM
+    )
+    list(APPEND FLOW8_TRANSLATION_BINARIES "${_flow8_qm}")
+endforeach()
+add_custom_target(flow8_translations ALL DEPENDS ${FLOW8_TRANSLATION_BINARIES})
+
 if(TARGET Qt6::Bluetooth)
     set(FLOW8_HAS_QT_BLUETOOTH ON)
     message(STATUS "Qt Bluetooth is available")
@@ -70,6 +124,10 @@ add_library(flow8_core STATIC
     src/core/flow8_state.h
     src/core/flow8_transport.cpp
     src/core/flow8_transport.h
+    src/model/flow8_capabilities.cpp
+    src/model/flow8_capabilities.h
+    src/model/preferences.h
+    src/model/session.h
 )
 add_library(flow8::core ALIAS flow8_core)
 
@@ -81,6 +139,20 @@ target_link_libraries(flow8_core PUBLIC flow8::protocol Qt6::Core)
 target_compile_features(flow8_core PUBLIC cxx_std_20)
 flow8_enable_warnings(flow8_core)
 flow8_configure_platform(flow8_core)
+
+add_library(flow8_midi_model STATIC
+    src/midi/midi_parameter_map.cpp
+    src/midi/midi_parameter_map.h
+)
+add_library(flow8::midi_model ALIAS flow8_midi_model)
+target_include_directories(flow8_midi_model
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
+)
+target_link_libraries(flow8_midi_model PUBLIC Qt6::Core)
+target_compile_features(flow8_midi_model PUBLIC cxx_std_20)
+flow8_enable_warnings(flow8_midi_model)
+flow8_configure_platform(flow8_midi_model)
 
 add_library(flow8_simulator STATIC
     src/simulator/fake_transport.cpp
@@ -108,14 +180,36 @@ flow8_configure_platform(flow8-state-dump-decoder)
 add_library(flow8_ui STATIC
     src/ui/connection_bar.cpp
     src/ui/connection_bar.h
+    src/ui/language_manager.cpp
+    src/ui/language_manager.h
     src/ui/main_window.cpp
     src/ui/main_window.h
+    src/ui/ui_text.cpp
+    src/ui/ui_text.h
+    src/ui/inspector/detail_panel.cpp
+    src/ui/inspector/detail_panel.h
+    src/ui/inspector/inspector_widget.cpp
+    src/ui/inspector/inspector_widget.h
     src/ui/mixer/channel_strip.cpp
     src/ui/mixer/channel_strip.h
     src/ui/mixer/main_strip.cpp
     src/ui/mixer/main_strip.h
     src/ui/mixer/mixer_widget.cpp
     src/ui/mixer/mixer_widget.h
+    src/ui/settings/settings_dialog.cpp
+    src/ui/settings/settings_dialog.h
+    src/ui/session/session_start_view.cpp
+    src/ui/session/session_start_view.h
+    src/ui/setup/assisted_setup_wizard.cpp
+    src/ui/setup/assisted_setup_wizard.h
+    src/ui/stage/stage_view.cpp
+    src/ui/stage/stage_view.h
+    src/ui/widgets/eq_graph_widget.cpp
+    src/ui/widgets/eq_graph_widget.h
+    src/ui/widgets/fader_widget.cpp
+    src/ui/widgets/fader_widget.h
+    src/ui/widgets/meter_widget.cpp
+    src/ui/widgets/meter_widget.h
 )
 add_library(flow8::ui ALIAS flow8_ui)
 target_include_directories(flow8_ui
@@ -123,6 +217,10 @@ target_include_directories(flow8_ui
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
 )
 target_link_libraries(flow8_ui PUBLIC flow8::core Qt6::Widgets)
+target_compile_definitions(flow8_ui PRIVATE
+    FLOW8_TRANSLATIONS_DIR="${FLOW8_TRANSLATIONS_DIR}"
+)
+add_dependencies(flow8_ui flow8_translations)
 flow8_enable_warnings(flow8_ui)
 flow8_configure_platform(flow8_ui)
 
@@ -159,6 +257,14 @@ add_executable(flow8-controller src/app/main.cpp)
 target_link_libraries(flow8-controller PRIVATE flow8::core flow8::simulator flow8::ui Qt6::Widgets)
 target_compile_definitions(flow8-controller PRIVATE
     FLOW8_APP_VERSION="${PROJECT_VERSION}"
+)
+add_custom_command(TARGET flow8-controller POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:flow8-controller>/translations"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        ${FLOW8_TRANSLATION_BINARIES}
+        "$<TARGET_FILE_DIR:flow8-controller>/translations"
+    VERBATIM
 )
 flow8_enable_warnings(flow8-controller)
 flow8_configure_platform(flow8-controller)

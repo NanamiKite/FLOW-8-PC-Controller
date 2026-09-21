@@ -17,15 +17,19 @@ public:
     explicit ConnectionBar(QWidget* parent = nullptr);
 
     void setConnectionState(ConnectionState state);
+    void retranslateUi();
 
 signals:
     void connectRequested();
     void disconnectRequested();
+    void settingsRequested();
 
 private:
     QComboBox* transportSelector_ {};
     QPushButton* connectButton_ {};
+    QPushButton* settingsButton_ {};
     QLabel* statusLabel_ {};
+    QLabel* subtitle_ {};
     ConnectionState state_ {ConnectionState::Disconnected};
 };
 

@@ -2,8 +2,8 @@
 
 #include <QWidget>
 
-class QCheckBox;
-class QSlider;
+class QToolButton;
+class QLabel;
 
 namespace flow8 {
 class Flow8Device;
@@ -11,17 +11,28 @@ class Flow8Device;
 
 namespace flow8::ui {
 
+class FaderWidget;
+class MeterWidget;
+
 class MainStrip final : public QWidget {
     Q_OBJECT
 
 public:
     explicit MainStrip(Flow8Device& device, QWidget* parent = nullptr);
     void refresh();
+    void retranslateUi();
+
+signals:
+    void selected();
 
 private:
     Flow8Device& device_;
-    QSlider* fader_ {};
-    QCheckBox* mute_ {};
+    FaderWidget* fader_ {};
+    MeterWidget* meter_ {};
+    QToolButton* mute_ {};
+    QLabel* title_ {};
+    QLabel* badge_ {};
+    QLabel* processors_ {};
 };
 
 } // namespace flow8::ui

@@ -1,10 +1,18 @@
 #include "core/flow8_device.h"
 
+#include "model/flow8_capabilities.h"
 #include "protocol/codec.h"
 #include "protocol/flow8_protocol.h"
 #include "protocol/packet.h"
 
-#include <QStringList>
+#include <QDateTime>
+#include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
+#include <algorithm>
+#include <cmath>
 
 namespace flow8 {
 namespace {
@@ -23,12 +31,39 @@ model::StateValue<bool> simulatorBool(const bool value)
                                           QString::fromLatin1(simulatorSource));
 }
 
+bool snapshotIncludes(const model::SnapshotScope selected,
+                      const model::SnapshotScope domain) noexcept
+{
+    return selected == model::SnapshotScope::Full || selected == domain;
+}
+
+QJsonObject observedDouble(const model::StateValue<double>& value)
+{
+    QJsonObject result;
+    if (value.value.has_value()) {
+        result.insert(QStringLiteral("value"), *value.value);
+    }
+    return result;
+}
+
+QJsonObject observedBool(const model::StateValue<bool>& value)
+{
+    QJsonObject result;
+    if (value.value.has_value()) {
+        result.insert(QStringLiteral("value"), *value.value);
+    }
+    return result;
+}
+
 } // namespace
 
 Flow8Device::Flow8Device(QObject* parent)
     : QObject(parent)
     , state_()
 {
+    simulatorMeterTimer_.setInterval(60);
+    connect(&simulatorMeterTimer_, &QTimer::timeout,
+            this, &Flow8Device::updateSimulatorMeters);
 }
 
 Flow8Device::~Flow8Device() = default;
@@ -96,6 +131,26 @@ bool Flow8Device::isControlAvailable(const Control control) const noexcept
     case Control::ChannelMute:
     case Control::ChannelSolo:
     case Control::ChannelPan:
+    case Control::ChannelIdentity:
+    case Control::ChannelVisibility:
+    case Control::ChannelLowCut:
+    case Control::MonitorSendMode:
+    case Control::ChannelEq:
+    case Control::ChannelCompressor:
+    case Control::ChannelSend:
+    case Control::BusFader:
+    case Control::BusBalance:
+    case Control::BusLimiter:
+    case Control::BusEq:
+    case Control::FxPreset:
+    case Control::FxParameter:
+    case Control::FxMute:
+    case Control::FxTapTempo:
+    case Control::SnapshotRecall:
+    case Control::SnapshotStore:
+    case Control::Routing:
+    case Control::AssistedSetup:
+    case Control::EzGain:
     case Control::MainFader:
     case Control::MainMute:
         return true;
@@ -106,12 +161,14 @@ bool Flow8Device::isControlAvailable(const Control control) const noexcept
 bool Flow8Device::setChannelFader(const int index, const double normalized)
 {
     if (!isControlAvailable(Control::ChannelFader) || index < 0 || index >= state_.channels().size()) {
-        reject(Control::ChannelFader, QStringLiteral("channel fader is unavailable"));
+        reject(Control::ChannelFader, QCoreApplication::translate(
+            "Flow8Device", "Channel fader is unavailable."));
         return false;
     }
     const auto packet = protocol::encodeFaderLevel(static_cast<quint8>(index + 1), normalized);
     if (!packet.has_value() || !transport_->send(*packet)) {
-        reject(Control::ChannelFader, QStringLiteral("failed to encode or send fader value"));
+        reject(Control::ChannelFader, QCoreApplication::translate(
+            "Flow8Device", "Failed to encode or send the fader value."));
         return false;
     }
     return true;
@@ -119,8 +176,11 @@ bool Flow8Device::setChannelFader(const int index, const double normalized)
 
 bool Flow8Device::setChannelGain(const int index, const double normalized)
 {
-    if (!isControlAvailable(Control::ChannelGain)) {
-        reject(Control::ChannelGain, QStringLiteral("gain mapping is not hardware-verified"));
+    const auto* channel = state_.channel(index);
+    if (!isControlAvailable(Control::ChannelGain) || channel == nullptr
+        || !channel->capabilities.gain) {
+        reject(Control::ChannelGain, QCoreApplication::translate(
+            "Flow8Device", "Gain mapping is not hardware-verified."));
         return false;
     }
     return state_.setChannelGain(index, normalized, model::EvidenceStatus::Unknown,
@@ -130,7 +190,8 @@ bool Flow8Device::setChannelGain(const int index, const double normalized)
 bool Flow8Device::setChannelMuted(const int index, const bool muted)
 {
     if (!isControlAvailable(Control::ChannelMute)) {
-        reject(Control::ChannelMute, QStringLiteral("mute mapping is not hardware-verified"));
+        reject(Control::ChannelMute, QCoreApplication::translate(
+            "Flow8Device", "Mute mapping is not hardware-verified."));
         return false;
     }
     return state_.setChannelMuted(index, muted, model::EvidenceStatus::Unknown,
@@ -140,7 +201,8 @@ bool Flow8Device::setChannelMuted(const int index, const bool muted)
 bool Flow8Device::setChannelSoloed(const int index, const bool soloed)
 {
     if (!isControlAvailable(Control::ChannelSolo)) {
-        reject(Control::ChannelSolo, QStringLiteral("solo mapping is not hardware-verified"));
+        reject(Control::ChannelSolo, QCoreApplication::translate(
+            "Flow8Device", "Solo mapping is not hardware-verified."));
         return false;
     }
     return state_.setChannelSoloed(index, soloed, model::EvidenceStatus::Unknown,
@@ -150,27 +212,762 @@ bool Flow8Device::setChannelSoloed(const int index, const bool soloed)
 bool Flow8Device::setChannelPan(const int index, const double pan)
 {
     if (!isControlAvailable(Control::ChannelPan)) {
-        reject(Control::ChannelPan, QStringLiteral("pan mapping is not hardware-verified"));
+        reject(Control::ChannelPan, QCoreApplication::translate(
+            "Flow8Device", "Pan mapping is not hardware-verified."));
         return false;
     }
     return state_.setChannelPan(index, pan, model::EvidenceStatus::Unknown,
                                 QString::fromLatin1(simulatorSource));
 }
 
+bool Flow8Device::setChannelName(const int index, const QString& name)
+{
+    if (!isControlAvailable(Control::ChannelIdentity)) {
+        reject(Control::ChannelIdentity, QCoreApplication::translate(
+            "Flow8Device", "Channel customization is unavailable."));
+        return false;
+    }
+    return state_.setChannelName(index, name, model::EvidenceStatus::Unknown,
+                                 QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setChannelIcon(const int index, const model::ChannelIcon icon)
+{
+    if (!isControlAvailable(Control::ChannelIdentity)) {
+        reject(Control::ChannelIdentity, QCoreApplication::translate(
+            "Flow8Device", "Channel customization is unavailable."));
+        return false;
+    }
+    return state_.setChannelIcon(index, icon, model::EvidenceStatus::Unknown,
+                                 QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setChannelVisible(const int index, const bool visible)
+{
+    if (!isControlAvailable(Control::ChannelVisibility)) {
+        reject(Control::ChannelVisibility, QCoreApplication::translate(
+            "Flow8Device", "Channel visibility is unavailable."));
+        return false;
+    }
+    return state_.setChannelVisible(index, visible, model::EvidenceStatus::Unknown,
+                                    QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setChannelLowCut(const int index, const bool enabled,
+                                   const double frequencyHz)
+{
+    if (!isControlAvailable(Control::ChannelLowCut)) {
+        reject(Control::ChannelLowCut, QCoreApplication::translate(
+            "Flow8Device", "Low Cut is unavailable."));
+        return false;
+    }
+    return state_.setChannelLowCut(index, enabled, frequencyHz,
+                                   model::EvidenceStatus::Unknown,
+                                   QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setMonitorSendMode(const int index, const int monitor,
+                                     const model::MonitorSendMode mode)
+{
+    if (!isControlAvailable(Control::MonitorSendMode)) {
+        reject(Control::MonitorSendMode, QCoreApplication::translate(
+            "Flow8Device", "Monitor send mode is unavailable."));
+        return false;
+    }
+    return state_.setMonitorSendMode(index, monitor, mode,
+                                     model::EvidenceStatus::Unknown,
+                                     QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setChannelEqGain(const int index, const int band, const double gainDb)
+{
+    const auto* channel = state_.channel(index);
+    if (!isControlAvailable(Control::ChannelEq) || channel == nullptr
+        || !channel->capabilities.equalizer) {
+        reject(Control::ChannelEq, QCoreApplication::translate(
+            "Flow8Device", "Channel EQ is unavailable."));
+        return false;
+    }
+    return state_.setChannelEqGain(index, band, gainDb, model::EvidenceStatus::Unknown,
+                                   QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setChannelCompressorAmount(const int index, const double amount)
+{
+    const auto* channel = state_.channel(index);
+    if (!isControlAvailable(Control::ChannelCompressor) || channel == nullptr
+        || !channel->capabilities.compressor) {
+        reject(Control::ChannelCompressor,
+               QCoreApplication::translate(
+                   "Flow8Device", "Compressor is unavailable for this input."));
+        return false;
+    }
+    return state_.setChannelCompressorAmount(index, amount, model::EvidenceStatus::Unknown,
+                                              QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setChannelSendLevel(const int index, const int send,
+                                      const double normalized)
+{
+    if (!isControlAvailable(Control::ChannelSend) || !std::isfinite(normalized)
+        || normalized < 0.0 || normalized > 1.0) {
+        reject(Control::ChannelSend, QCoreApplication::translate(
+            "Flow8Device", "Channel send is unavailable."));
+        return false;
+    }
+    const double levelDb = normalized == 0.0 ? -144.0 : -70.0 + normalized * 80.0;
+    return state_.setChannelSendLevelDb(index, send, levelDb, model::EvidenceStatus::Unknown,
+                                        QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setBusFader(const int index, const double normalized)
+{
+    if (!isControlAvailable(Control::BusFader)) {
+        reject(Control::BusFader, QCoreApplication::translate(
+            "Flow8Device", "Bus level is unavailable."));
+        return false;
+    }
+    const bool changed = state_.setBusFader(index, normalized, model::EvidenceStatus::Unknown,
+                                             QString::fromLatin1(simulatorSource));
+    if (changed && index == 0) {
+        (void)state_.setMainFader(normalized, model::EvidenceStatus::Unknown,
+                                  QString::fromLatin1(simulatorSource));
+    }
+    return changed;
+}
+
+bool Flow8Device::setBusBalance(const int index, const double balance)
+{
+    if (!isControlAvailable(Control::BusBalance)) {
+        reject(Control::BusBalance, QCoreApplication::translate(
+            "Flow8Device", "Bus balance is unavailable."));
+        return false;
+    }
+    return state_.setBusBalance(index, balance, model::EvidenceStatus::Unknown,
+                                QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setBusLimiterDb(const int index, const double thresholdDb)
+{
+    if (!isControlAvailable(Control::BusLimiter)) {
+        reject(Control::BusLimiter, QCoreApplication::translate(
+            "Flow8Device", "Bus limiter is unavailable."));
+        return false;
+    }
+    return state_.setBusLimiterDb(index, thresholdDb, model::EvidenceStatus::Unknown,
+                                  QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setBusEqGain(const int index, const int band, const double gainDb)
+{
+    if (!isControlAvailable(Control::BusEq)) {
+        reject(Control::BusEq, QCoreApplication::translate(
+            "Flow8Device", "Bus EQ is unavailable."));
+        return false;
+    }
+    return state_.setBusEqGain(index, band, gainDb, model::EvidenceStatus::Unknown,
+                               QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setFxPreset(const int index, const int preset)
+{
+    if (!isControlAvailable(Control::FxPreset)) {
+        reject(Control::FxPreset, QCoreApplication::translate(
+            "Flow8Device", "FX preset is unavailable."));
+        return false;
+    }
+    return state_.setFxPreset(index, preset, model::EvidenceStatus::Unknown,
+                              QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setFxParameter(const int index, const int parameter,
+                                 const double normalized)
+{
+    if (!isControlAvailable(Control::FxParameter)) {
+        reject(Control::FxParameter, QCoreApplication::translate(
+            "Flow8Device", "FX parameter is unavailable."));
+        return false;
+    }
+    return state_.setFxParameter(index, parameter, normalized, model::EvidenceStatus::Unknown,
+                                 QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setFxMuted(const int index, const bool muted)
+{
+    if (!isControlAvailable(Control::FxMute)) {
+        reject(Control::FxMute, QCoreApplication::translate(
+            "Flow8Device", "FX mute is unavailable."));
+        return false;
+    }
+    return state_.setFxMuted(index, muted, model::EvidenceStatus::Unknown,
+                             QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::tapTempo()
+{
+    if (!isControlAvailable(Control::FxTapTempo)) {
+        reject(Control::FxTapTempo, QCoreApplication::translate(
+            "Flow8Device", "Tap tempo is unavailable."));
+        return false;
+    }
+    double bpm = 120.0;
+    if (tapTimer_.isValid()) {
+        const qint64 elapsed = tapTimer_.elapsed();
+        if (elapsed >= 240 && elapsed <= 1200) {
+            bpm = std::clamp(60000.0 / static_cast<double>(elapsed), 50.0, 250.0);
+        }
+    }
+    tapTimer_.restart();
+    (void)state_.setGlobalTempo(bpm, model::EvidenceStatus::Unknown,
+                                QString::fromLatin1(simulatorSource));
+    bool changed = false;
+    for (int index = 0; index < state_.effects().size(); ++index) {
+        changed = state_.setFxTapTempo(index, bpm, model::EvidenceStatus::Unknown,
+                                       QString::fromLatin1(simulatorSource)) || changed;
+    }
+    return changed;
+}
+
+bool Flow8Device::recallSnapshot(const int index)
+{
+    if (!isControlAvailable(Control::SnapshotRecall)) {
+        reject(Control::SnapshotRecall, QCoreApplication::translate(
+            "Flow8Device", "Snapshot recall is unavailable."));
+        return false;
+    }
+    return state_.setActiveSnapshotIndex(index);
+}
+
+bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotScope scope)
+{
+    if (!isControlAvailable(Control::SnapshotStore) || name.trimmed().isEmpty()) {
+        reject(Control::SnapshotStore, QCoreApplication::translate(
+            "Flow8Device", "App snapshot storage is unavailable."));
+        return false;
+    }
+    auto snapshots = state_.snapshots();
+    int libraryIndex = 0;
+    for (const auto& existing : snapshots) {
+        if (existing.storage == model::SnapshotStorage::AppLibrary) {
+            ++libraryIndex;
+        }
+    }
+    model::SnapshotState snapshot;
+    snapshot.index = libraryIndex;
+    snapshot.id = QStringLiteral("app:%1")
+        .arg(QDateTime::currentDateTimeUtc().toMSecsSinceEpoch());
+    snapshot.storage = model::SnapshotStorage::AppLibrary;
+    snapshot.name = model::StateValue<QString>::known(
+        name.trimmed(), model::EvidenceStatus::Unknown,
+        QString::fromLatin1(simulatorSource));
+    snapshot.timestamp = model::StateValue<QDateTime>::known(
+        QDateTime::currentDateTimeUtc(), model::EvidenceStatus::Unknown,
+        QString::fromLatin1(simulatorSource));
+    snapshot.scope = model::StateValue<model::SnapshotScope>::known(
+        scope, model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
+    QJsonObject document;
+    document.insert(QStringLiteral("format"), QStringLiteral("flow8-simulator-snapshot-v1"));
+    document.insert(QStringLiteral("scope"), static_cast<int>(scope));
+    if (snapshotIncludes(scope, model::SnapshotScope::Channel)) {
+        QJsonArray channels;
+        for (const auto& channel : state_.channels()) {
+            QJsonObject entry;
+            entry.insert(QStringLiteral("index"), channel.index);
+            entry.insert(QStringLiteral("name"), channel.name.value.value_or(QString()));
+            entry.insert(QStringLiteral("icon"), static_cast<int>(
+                channel.icon.value.value_or(model::ChannelIcon::None)));
+            entry.insert(QStringLiteral("visible"), channel.visible.value.value_or(true));
+            entry.insert(QStringLiteral("gain"), observedDouble(channel.gain));
+            entry.insert(QStringLiteral("fader"), observedDouble(channel.fader));
+            entry.insert(QStringLiteral("muted"), observedBool(channel.muted));
+            entry.insert(QStringLiteral("soloed"), observedBool(channel.soloed));
+            entry.insert(QStringLiteral("pan"), observedDouble(channel.pan));
+            if (channel.lowCut.has_value()) {
+                QJsonObject lowCut;
+                lowCut.insert(QStringLiteral("enabled"), observedBool(channel.lowCut->enabled));
+                lowCut.insert(QStringLiteral("frequencyHz"),
+                              observedDouble(channel.lowCut->frequencyHz));
+                entry.insert(QStringLiteral("lowCut"), lowCut);
+            }
+            QJsonArray sends;
+            for (const auto& send : channel.sendLevelDb) {
+                sends.append(send.value.value_or(-144.0));
+            }
+            entry.insert(QStringLiteral("sendsDb"), sends);
+            QJsonArray monitorModes;
+            for (const auto& send : channel.monitorSends) {
+                monitorModes.append(static_cast<int>(
+                    send.mode.value.value_or(model::MonitorSendMode::PostFader)));
+            }
+            entry.insert(QStringLiteral("monitorModes"), monitorModes);
+            channels.append(entry);
+        }
+        document.insert(QStringLiteral("channels"), channels);
+    }
+    if (snapshotIncludes(scope, model::SnapshotScope::Main)
+        || snapshotIncludes(scope, model::SnapshotScope::Monitor)) {
+        QJsonArray buses;
+        for (const auto& bus : state_.buses()) {
+            const bool wanted = (bus.busId == model::BusId::Main
+                    && snapshotIncludes(scope, model::SnapshotScope::Main))
+                || ((bus.busId == model::BusId::Monitor1
+                     || bus.busId == model::BusId::Monitor2)
+                    && snapshotIncludes(scope, model::SnapshotScope::Monitor));
+            if (!wanted) continue;
+            QJsonObject entry;
+            entry.insert(QStringLiteral("index"), bus.index);
+            entry.insert(QStringLiteral("fader"), observedDouble(bus.fader));
+            if (bus.balance.has_value()) {
+                entry.insert(QStringLiteral("balance"), observedDouble(*bus.balance));
+            }
+            if (bus.limiterDb.has_value()) {
+                entry.insert(QStringLiteral("limiterDb"), observedDouble(*bus.limiterDb));
+            }
+            buses.append(entry);
+        }
+        document.insert(QStringLiteral("buses"), buses);
+    }
+    if (snapshotIncludes(scope, model::SnapshotScope::Fx)) {
+        QJsonArray effects;
+        for (const auto& effect : state_.effects()) {
+            QJsonObject entry;
+            entry.insert(QStringLiteral("index"), effect.index);
+            entry.insert(QStringLiteral("preset"), effect.preset.value.value_or(1));
+            entry.insert(QStringLiteral("muted"), effect.muted.value.value_or(false));
+            entry.insert(QStringLiteral("parameter1"),
+                         effect.parameters[0].value.value.value_or(0.0));
+            entry.insert(QStringLiteral("parameter2"),
+                         effect.parameters[1].value.value.value_or(0.0));
+            effects.append(entry);
+        }
+        document.insert(QStringLiteral("effects"), effects);
+        document.insert(QStringLiteral("tempoBpm"),
+                        state_.globalTempo().bpm.value.value_or(120.0));
+    }
+    if (snapshotIncludes(scope, model::SnapshotScope::Routing)) {
+        QJsonObject routing;
+        routing.insert(QStringLiteral("usbMode"), static_cast<int>(
+            state_.routing().usbMode.value.value_or(model::UsbMode::Streaming)));
+        routing.insert(QStringLiteral("headphoneSource"), static_cast<int>(
+            state_.routing().headphoneSource.value.value_or(model::HeadphoneSource::Main)));
+        routing.insert(QStringLiteral("monitorStereoLink"),
+                       state_.routing().monitorStereoLink.value.value_or(false));
+        QJsonArray routes;
+        for (const auto& route : state_.routing().routes) {
+            routes.append(route.enabled.value.value_or(false));
+        }
+        routing.insert(QStringLiteral("inputRoutes"), routes);
+        QJsonArray usbRoutes;
+        for (const auto& route : state_.routing().usbRoutes) {
+            usbRoutes.append(route.enabled.value.value_or(false));
+        }
+        routing.insert(QStringLiteral("usbRoutes"), usbRoutes);
+        QJsonArray fxRoutes;
+        for (const auto& route : state_.routing().fxMonitorRoutes) {
+            fxRoutes.append(route.enabled.value.value_or(false));
+        }
+        routing.insert(QStringLiteral("fxMonitorRoutes"), fxRoutes);
+        document.insert(QStringLiteral("routing"), routing);
+    }
+    snapshot.data = model::StateValue<QByteArray>::known(
+        QJsonDocument(document).toJson(QJsonDocument::Compact),
+        model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
+    snapshot.shareable = simulatorBool(true);
+    snapshot.metadata.insert(QStringLiteral("origin"), QStringLiteral("simulator"));
+    snapshots.append(std::move(snapshot));
+    state_.replaceSnapshots(std::move(snapshots));
+    return true;
+}
+
+bool Flow8Device::loadAppSnapshot(const int libraryIndex)
+{
+    if (!isControlAvailable(Control::SnapshotRecall) || libraryIndex < 0) {
+        return false;
+    }
+    int current = 0;
+    for (int index = 0; index < state_.snapshots().size(); ++index) {
+        if (state_.snapshots().at(index).storage != model::SnapshotStorage::AppLibrary) {
+            continue;
+        }
+        if (current++ == libraryIndex) {
+            const auto& snapshot = state_.snapshots().at(index);
+            if (!snapshot.data.value.has_value()) {
+                return false;
+            }
+            QJsonParseError error;
+            const QJsonDocument parsed = QJsonDocument::fromJson(*snapshot.data.value, &error);
+            if (error.error != QJsonParseError::NoError || !parsed.isObject()) {
+                return false;
+            }
+            const QJsonObject root = parsed.object();
+            if (root.value(QStringLiteral("format")).toString()
+                != QStringLiteral("flow8-simulator-snapshot-v1")) {
+                return false;
+            }
+            const QString source = QString::fromLatin1(simulatorSource);
+            for (const auto value : root.value(QStringLiteral("channels")).toArray()) {
+                const auto entry = value.toObject();
+                const int channel = entry.value(QStringLiteral("index")).toInt(-1);
+                const auto scalar = [](const QJsonObject& object, const char* key) {
+                    return object.value(QString::fromLatin1(key)).toObject()
+                        .value(QStringLiteral("value"));
+                };
+                if (!entry.value(QStringLiteral("name")).toString().isEmpty()) {
+                    (void)state_.setChannelName(channel,
+                        entry.value(QStringLiteral("name")).toString(),
+                        model::EvidenceStatus::Unknown, source);
+                }
+                (void)state_.setChannelIcon(channel, static_cast<model::ChannelIcon>(
+                    entry.value(QStringLiteral("icon")).toInt()),
+                    model::EvidenceStatus::Unknown, source);
+                (void)state_.setChannelVisible(channel,
+                    entry.value(QStringLiteral("visible")).toBool(true),
+                    model::EvidenceStatus::Unknown, source);
+                if (!scalar(entry, "gain").isUndefined())
+                    (void)state_.setChannelGain(channel, scalar(entry, "gain").toDouble(),
+                                                model::EvidenceStatus::Unknown, source);
+                if (!scalar(entry, "fader").isUndefined())
+                    (void)state_.setChannelFader(channel, scalar(entry, "fader").toDouble(),
+                                                 model::EvidenceStatus::Unknown, source);
+                if (!scalar(entry, "muted").isUndefined())
+                    (void)state_.setChannelMuted(channel, scalar(entry, "muted").toBool(),
+                                                 model::EvidenceStatus::Unknown, source);
+                if (!scalar(entry, "soloed").isUndefined())
+                    (void)state_.setChannelSoloed(channel, scalar(entry, "soloed").toBool(),
+                                                  model::EvidenceStatus::Unknown, source);
+                if (!scalar(entry, "pan").isUndefined())
+                    (void)state_.setChannelPan(channel, scalar(entry, "pan").toDouble(),
+                                               model::EvidenceStatus::Unknown, source);
+                const auto lowCut = entry.value(QStringLiteral("lowCut")).toObject();
+                if (!lowCut.isEmpty()) {
+                    (void)state_.setChannelLowCut(
+                        channel, scalar(lowCut, "enabled").toBool(),
+                        scalar(lowCut, "frequencyHz").toDouble(20.0),
+                        model::EvidenceStatus::Unknown, source);
+                }
+                const auto sends = entry.value(QStringLiteral("sendsDb")).toArray();
+                for (int send = 0; send < sends.size() && send < 4; ++send) {
+                    (void)state_.setChannelSendLevelDb(channel, send, sends.at(send).toDouble(),
+                                                       model::EvidenceStatus::Unknown, source);
+                }
+                const auto modes = entry.value(QStringLiteral("monitorModes")).toArray();
+                for (int monitor = 0; monitor < modes.size() && monitor < 2; ++monitor) {
+                    (void)state_.setMonitorSendMode(channel, monitor,
+                        static_cast<model::MonitorSendMode>(modes.at(monitor).toInt()),
+                        model::EvidenceStatus::Unknown, source);
+                }
+            }
+            for (const auto value : root.value(QStringLiteral("buses")).toArray()) {
+                const auto entry = value.toObject();
+                const int bus = entry.value(QStringLiteral("index")).toInt(-1);
+                const auto scalar = [&entry](const char* key) {
+                    return entry.value(QString::fromLatin1(key)).toObject()
+                        .value(QStringLiteral("value"));
+                };
+                if (!scalar("fader").isUndefined()) {
+                    (void)state_.setBusFader(bus, scalar("fader").toDouble(),
+                                             model::EvidenceStatus::Unknown, source);
+                    if (bus == 0) {
+                        (void)state_.setMainFader(
+                            scalar("fader").toDouble(),
+                            model::EvidenceStatus::Unknown, source);
+                    }
+                }
+                if (!scalar("balance").isUndefined())
+                    (void)state_.setBusBalance(bus, scalar("balance").toDouble(),
+                                               model::EvidenceStatus::Unknown, source);
+                if (!scalar("limiterDb").isUndefined())
+                    (void)state_.setBusLimiterDb(bus, scalar("limiterDb").toDouble(),
+                                                 model::EvidenceStatus::Unknown, source);
+            }
+            for (const auto value : root.value(QStringLiteral("effects")).toArray()) {
+                const auto entry = value.toObject();
+                const int effect = entry.value(QStringLiteral("index")).toInt(-1);
+                (void)state_.setFxPreset(effect, entry.value(QStringLiteral("preset")).toInt(1),
+                                         model::EvidenceStatus::Unknown, source);
+                (void)state_.setFxMuted(effect, entry.value(QStringLiteral("muted")).toBool(),
+                                        model::EvidenceStatus::Unknown, source);
+                (void)state_.setFxParameter(effect, 0,
+                    entry.value(QStringLiteral("parameter1")).toDouble(),
+                    model::EvidenceStatus::Unknown, source);
+                (void)state_.setFxParameter(effect, 1,
+                    entry.value(QStringLiteral("parameter2")).toDouble(),
+                    model::EvidenceStatus::Unknown, source);
+            }
+            if (root.contains(QStringLiteral("tempoBpm"))) {
+                (void)state_.setGlobalTempo(
+                    root.value(QStringLiteral("tempoBpm")).toDouble(120.0),
+                    model::EvidenceStatus::Unknown, source);
+            }
+            const auto routing = root.value(QStringLiteral("routing")).toObject();
+            if (!routing.isEmpty()) {
+                (void)state_.setUsbMode(static_cast<model::UsbMode>(
+                    routing.value(QStringLiteral("usbMode")).toInt()),
+                    model::EvidenceStatus::Unknown, source);
+                (void)state_.setHeadphoneSource(static_cast<model::HeadphoneSource>(
+                    routing.value(QStringLiteral("headphoneSource")).toInt()),
+                    model::EvidenceStatus::Unknown, source);
+                (void)state_.setMonitorStereoLink(
+                    routing.value(QStringLiteral("monitorStereoLink")).toBool(),
+                    model::EvidenceStatus::Unknown, source);
+                const auto inputRoutes = routing.value(QStringLiteral("inputRoutes")).toArray();
+                for (int route = 0; route < inputRoutes.size(); ++route) {
+                    (void)state_.setRouteEnabled(
+                        route / 5, static_cast<model::RoutingDestination>(route % 5),
+                        inputRoutes.at(route).toBool(), model::EvidenceStatus::Unknown, source);
+                }
+                const auto usbRoutes = routing.value(QStringLiteral("usbRoutes")).toArray();
+                for (int route = 0; route < usbRoutes.size() && route < 9; ++route) {
+                    (void)state_.setUsbRouteEnabled(
+                        static_cast<model::UsbRouteDestination>(route),
+                        usbRoutes.at(route).toBool(), model::EvidenceStatus::Unknown, source);
+                }
+                const auto fxRoutes = routing.value(QStringLiteral("fxMonitorRoutes")).toArray();
+                for (int route = 0; route < fxRoutes.size() && route < 4; ++route) {
+                    (void)state_.setFxMonitorRouteEnabled(
+                        route / 2, route % 2, fxRoutes.at(route).toBool(),
+                        model::EvidenceStatus::Unknown, source);
+                }
+            }
+            return state_.setActiveSnapshotIndex(index);
+        }
+    }
+    return false;
+}
+
+bool Flow8Device::renameAppSnapshot(const int libraryIndex, const QString& name)
+{
+    if (!isControlAvailable(Control::SnapshotStore) || libraryIndex < 0) {
+        return false;
+    }
+    int current = 0;
+    for (int index = 0; index < state_.snapshots().size(); ++index) {
+        if (state_.snapshots().at(index).storage != model::SnapshotStorage::AppLibrary) {
+            continue;
+        }
+        if (current++ == libraryIndex) {
+            return state_.setSnapshotName(index, name, model::EvidenceStatus::Unknown,
+                                          QString::fromLatin1(simulatorSource));
+        }
+    }
+    return false;
+}
+
+bool Flow8Device::setRouteEnabled(const int inputIndex,
+                                  const model::RoutingDestination destination,
+                                  const bool enabled)
+{
+    if (!isControlAvailable(Control::Routing)) {
+        reject(Control::Routing, QCoreApplication::translate(
+            "Flow8Device", "Routing is unavailable."));
+        return false;
+    }
+    return state_.setRouteEnabled(inputIndex, destination, enabled,
+                                  model::EvidenceStatus::Unknown,
+                                  QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setUsbMode(const model::UsbMode mode)
+{
+    if (!isControlAvailable(Control::Routing)) {
+        reject(Control::Routing, QCoreApplication::translate(
+            "Flow8Device", "USB routing is unavailable."));
+        return false;
+    }
+    return state_.setUsbMode(mode, model::EvidenceStatus::Unknown,
+                             QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setUsbRouteEnabled(const model::UsbRouteDestination destination,
+                                     const bool enabled)
+{
+    if (!isControlAvailable(Control::Routing)) {
+        reject(Control::Routing, QCoreApplication::translate(
+            "Flow8Device", "USB routing is unavailable."));
+        return false;
+    }
+    return state_.setUsbRouteEnabled(destination, enabled,
+                                     model::EvidenceStatus::Unknown,
+                                     QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setFxMonitorRouteEnabled(const int effectIndex, const int monitorIndex,
+                                            const bool enabled)
+{
+    if (!isControlAvailable(Control::Routing)) {
+        reject(Control::Routing, QCoreApplication::translate(
+            "Flow8Device", "FX monitor routing is unavailable."));
+        return false;
+    }
+    return state_.setFxMonitorRouteEnabled(effectIndex, monitorIndex, enabled,
+                                            model::EvidenceStatus::Unknown,
+                                            QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setHeadphoneSource(const model::HeadphoneSource source)
+{
+    if (!isControlAvailable(Control::Routing)) {
+        reject(Control::Routing, QCoreApplication::translate(
+            "Flow8Device", "Headphone routing is unavailable."));
+        return false;
+    }
+    return state_.setHeadphoneSource(source, model::EvidenceStatus::Unknown,
+                                     QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setMonitorStereoLink(const bool linked)
+{
+    if (!isControlAvailable(Control::Routing)) {
+        reject(Control::Routing, QCoreApplication::translate(
+            "Flow8Device", "Monitor stereo link is unavailable."));
+        return false;
+    }
+    return state_.setMonitorStereoLink(linked, model::EvidenceStatus::Unknown,
+                                       QString::fromLatin1(simulatorSource));
+}
+
+void Flow8Device::setPreferences(model::AppPreferences preferences)
+{
+    state_.setPreferences(std::move(preferences));
+}
+
+bool Flow8Device::configureAssistedSetup(const model::InputId input,
+                                          const model::AssistedSourceType sourceType)
+{
+    if (!isControlAvailable(Control::AssistedSetup)) {
+        reject(Control::AssistedSetup, QCoreApplication::translate(
+            "Flow8Device", "Assisted Setup requires Simulator mode or verified hardware support."));
+        return false;
+    }
+    const int inputIndex = static_cast<int>(input);
+    const auto* channel = state_.channel(inputIndex);
+    if (channel == nullptr || input == model::InputId::UsbBluetooth) {
+        return false;
+    }
+    model::AssistedSetupState setup;
+    setup.step = model::AssistedSetupStep::Apply;
+    setup.input = input;
+    setup.sourceType = sourceType;
+    setup.source = QString::fromLatin1(simulatorSource);
+    switch (sourceType) {
+    case model::AssistedSourceType::DynamicMicrophone:
+        setup.recommendedPreset = QStringLiteral("dynamic_microphone");
+        setup.connectionInstruction = QStringLiteral("connect_xlr");
+        break;
+    case model::AssistedSourceType::CondenserMicrophone:
+        setup.recommendedPreset = QStringLiteral("condenser_microphone");
+        setup.connectionInstruction = QStringLiteral("connect_xlr_phantom");
+        break;
+    case model::AssistedSourceType::LineInstrument:
+        setup.recommendedPreset = QStringLiteral("line_instrument");
+        setup.connectionInstruction = QStringLiteral("connect_line");
+        break;
+    case model::AssistedSourceType::GuitarBass:
+        setup.recommendedPreset = QStringLiteral("guitar_bass");
+        setup.connectionInstruction = QStringLiteral("connect_guitar_bass");
+        break;
+    }
+    state_.setAssistedSetup(std::move(setup));
+    return true;
+}
+
+bool Flow8Device::applyAssistedSetup()
+{
+    if (!isControlAvailable(Control::AssistedSetup)
+        || !state_.assistedSetup().input.has_value()
+        || !state_.assistedSetup().sourceType.has_value()) {
+        return false;
+    }
+    auto setup = state_.assistedSetup();
+    const int index = static_cast<int>(*setup.input);
+    const auto icon = *setup.sourceType == model::AssistedSourceType::GuitarBass
+        ? model::ChannelIcon::GuitarBass
+        : (*setup.sourceType == model::AssistedSourceType::LineInstrument
+            ? model::ChannelIcon::Instrument : model::ChannelIcon::Microphone);
+    (void)state_.setChannelIcon(index, icon, model::EvidenceStatus::Unknown,
+                                QString::fromLatin1(simulatorSource));
+    if (state_.channel(index) != nullptr && state_.channel(index)->capabilities.lowCut) {
+        (void)state_.setChannelLowCut(index, true, 80.0,
+                                      model::EvidenceStatus::Unknown,
+                                      QString::fromLatin1(simulatorSource));
+    }
+    setup.step = model::AssistedSetupStep::Complete;
+    setup.applied = true;
+    state_.setAssistedSetup(std::move(setup));
+    return true;
+}
+
+bool Flow8Device::startEzGain(const QVector<model::InputId>& targets)
+{
+    if (!isControlAvailable(Control::EzGain) || targets.isEmpty()) {
+        reject(Control::EzGain, QCoreApplication::translate(
+            "Flow8Device", "EZ-GAIN requires Simulator mode or verified hardware support."));
+        return false;
+    }
+    model::EzGainSession session;
+    session.targets = targets;
+    session.running = true;
+    session.durationSeconds = 8;
+    session.source = QString::fromLatin1(simulatorSource);
+    state_.setEzGainSession(session);
+    QTimer::singleShot(250, this, [this, targets] {
+        if (!state_.ezGainSession().running) {
+            return;
+        }
+        auto completed = state_.ezGainSession();
+        completed.running = false;
+        completed.results.clear();
+        for (const auto input : targets) {
+            const int index = static_cast<int>(input);
+            if (state_.channel(index) == nullptr) {
+                continue;
+            }
+            model::EzGainChannelResult result;
+            result.input = input;
+            result.signalDetected = simulatorBool(true);
+            result.gain = simulatorDouble(std::clamp(0.42 + index * 0.03, 0.0, 1.0));
+            result.headroomDb = simulatorDouble(12.0);
+            completed.results.append(result);
+            if (state_.channel(index)->capabilities.gain) {
+                (void)state_.setChannelGain(index, *result.gain.value,
+                                             model::EvidenceStatus::Unknown,
+                                             QString::fromLatin1(simulatorSource));
+            }
+        }
+        state_.setEzGainSession(std::move(completed));
+    });
+    return true;
+}
+
+void Flow8Device::cancelEzGain()
+{
+    auto session = state_.ezGainSession();
+    session.running = false;
+    session.cancelled = true;
+    state_.setEzGainSession(std::move(session));
+}
+
 bool Flow8Device::setMainFader(const double normalized)
 {
     if (!isControlAvailable(Control::MainFader)) {
-        reject(Control::MainFader, QStringLiteral("main fader BLE address is UNKNOWN"));
+        reject(Control::MainFader, QCoreApplication::translate(
+            "Flow8Device", "Main fader BLE address is UNKNOWN."));
         return false;
     }
-    return state_.setMainFader(normalized, model::EvidenceStatus::Unknown,
-                               QString::fromLatin1(simulatorSource));
+    const bool changed = state_.setMainFader(normalized, model::EvidenceStatus::Unknown,
+                                              QString::fromLatin1(simulatorSource));
+    if (changed) {
+        (void)state_.setBusFader(0, normalized, model::EvidenceStatus::Unknown,
+                                 QString::fromLatin1(simulatorSource));
+    }
+    return changed;
 }
 
 bool Flow8Device::setMainMuted(const bool muted)
 {
     if (!isControlAvailable(Control::MainMute)) {
-        reject(Control::MainMute, QStringLiteral("main mute mapping is UNKNOWN"));
+        reject(Control::MainMute, QCoreApplication::translate(
+            "Flow8Device", "Main mute mapping is UNKNOWN."));
         return false;
     }
     return state_.setMainMuted(muted, model::EvidenceStatus::Unknown,
@@ -181,6 +978,7 @@ void Flow8Device::handleTransportState(const Flow8Transport::State state)
 {
     switch (state) {
     case Flow8Transport::State::Disconnected:
+        simulatorMeterTimer_.stop();
         state_.setConnectionState(ConnectionState::Disconnected);
         break;
     case Flow8Transport::State::Scanning:
@@ -201,6 +999,7 @@ void Flow8Device::handleTransportState(const Flow8Transport::State state)
         }
         break;
     case Flow8Transport::State::Error:
+        simulatorMeterTimer_.stop();
         state_.setConnectionState(ConnectionState::Error);
         break;
     }
@@ -221,39 +1020,214 @@ void Flow8Device::handleBytesReceived(const QByteArray& payload)
         return;
     }
     const int index = static_cast<int>(change->channel) - 1;
+    const bool synthetic = transport_ && transport_->isSimulator();
     (void)state_.setChannelFader(index, protocol::decodeUnitInterval(change->value),
-                                 model::EvidenceStatus::Inferred,
-                                 QStringLiteral("reference 0x06/0x0f mapping; NEED_HARDWARE"));
+                                 synthetic ? model::EvidenceStatus::Unknown
+                                           : model::EvidenceStatus::Inferred,
+                                 synthetic
+                                     ? QString::fromLatin1(simulatorSource)
+                                     : QStringLiteral("reference 0x06/0x0f mapping; NEED_HARDWARE"));
 }
 
 void Flow8Device::initializeSimulatorProfile()
 {
-    const QStringList names {
-        QStringLiteral("Channel 1"), QStringLiteral("Channel 2"),
-        QStringLiteral("Channel 3"), QStringLiteral("Channel 4"),
-        QStringLiteral("Channel 5/6"), QStringLiteral("Channel 7/8"),
-        QStringLiteral("USB/BT"),
-    };
-
-    QVector<model::ChannelState> channels;
-    channels.reserve(names.size());
-    for (int index = 0; index < names.size(); ++index) {
-        model::ChannelState channel;
-        channel.index = index;
-        channel.name = model::StateValue<QString>::known(
-            names.at(index), model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
-        channel.gain = simulatorDouble(0.5);
+    auto channels = model::createOfficialInputProfile();
+    for (int index = 0; index < channels.size(); ++index) {
+        auto& channel = channels[index];
+        // Default input labels are rendered from InputId by the UI so they can
+        // follow the selected language. This field is reserved for a device or
+        // user supplied channel name and therefore remains unset here.
+        if (channel.capabilities.gain) {
+            channel.gain = simulatorDouble(0.5);
+        }
         channel.fader = simulatorDouble(0.65);
+        channel.icon = model::StateValue<model::ChannelIcon>::known(
+            channel.inputType == model::InputType::UsbBluetooth
+                ? model::ChannelIcon::Playback : model::ChannelIcon::Microphone,
+            model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
+        channel.visible = simulatorBool(true);
         channel.muted = simulatorBool(false);
         channel.soloed = simulatorBool(false);
         channel.pan = simulatorDouble(0.0);
-        channels.append(std::move(channel));
+        channel.meterLevel = simulatorDouble(0.0);
+        channel.meterPeak = simulatorDouble(0.0);
+        channel.clipping = simulatorBool(false);
+        for (std::size_t band = 0; band < channel.eq.gainDb.size(); ++band) {
+            channel.eq.gainDb[band] = simulatorDouble(0.0);
+            channel.eq.frequencyHz[band] = simulatorDouble(
+                model::defaultChannelEqFrequenciesHz[band]);
+            channel.eq.q[band] = simulatorDouble(1.0);
+        }
+        if (channel.capabilities.compressor) {
+            channel.compressor.amount = simulatorDouble(0.0);
+            channel.compressor.thresholdDb = simulatorDouble(-18.0);
+            channel.compressor.ratio = simulatorDouble(3.0);
+            channel.compressor.attackMs = simulatorDouble(10.0);
+            channel.compressor.releaseMs = simulatorDouble(120.0);
+            channel.compressor.makeupGainDb = simulatorDouble(0.0);
+            channel.compressor.gainReductionDb = simulatorDouble(0.0);
+        }
+        for (int send = 0; send < static_cast<int>(channel.sendLevelDb.size()); ++send) {
+            channel.sendLevelDb[static_cast<std::size_t>(send)] = simulatorDouble(-20.0);
+            if (send < 2) {
+                channel.monitorSends[static_cast<std::size_t>(send)].levelDb =
+                    simulatorDouble(-20.0);
+                channel.monitorSends[static_cast<std::size_t>(send)].mode =
+                    model::StateValue<model::MonitorSendMode>::known(
+                        model::MonitorSendMode::PostFader,
+                        model::EvidenceStatus::Unknown,
+                        QString::fromLatin1(simulatorSource));
+            } else {
+                channel.fxSendLevelDb[static_cast<std::size_t>(send - 2)] =
+                    simulatorDouble(-20.0);
+            }
+        }
+        if (channel.lowCut.has_value()) {
+            channel.lowCut->enabled = simulatorBool(false);
+            channel.lowCut->frequencyHz = simulatorDouble(20.0);
+        }
+        if (channel.lowCutHz.has_value()) {
+            *channel.lowCutHz = model::StateValue<quint16>::known(
+                20, model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
+        }
+        if (channel.phantom48V.has_value()) {
+            *channel.phantom48V = simulatorBool(false);
+        }
     }
     state_.replaceChannels(std::move(channels));
+
+    auto buses = model::createOfficialBusProfile();
+    for (auto& bus : buses) {
+        bus.fader = simulatorDouble(bus.busId == model::BusId::Main ? 0.75 : 0.65);
+        if (bus.balance.has_value()) {
+            *bus.balance = simulatorDouble(0.0);
+        }
+        if (bus.limiterDb.has_value()) {
+            *bus.limiterDb = simulatorDouble(-3.0);
+        }
+        if (bus.eq.has_value()) {
+            for (std::size_t band = 0; band < bus.eq->gainDb.size(); ++band) {
+                bus.eq->gainDb[band] = simulatorDouble(0.0);
+                bus.eq->frequencyHz[band] = simulatorDouble(model::busEqFrequenciesHz[band]);
+            }
+        }
+        if (bus.outputDelay.has_value()) {
+            bus.outputDelay->enabled = simulatorBool(false);
+            bus.outputDelay->milliseconds = simulatorDouble(0.0);
+        }
+    }
+    state_.replaceBuses(std::move(buses));
+
+    QVector<model::MonitorState> monitors;
+    monitors.reserve(2);
+    for (int index = 0; index < 2; ++index) {
+        model::MonitorState monitor;
+        monitor.index = index;
+        monitor.fader = simulatorDouble(0.65);
+        monitor.stereoLinked = simulatorBool(false);
+        monitor.sendMode = model::StateValue<model::MonitorSendMode>::known(
+            model::MonitorSendMode::PostFader, model::EvidenceStatus::Unknown,
+            QString::fromLatin1(simulatorSource));
+        monitor.eq.emplace();
+        monitor.limiterDb.emplace(simulatorDouble(-3.0));
+        monitor.outputDelay.emplace();
+        monitor.outputDelay->enabled = simulatorBool(false);
+        monitor.outputDelay->milliseconds = simulatorDouble(0.0);
+        monitors.append(std::move(monitor));
+    }
+    state_.replaceMonitors(std::move(monitors));
+
+    QVector<model::FxState> effects;
+    effects.reserve(model::fxEngineCount);
+    for (int index = 0; index < model::fxEngineCount; ++index) {
+        model::FxState effect;
+        effect.index = index;
+        effect.preset = model::StateValue<int>::known(
+            1, model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
+        effect.presetName = model::StateValue<QString>::known(
+            QStringLiteral("Synthetic Preset 1"), model::EvidenceStatus::Unknown,
+            QString::fromLatin1(simulatorSource));
+        effect.muted = simulatorBool(false);
+        effect.tapTempoBpm = simulatorDouble(120.0);
+        for (int parameter = 0; parameter < 2; ++parameter) {
+            effect.parameters[static_cast<std::size_t>(parameter)].index = parameter;
+            effect.parameters[static_cast<std::size_t>(parameter)].name =
+                model::StateValue<QString>::known(
+                    QStringLiteral("Parameter %1 (UNKNOWN)").arg(parameter + 1),
+                    model::EvidenceStatus::Unknown, QString::fromLatin1(simulatorSource));
+            effect.parameters[static_cast<std::size_t>(parameter)].value = simulatorDouble(0.5);
+        }
+        effect.parameter1 = simulatorDouble(0.5);
+        effect.parameter2 = simulatorDouble(0.5);
+        effects.append(std::move(effect));
+    }
+    state_.replaceEffects(std::move(effects));
+    (void)state_.setGlobalTempo(120.0, model::EvidenceStatus::Unknown,
+                                QString::fromLatin1(simulatorSource));
+
+    auto snapshots = model::createHardwareSnapshotProfile();
+    for (auto& snapshot : snapshots) {
+        // Empty-slot text is UI terminology, not simulated device state.
+        snapshot.timestamp = model::StateValue<QDateTime>::known(
+            QDateTime::currentDateTimeUtc(), model::EvidenceStatus::Unknown,
+            QString::fromLatin1(simulatorSource));
+        snapshot.scope = model::StateValue<model::SnapshotScope>::known(
+            model::SnapshotScope::Full, model::EvidenceStatus::Unknown,
+            QString::fromLatin1(simulatorSource));
+    }
+    state_.replaceSnapshots(std::move(snapshots));
+
+    auto routing = model::createRoutingProfile();
+    for (auto& route : routing.routes) {
+        route.enabled = simulatorBool(route.destination == model::RoutingDestination::Main);
+    }
+    routing.usbMode = model::StateValue<model::UsbMode>::known(
+        model::UsbMode::Streaming, model::EvidenceStatus::Unknown,
+        QString::fromLatin1(simulatorSource));
+    for (auto& route : routing.usbRoutes) {
+        route.enabled = simulatorBool(false);
+    }
+    for (auto& route : routing.fxMonitorRoutes) {
+        route.enabled = simulatorBool(false);
+    }
+    routing.headphoneSource = model::StateValue<model::HeadphoneSource>::known(
+        model::HeadphoneSource::Main, model::EvidenceStatus::Unknown,
+        QString::fromLatin1(simulatorSource));
+    routing.monitorStereoLink = simulatorBool(false);
+    state_.replaceRouting(std::move(routing));
+
+    model::AssistedSetupState setup;
+    setup.source = QString::fromLatin1(simulatorSource);
+    state_.setAssistedSetup(std::move(setup));
+    model::EzGainSession ezGain;
+    ezGain.source = QString::fromLatin1(simulatorSource);
+    state_.setEzGainSession(std::move(ezGain));
+
     (void)state_.setMainFader(0.75, model::EvidenceStatus::Unknown,
                               QString::fromLatin1(simulatorSource));
     (void)state_.setMainMuted(false, model::EvidenceStatus::Unknown,
                               QString::fromLatin1(simulatorSource));
+    simulatorMeterStep_ = 0;
+    simulatorMeterTimer_.start();
+}
+
+void Flow8Device::updateSimulatorMeters()
+{
+    if (!simulatorReady()) {
+        simulatorMeterTimer_.stop();
+        return;
+    }
+    const double time = static_cast<double>(simulatorMeterStep_++) * 0.09;
+    for (int index = 0; index < state_.channels().size(); ++index) {
+        const double envelope = 0.16 + 0.62
+            * std::abs(std::sin(time * (0.65 + index * 0.035) + index * 0.71));
+        const double transient = std::max(0.0, std::sin(time * 2.7 + index)) * 0.12;
+        const double level = std::min(1.0, envelope + transient);
+        const double peak = std::min(1.0, level + 0.08);
+        (void)state_.setChannelMeter(index, level, peak, level > 0.985,
+                                     model::EvidenceStatus::Unknown,
+                                     QString::fromLatin1(simulatorSource));
+    }
 }
 
 bool Flow8Device::simulatorReady() const noexcept

@@ -4,6 +4,8 @@
 #include "core/flow8_transport.h"
 
 #include <QObject>
+#include <QElapsedTimer>
+#include <QTimer>
 
 #include <memory>
 
@@ -19,6 +21,26 @@ public:
         ChannelMute,
         ChannelSolo,
         ChannelPan,
+        ChannelIdentity,
+        ChannelVisibility,
+        ChannelLowCut,
+        MonitorSendMode,
+        ChannelEq,
+        ChannelCompressor,
+        ChannelSend,
+        BusFader,
+        BusBalance,
+        BusLimiter,
+        BusEq,
+        FxPreset,
+        FxParameter,
+        FxMute,
+        FxTapTempo,
+        SnapshotRecall,
+        SnapshotStore,
+        Routing,
+        AssistedSetup,
+        EzGain,
         MainFader,
         MainMute,
     };
@@ -41,6 +63,40 @@ public:
     [[nodiscard]] bool setChannelMuted(int index, bool muted);
     [[nodiscard]] bool setChannelSoloed(int index, bool soloed);
     [[nodiscard]] bool setChannelPan(int index, double pan);
+    [[nodiscard]] bool setChannelName(int index, const QString& name);
+    [[nodiscard]] bool setChannelIcon(int index, model::ChannelIcon icon);
+    [[nodiscard]] bool setChannelVisible(int index, bool visible);
+    [[nodiscard]] bool setChannelLowCut(int index, bool enabled, double frequencyHz);
+    [[nodiscard]] bool setMonitorSendMode(int index, int monitor,
+                                          model::MonitorSendMode mode);
+    [[nodiscard]] bool setChannelEqGain(int index, int band, double gainDb);
+    [[nodiscard]] bool setChannelCompressorAmount(int index, double amount);
+    [[nodiscard]] bool setChannelSendLevel(int index, int send, double normalized);
+    [[nodiscard]] bool setBusFader(int index, double normalized);
+    [[nodiscard]] bool setBusBalance(int index, double balance);
+    [[nodiscard]] bool setBusLimiterDb(int index, double thresholdDb);
+    [[nodiscard]] bool setBusEqGain(int index, int band, double gainDb);
+    [[nodiscard]] bool setFxPreset(int index, int preset);
+    [[nodiscard]] bool setFxParameter(int index, int parameter, double normalized);
+    [[nodiscard]] bool setFxMuted(int index, bool muted);
+    [[nodiscard]] bool tapTempo();
+    [[nodiscard]] bool recallSnapshot(int index);
+    [[nodiscard]] bool storeAppSnapshot(const QString& name, model::SnapshotScope scope);
+    [[nodiscard]] bool loadAppSnapshot(int libraryIndex);
+    [[nodiscard]] bool renameAppSnapshot(int libraryIndex, const QString& name);
+    [[nodiscard]] bool setRouteEnabled(int inputIndex,
+                                       model::RoutingDestination destination, bool enabled);
+    [[nodiscard]] bool setUsbMode(model::UsbMode mode);
+    [[nodiscard]] bool setUsbRouteEnabled(model::UsbRouteDestination destination, bool enabled);
+    [[nodiscard]] bool setFxMonitorRouteEnabled(int effectIndex, int monitorIndex, bool enabled);
+    [[nodiscard]] bool setHeadphoneSource(model::HeadphoneSource source);
+    [[nodiscard]] bool setMonitorStereoLink(bool linked);
+    void setPreferences(model::AppPreferences preferences);
+    [[nodiscard]] bool configureAssistedSetup(model::InputId input,
+                                               model::AssistedSourceType sourceType);
+    [[nodiscard]] bool applyAssistedSetup();
+    [[nodiscard]] bool startEzGain(const QVector<model::InputId>& targets);
+    void cancelEzGain();
     [[nodiscard]] bool setMainFader(double normalized);
     [[nodiscard]] bool setMainMuted(bool muted);
 
@@ -53,11 +109,15 @@ private:
     void handleTransportState(Flow8Transport::State state);
     void handleBytesReceived(const QByteArray& payload);
     void initializeSimulatorProfile();
+    void updateSimulatorMeters();
     [[nodiscard]] bool simulatorReady() const noexcept;
     void reject(Control control, const QString& reason);
 
     Flow8State state_;
     std::unique_ptr<Flow8Transport> transport_;
+    QTimer simulatorMeterTimer_;
+    QElapsedTimer tapTimer_;
+    int simulatorMeterStep_ {};
 };
 
 } // namespace flow8

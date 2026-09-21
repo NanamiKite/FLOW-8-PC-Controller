@@ -3,6 +3,9 @@
 #include "model/bus.h"
 #include "model/channel.h"
 #include "model/fx.h"
+#include "model/preferences.h"
+#include "model/routing.h"
+#include "model/session.h"
 #include "model/snapshot.h"
 
 #include <QObject>
@@ -55,9 +58,40 @@ public:
                                         model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setChannelPan(int index, double pan,
                                      model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelName(int index, const QString& name,
+                                      model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelIcon(int index, model::ChannelIcon icon,
+                                      model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelVisible(int index, bool visible,
+                                         model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelLowCut(int index, bool enabled, double frequencyHz,
+                                        model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setMonitorSendMode(int index, int monitor,
+                                          model::MonitorSendMode mode,
+                                          model::EvidenceStatus evidence,
+                                          const QString& source);
+    [[nodiscard]] bool setChannelEqGain(int index, int band, double gainDb,
+                                        model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelCompressorAmount(int index, double amount,
+                                                   model::EvidenceStatus evidence,
+                                                   const QString& source);
+    [[nodiscard]] bool setChannelSendLevelDb(int index, int send, double levelDb,
+                                             model::EvidenceStatus evidence,
+                                             const QString& source);
+    [[nodiscard]] bool setChannelMeter(int index, double level, double peak, bool clipping,
+                                       model::EvidenceStatus evidence, const QString& source);
 
     [[nodiscard]] const QVector<model::BusState>& buses() const noexcept;
+    [[nodiscard]] const model::BusState* bus(int index) const noexcept;
     void replaceBuses(QVector<model::BusState> buses);
+    [[nodiscard]] bool setBusFader(int index, double normalized,
+                                   model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setBusBalance(int index, double balance,
+                                     model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setBusLimiterDb(int index, double thresholdDb,
+                                       model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setBusEqGain(int index, int band, double gainDb,
+                                    model::EvidenceStatus evidence, const QString& source);
 
     [[nodiscard]] const model::MainState& main() const noexcept;
     [[nodiscard]] bool setMainFader(double normalized, model::EvidenceStatus evidence,
@@ -70,9 +104,52 @@ public:
 
     [[nodiscard]] const QVector<model::FxState>& effects() const noexcept;
     void replaceEffects(QVector<model::FxState> effects);
+    [[nodiscard]] bool setFxPreset(int index, int preset, model::EvidenceStatus evidence,
+                                   const QString& source);
+    [[nodiscard]] bool setFxParameter(int index, int parameter, double value,
+                                      model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setFxMuted(int index, bool muted, model::EvidenceStatus evidence,
+                                  const QString& source);
+    [[nodiscard]] bool setFxTapTempo(int index, double bpm, model::EvidenceStatus evidence,
+                                     const QString& source);
+    [[nodiscard]] const model::GlobalTempoState& globalTempo() const noexcept;
+    [[nodiscard]] bool setGlobalTempo(double bpm, model::EvidenceStatus evidence,
+                                      const QString& source);
 
     [[nodiscard]] const QVector<model::SnapshotState>& snapshots() const noexcept;
     void replaceSnapshots(QVector<model::SnapshotState> snapshots);
+    [[nodiscard]] int activeSnapshotIndex() const noexcept;
+    [[nodiscard]] bool setActiveSnapshotIndex(int index);
+    [[nodiscard]] bool setSnapshotName(int index, const QString& name,
+                                       model::EvidenceStatus evidence,
+                                       const QString& source);
+
+    [[nodiscard]] const model::RoutingState& routing() const noexcept;
+    void replaceRouting(model::RoutingState routing);
+    [[nodiscard]] bool setRouteEnabled(int inputIndex, model::RoutingDestination destination,
+                                       bool enabled, model::EvidenceStatus evidence,
+                                       const QString& source);
+    [[nodiscard]] bool setUsbMode(model::UsbMode mode, model::EvidenceStatus evidence,
+                                  const QString& source);
+    [[nodiscard]] bool setUsbRouteEnabled(model::UsbRouteDestination destination, bool enabled,
+                                           model::EvidenceStatus evidence,
+                                           const QString& source);
+    [[nodiscard]] bool setFxMonitorRouteEnabled(int effectIndex, int monitorIndex, bool enabled,
+                                                 model::EvidenceStatus evidence,
+                                                 const QString& source);
+    [[nodiscard]] bool setHeadphoneSource(model::HeadphoneSource sourceValue,
+                                           model::EvidenceStatus evidence,
+                                           const QString& source);
+    [[nodiscard]] bool setMonitorStereoLink(bool linked, model::EvidenceStatus evidence,
+                                             const QString& source);
+
+    [[nodiscard]] const model::AppPreferences& preferences() const noexcept;
+    void setPreferences(model::AppPreferences preferences);
+
+    [[nodiscard]] const model::AssistedSetupState& assistedSetup() const noexcept;
+    void setAssistedSetup(model::AssistedSetupState setup);
+    [[nodiscard]] const model::EzGainSession& ezGainSession() const noexcept;
+    void setEzGainSession(model::EzGainSession session);
 
     // Applies only a complete dump matching the reference layout. Extracted
     // values retain their evidence/source and cannot downgrade stronger state.
@@ -82,10 +159,20 @@ signals:
     void connectionStateChanged(flow8::ConnectionState state);
     void stateReset();
     void channelChanged(int index);
+    void busChanged(int index);
+    void effectChanged(int index);
+    void snapshotChanged(int index);
+    void routingChanged();
+    void preferencesChanged();
+    void assistedSetupChanged();
+    void ezGainSessionChanged();
+    void globalTempoChanged();
     void mainChanged();
 
 private:
     [[nodiscard]] model::ChannelState* mutableChannel(int index) noexcept;
+    [[nodiscard]] model::BusState* mutableBus(int index) noexcept;
+    [[nodiscard]] model::FxState* mutableEffect(int index) noexcept;
     void ensureReferenceStateShape();
     [[nodiscard]] static bool isUnitInterval(double value) noexcept;
 
@@ -95,7 +182,13 @@ private:
     model::MainState main_;
     QVector<model::MonitorState> monitors_;
     QVector<model::FxState> effects_;
+    model::GlobalTempoState globalTempo_;
     QVector<model::SnapshotState> snapshots_;
+    int activeSnapshotIndex_ {-1};
+    model::RoutingState routing_;
+    model::AppPreferences preferences_;
+    model::AssistedSetupState assistedSetup_;
+    model::EzGainSession ezGainSession_;
 };
 
 } // namespace flow8

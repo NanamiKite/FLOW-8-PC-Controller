@@ -1,22 +1,49 @@
 #pragma once
 
+#include "model/capability.h"
+#include "model/channel.h"
 #include "model/eq.h"
 #include "model/state_value.h"
 
 #include <QString>
 
+#include <optional>
+
 namespace flow8::model {
+
+enum class BusId {
+    Main,
+    Monitor1,
+    Monitor2,
+    Fx1,
+    Fx2,
+};
+
+struct BusCapabilities {
+    bool balance {};
+    bool equalizer {};
+    bool limiter {};
+    bool fxEngine {};
+    bool outputDelay {};
+    CapabilityEvidence evidence;
+};
+
+struct OutputDelayState {
+    StateValue<bool> enabled;
+    StateValue<double> milliseconds;
+};
 
 struct BusState {
     int index {};
+    BusId busId {BusId::Main};
+    BusCapabilities capabilities;
     StateValue<QString> name;
     StateValue<double> fader;
-    StateValue<double> pan;
-    StateValue<double> limiter;
     StateValue<double> levelDb;
-    StateValue<double> balance;
-    StateValue<double> limiterDb;
-    GraphicEqState eq;
+    std::optional<StateValue<double>> balance;
+    std::optional<StateValue<double>> limiterDb;
+    std::optional<BusEqState> eq;
+    std::optional<OutputDelayState> outputDelay;
 };
 
 struct MainState {
@@ -28,6 +55,11 @@ struct MainState {
 struct MonitorState {
     int index {};
     StateValue<double> fader;
+    StateValue<bool> stereoLinked;
+    StateValue<MonitorSendMode> sendMode;
+    std::optional<BusEqState> eq;
+    std::optional<StateValue<double>> limiterDb;
+    std::optional<OutputDelayState> outputDelay;
 };
 
 } // namespace flow8::model

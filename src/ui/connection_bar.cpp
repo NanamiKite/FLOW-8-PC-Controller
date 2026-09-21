@@ -1,5 +1,7 @@
 #include "ui/connection_bar.h"
 
+#include "ui/ui_text.h"
+
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -11,16 +13,16 @@ namespace {
 QString stateName(const ConnectionState state)
 {
     switch (state) {
-    case ConnectionState::Disconnected: return QStringLiteral("Disconnected");
-    case ConnectionState::Scanning: return QStringLiteral("Scanning");
-    case ConnectionState::Connecting: return QStringLiteral("Connecting");
-    case ConnectionState::Authenticating: return QStringLiteral("Authenticating");
-    case ConnectionState::Synchronizing: return QStringLiteral("Synchronizing");
-    case ConnectionState::Connected: return QStringLiteral("Connected");
-    case ConnectionState::Ready: return QStringLiteral("Ready (Simulator)");
-    case ConnectionState::Error: return QStringLiteral("Error");
+    case ConnectionState::Disconnected: return uiText("Disconnected");
+    case ConnectionState::Scanning: return uiText("Scanning");
+    case ConnectionState::Connecting: return uiText("Connecting");
+    case ConnectionState::Authenticating: return uiText("Authenticating");
+    case ConnectionState::Synchronizing: return uiText("Synchronizing");
+    case ConnectionState::Connected: return uiText("Connected");
+    case ConnectionState::Ready: return uiText("Ready (Simulator)");
+    case ConnectionState::Error: return uiText("Error");
     }
-    return QStringLiteral("Unknown");
+    return uiText("Unknown");
 }
 
 } // namespace
@@ -28,24 +30,32 @@ QString stateName(const ConnectionState state)
 ConnectionBar::ConnectionBar(QWidget* parent)
     : QWidget(parent)
     , transportSelector_(new QComboBox(this))
-    , connectButton_(new QPushButton(QStringLiteral("Connect"), this))
-    , statusLabel_(new QLabel(QStringLiteral("Disconnected"), this))
+    , connectButton_(new QPushButton(this))
+    , settingsButton_(new QPushButton(this))
+    , statusLabel_(new QLabel(this))
+    , subtitle_(new QLabel(this))
 {
     setObjectName(QStringLiteral("connectionBar"));
     transportSelector_->setObjectName(QStringLiteral("transportSelector"));
-    transportSelector_->addItem(QStringLiteral("Simulator (SYNTHETIC)"));
-    transportSelector_->setToolTip(QStringLiteral(
-        "The simulator is deterministic test data and is not a FLOW 8 hardware claim."));
     connectButton_->setObjectName(QStringLiteral("connectButton"));
+    settingsButton_->setObjectName(QStringLiteral("settingsButton"));
     statusLabel_->setObjectName(QStringLiteral("connectionStatus"));
 
+    auto* brand = new QLabel(QStringLiteral("FLOW 8"), this);
+    brand->setProperty("class", QStringLiteral("brandTitle"));
+    subtitle_->setProperty("class", QStringLiteral("brandSubtitle"));
+
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 6, 8, 6);
-    layout->addWidget(new QLabel(QStringLiteral("Connection:"), this));
+    layout->setContentsMargins(18, 10, 18, 10);
+    layout->setSpacing(10);
+    layout->addWidget(brand);
+    layout->addWidget(subtitle_);
+    layout->addStretch();
     layout->addWidget(transportSelector_);
     layout->addWidget(connectButton_);
-    layout->addStretch();
     layout->addWidget(statusLabel_);
+    layout->addSpacing(8);
+    layout->addWidget(settingsButton_);
 
     connect(connectButton_, &QPushButton::clicked, this, [this] {
         if (state_ == ConnectionState::Disconnected || state_ == ConnectionState::Error) {
@@ -54,6 +64,8 @@ ConnectionBar::ConnectionBar(QWidget* parent)
             emit disconnectRequested();
         }
     });
+    connect(settingsButton_, &QPushButton::clicked, this, &ConnectionBar::settingsRequested);
+    retranslateUi();
 }
 
 void ConnectionBar::setConnectionState(const ConnectionState state)
@@ -61,11 +73,24 @@ void ConnectionBar::setConnectionState(const ConnectionState state)
     state_ = state;
     statusLabel_->setText(stateName(state));
     const bool disconnected = state == ConnectionState::Disconnected || state == ConnectionState::Error;
-    connectButton_->setText(disconnected ? QStringLiteral("Connect") : QStringLiteral("Disconnect"));
+    connectButton_->setText(disconnected ? uiText("Connect") : uiText("Disconnect"));
     const bool transition = state == ConnectionState::Connecting || state == ConnectionState::Scanning
         || state == ConnectionState::Authenticating || state == ConnectionState::Synchronizing;
     transportSelector_->setEnabled(disconnected);
     connectButton_->setEnabled(!transition);
+}
+
+void ConnectionBar::retranslateUi()
+{
+    subtitle_->setText(uiText("PC Controller"));
+    const int selection = transportSelector_->currentIndex();
+    transportSelector_->clear();
+    transportSelector_->addItem(uiText("Simulator (SYNTHETIC)"));
+    transportSelector_->setCurrentIndex(selection < 0 ? 0 : selection);
+    transportSelector_->setToolTip(uiText(
+        "The simulator is deterministic test data and is not a FLOW 8 hardware claim."));
+    settingsButton_->setText(uiText("Preferences"));
+    setConnectionState(state_);
 }
 
 } // namespace flow8::ui

@@ -4,7 +4,15 @@
 
 #include <QString>
 
+#include <array>
+
 namespace flow8::model {
+
+struct FxParameterState {
+    int index {};
+    StateValue<QString> name;
+    StateValue<double> value;
+};
 
 struct FxState {
     int index {};
@@ -15,6 +23,14 @@ struct FxState {
     StateValue<int> presetReferenceIndex;
     StateValue<double> parameter1Percent;
     StateValue<double> parameter2Percent;
+    StateValue<QString> effectType;
+    StateValue<bool> muted;
+    StateValue<double> tapTempoBpm;
+    std::array<FxParameterState, 2> parameters;
+};
+
+struct GlobalTempoState {
+    StateValue<double> bpm;
 };
 
 } // namespace flow8::model

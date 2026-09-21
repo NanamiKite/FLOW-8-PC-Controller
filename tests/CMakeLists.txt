@@ -16,6 +16,7 @@ function(flow8_add_test test_name source_file)
         flow8::core
         flow8::protocol
         flow8::simulator
+        flow8::midi_model
         flow8_test_support
         Qt6::Test
     )
@@ -30,6 +31,8 @@ flow8_add_test(flow8_protocol_tests unit/protocol/protocol_test.cpp)
 flow8_add_test(flow8_sysex_tests unit/protocol/sysex_test.cpp)
 flow8_add_test(flow8_fake_transport_tests unit/simulator/fake_transport_test.cpp)
 flow8_add_test(flow8_capture_replay_tests integration/replay/capture_replay_test.cpp)
+flow8_add_test(flow8_model_tests unit/model/mixer_model_test.cpp)
+flow8_add_test(flow8_midi_map_tests unit/midi/midi_parameter_map_test.cpp)
 
 if(TARGET flow8::ble)
     add_executable(flow8_ble_services_tests unit/ble/ble_services_test.cpp)
@@ -49,5 +52,22 @@ target_link_libraries(flow8_gui_smoke_tests PRIVATE
 )
 flow8_enable_warnings(flow8_gui_smoke_tests)
 flow8_configure_platform(flow8_gui_smoke_tests)
-add_test(NAME flow8_gui_smoke_tests COMMAND flow8_gui_smoke_tests)
-set_tests_properties(flow8_gui_smoke_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_test(NAME flow8_gui_smoke_en_US
+    COMMAND flow8_gui_smoke_tests simulatorConnectsAndBuildsMixer:en-US)
+add_test(NAME flow8_gui_smoke_zh_CN
+    COMMAND flow8_gui_smoke_tests simulatorConnectsAndBuildsMixer:zh-CN)
+set_tests_properties(flow8_gui_smoke_en_US flow8_gui_smoke_zh_CN PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+add_executable(flow8_i18n_tests unit/ui/i18n_test.cpp)
+target_link_libraries(flow8_i18n_tests PRIVATE
+    flow8::core
+    flow8::simulator
+    flow8::ui
+    Qt6::Test
+    Qt6::Widgets
+)
+flow8_enable_warnings(flow8_i18n_tests)
+flow8_configure_platform(flow8_i18n_tests)
+add_test(NAME flow8_i18n_tests COMMAND flow8_i18n_tests)
+set_tests_properties(flow8_i18n_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

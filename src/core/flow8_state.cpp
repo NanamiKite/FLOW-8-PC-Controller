@@ -1,5 +1,6 @@
 #include "core/flow8_state.h"
 
+#include "model/flow8_capabilities.h"
 #include "protocol/sysex.h"
 
 #include <cmath>
@@ -143,15 +144,226 @@ bool Flow8State::setChannelPan(const int index, const double pan,
     return true;
 }
 
+bool Flow8State::setChannelName(const int index, const QString& name,
+                                const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableChannel(index);
+    const QString trimmed = name.trimmed();
+    if (target == nullptr || trimmed.isEmpty() || trimmed.size() > 32
+        || !model::mergeObservedValue(target->name, trimmed, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelIcon(const int index, const model::ChannelIcon icon,
+                                const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr
+        || !model::mergeObservedValue(target->icon, icon, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelVisible(const int index, const bool visible,
+                                   const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr
+        || !model::mergeObservedValue(target->visible, visible, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelLowCut(const int index, const bool enabled,
+                                  const double frequencyHz,
+                                  const model::EvidenceStatus evidence,
+                                  const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || !target->capabilities.lowCut || !target->lowCut.has_value()
+        || !inRange(frequencyHz, 20.0, 600.0)) {
+        return false;
+    }
+    const bool enabledApplied = model::mergeObservedValue(
+        target->lowCut->enabled, enabled, evidence, source);
+    const bool frequencyApplied = model::mergeObservedValue(
+        target->lowCut->frequencyHz, frequencyHz, evidence, source);
+    if (target->lowCutHz.has_value() && std::trunc(frequencyHz) == frequencyHz) {
+        (void)model::mergeObservedValue(*target->lowCutHz,
+                                       static_cast<quint16>(frequencyHz), evidence, source);
+    }
+    if (!enabledApplied && !frequencyApplied) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setMonitorSendMode(const int index, const int monitor,
+                                    const model::MonitorSendMode mode,
+                                    const model::EvidenceStatus evidence,
+                                    const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || monitor < 0
+        || monitor >= static_cast<int>(target->monitorSends.size())
+        || !model::mergeObservedValue(
+            target->monitorSends[static_cast<std::size_t>(monitor)].mode,
+            mode, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelEqGain(const int index, const int band, const double gainDb,
+                                  const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || band < 0 || band >= static_cast<int>(target->eq.gainDb.size())
+        || !inRange(gainDb, -15.0, 15.0)) {
+        return false;
+    }
+    if (!model::mergeObservedValue(target->eq.gainDb[static_cast<std::size_t>(band)], gainDb,
+                                   evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelCompressorAmount(const int index, const double amount,
+                                             const model::EvidenceStatus evidence,
+                                             const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || !isUnitInterval(amount)) {
+        return false;
+    }
+    if (!model::mergeObservedValue(target->compressor.amount, amount, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelSendLevelDb(const int index, const int send, const double levelDb,
+                                       const model::EvidenceStatus evidence,
+                                       const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || send < 0 || send >= static_cast<int>(target->sendLevelDb.size())
+        || !inRange(levelDb, -144.0, 10.0)) {
+        return false;
+    }
+    if (!model::mergeObservedValue(target->sendLevelDb[static_cast<std::size_t>(send)], levelDb,
+                                   evidence, source)) {
+        return false;
+    }
+    if (send < 2) {
+        (void)model::mergeObservedValue(
+            target->monitorSends[static_cast<std::size_t>(send)].levelDb,
+            levelDb, evidence, source);
+    } else {
+        (void)model::mergeObservedValue(
+            target->fxSendLevelDb[static_cast<std::size_t>(send - 2)],
+            levelDb, evidence, source);
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelMeter(const int index, const double level, const double peak,
+                                 const bool clipping, const model::EvidenceStatus evidence,
+                                 const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || !isUnitInterval(level) || !isUnitInterval(peak)) {
+        return false;
+    }
+    const bool levelApplied = model::mergeObservedValue(target->meterLevel, level, evidence, source);
+    const bool peakApplied = model::mergeObservedValue(target->meterPeak, peak, evidence, source);
+    const bool clipApplied = model::mergeObservedValue(target->clipping, clipping, evidence, source);
+    if (!levelApplied && !peakApplied && !clipApplied) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
 const QVector<model::BusState>& Flow8State::buses() const noexcept
 {
     return buses_;
+}
+
+const model::BusState* Flow8State::bus(const int index) const noexcept
+{
+    return index >= 0 && index < buses_.size() ? &buses_.at(index) : nullptr;
 }
 
 void Flow8State::replaceBuses(QVector<model::BusState> buses)
 {
     buses_ = std::move(buses);
     emit stateReset();
+}
+
+bool Flow8State::setBusFader(const int index, const double normalized,
+                             const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableBus(index);
+    if (target == nullptr || !isUnitInterval(normalized)
+        || !model::mergeObservedValue(target->fader, normalized, evidence, source)) {
+        return false;
+    }
+    emit busChanged(index);
+    return true;
+}
+
+bool Flow8State::setBusBalance(const int index, const double balance,
+                               const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableBus(index);
+    if (target == nullptr || !target->balance.has_value() || !inRange(balance, -1.0, 1.0)
+        || !model::mergeObservedValue(*target->balance, balance, evidence, source)) {
+        return false;
+    }
+    emit busChanged(index);
+    return true;
+}
+
+bool Flow8State::setBusLimiterDb(const int index, const double thresholdDb,
+                                 const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableBus(index);
+    if (target == nullptr || !target->limiterDb.has_value()
+        || !inRange(thresholdDb, -30.0, 0.0)
+        || !model::mergeObservedValue(*target->limiterDb, thresholdDb, evidence, source)) {
+        return false;
+    }
+    emit busChanged(index);
+    return true;
+}
+
+bool Flow8State::setBusEqGain(const int index, const int band, const double gainDb,
+                              const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableBus(index);
+    if (target == nullptr || !target->eq.has_value() || band < 0
+        || band >= static_cast<int>(target->eq->gainDb.size())
+        || !inRange(gainDb, -15.0, 15.0)
+        || !model::mergeObservedValue(target->eq->gainDb[static_cast<std::size_t>(band)],
+                                      gainDb, evidence, source)) {
+        return false;
+    }
+    emit busChanged(index);
+    return true;
 }
 
 const model::MainState& Flow8State::main() const noexcept
@@ -204,6 +416,77 @@ void Flow8State::replaceEffects(QVector<model::FxState> effects)
     emit stateReset();
 }
 
+bool Flow8State::setFxPreset(const int index, const int preset,
+                             const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableEffect(index);
+    if (target == nullptr || preset < 1 || preset > 16
+        || !model::mergeObservedValue(target->preset, preset, evidence, source)) {
+        return false;
+    }
+    emit effectChanged(index);
+    return true;
+}
+
+bool Flow8State::setFxParameter(const int index, const int parameter, const double value,
+                                const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableEffect(index);
+    if (target == nullptr || parameter < 0
+        || parameter >= static_cast<int>(target->parameters.size()) || !isUnitInterval(value)
+        || !model::mergeObservedValue(target->parameters[static_cast<std::size_t>(parameter)].value,
+                                      value, evidence, source)) {
+        return false;
+    }
+    if (parameter == 0) {
+        (void)model::mergeObservedValue(target->parameter1, value, evidence, source);
+    } else {
+        (void)model::mergeObservedValue(target->parameter2, value, evidence, source);
+    }
+    emit effectChanged(index);
+    return true;
+}
+
+bool Flow8State::setFxMuted(const int index, const bool muted,
+                            const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableEffect(index);
+    if (target == nullptr
+        || !model::mergeObservedValue(target->muted, muted, evidence, source)) {
+        return false;
+    }
+    emit effectChanged(index);
+    return true;
+}
+
+bool Flow8State::setFxTapTempo(const int index, const double bpm,
+                               const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableEffect(index);
+    if (target == nullptr || !inRange(bpm, 50.0, 250.0)
+        || !model::mergeObservedValue(target->tapTempoBpm, bpm, evidence, source)) {
+        return false;
+    }
+    emit effectChanged(index);
+    return true;
+}
+
+const model::GlobalTempoState& Flow8State::globalTempo() const noexcept
+{
+    return globalTempo_;
+}
+
+bool Flow8State::setGlobalTempo(const double bpm, const model::EvidenceStatus evidence,
+                                const QString& source)
+{
+    if (!inRange(bpm, 50.0, 250.0)
+        || !model::mergeObservedValue(globalTempo_.bpm, bpm, evidence, source)) {
+        return false;
+    }
+    emit globalTempoChanged();
+    return true;
+}
+
 const QVector<model::SnapshotState>& Flow8State::snapshots() const noexcept
 {
     return snapshots_;
@@ -212,7 +495,171 @@ const QVector<model::SnapshotState>& Flow8State::snapshots() const noexcept
 void Flow8State::replaceSnapshots(QVector<model::SnapshotState> snapshots)
 {
     snapshots_ = std::move(snapshots);
+    if (activeSnapshotIndex_ >= snapshots_.size()) {
+        activeSnapshotIndex_ = -1;
+    }
     emit stateReset();
+}
+
+int Flow8State::activeSnapshotIndex() const noexcept
+{
+    return activeSnapshotIndex_;
+}
+
+bool Flow8State::setActiveSnapshotIndex(const int index)
+{
+    if (index < 0 || index >= snapshots_.size()) {
+        return false;
+    }
+    activeSnapshotIndex_ = index;
+    emit snapshotChanged(index);
+    return true;
+}
+
+bool Flow8State::setSnapshotName(const int index, const QString& name,
+                                 const model::EvidenceStatus evidence,
+                                 const QString& source)
+{
+    const QString trimmed = name.trimmed();
+    if (index < 0 || index >= snapshots_.size() || trimmed.isEmpty()
+        || trimmed.size() > 64
+        || !model::mergeObservedValue(snapshots_[index].name, trimmed, evidence, source)) {
+        return false;
+    }
+    emit snapshotChanged(index);
+    return true;
+}
+
+const model::RoutingState& Flow8State::routing() const noexcept
+{
+    return routing_;
+}
+
+void Flow8State::replaceRouting(model::RoutingState routing)
+{
+    routing_ = std::move(routing);
+    emit routingChanged();
+}
+
+bool Flow8State::setRouteEnabled(const int inputIndex,
+                                 const model::RoutingDestination destination,
+                                 const bool enabled, const model::EvidenceStatus evidence,
+                                 const QString& source)
+{
+    for (auto& route : routing_.routes) {
+        if (route.inputIndex == inputIndex && route.destination == destination) {
+            if (!model::mergeObservedValue(route.enabled, enabled, evidence, source)) {
+                return false;
+            }
+            emit routingChanged();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Flow8State::setUsbMode(const model::UsbMode mode,
+                            const model::EvidenceStatus evidence, const QString& source)
+{
+    if (!model::mergeObservedValue(routing_.usbMode, mode, evidence, source)) {
+        return false;
+    }
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setUsbRouteEnabled(const model::UsbRouteDestination destination,
+                                    const bool enabled,
+                                    const model::EvidenceStatus evidence,
+                                    const QString& source)
+{
+    for (auto& route : routing_.usbRoutes) {
+        if (route.destination == destination) {
+            if (!model::mergeObservedValue(route.enabled, enabled, evidence, source)) {
+                return false;
+            }
+            emit routingChanged();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Flow8State::setFxMonitorRouteEnabled(const int effectIndex, const int monitorIndex,
+                                           const bool enabled,
+                                           const model::EvidenceStatus evidence,
+                                           const QString& source)
+{
+    for (auto& route : routing_.fxMonitorRoutes) {
+        if (route.effectIndex == effectIndex && route.monitorIndex == monitorIndex) {
+            if (!model::mergeObservedValue(route.enabled, enabled, evidence, source)) {
+                return false;
+            }
+            emit routingChanged();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Flow8State::setHeadphoneSource(const model::HeadphoneSource sourceValue,
+                                    const model::EvidenceStatus evidence,
+                                    const QString& source)
+{
+    if (!model::mergeObservedValue(routing_.headphoneSource, sourceValue,
+                                   evidence, source)) {
+        return false;
+    }
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setMonitorStereoLink(const bool linked,
+                                      const model::EvidenceStatus evidence,
+                                      const QString& source)
+{
+    if (!model::mergeObservedValue(routing_.monitorStereoLink, linked, evidence, source)) {
+        return false;
+    }
+    for (auto& monitor : monitors_) {
+        (void)model::mergeObservedValue(
+            monitor.stereoLinked, linked, evidence, source);
+    }
+    emit routingChanged();
+    return true;
+}
+
+const model::AppPreferences& Flow8State::preferences() const noexcept
+{
+    return preferences_;
+}
+
+void Flow8State::setPreferences(model::AppPreferences preferences)
+{
+    preferences_ = std::move(preferences);
+    emit preferencesChanged();
+}
+
+const model::AssistedSetupState& Flow8State::assistedSetup() const noexcept
+{
+    return assistedSetup_;
+}
+
+void Flow8State::setAssistedSetup(model::AssistedSetupState setup)
+{
+    assistedSetup_ = std::move(setup);
+    emit assistedSetupChanged();
+}
+
+const model::EzGainSession& Flow8State::ezGainSession() const noexcept
+{
+    return ezGainSession_;
+}
+
+void Flow8State::setEzGainSession(model::EzGainSession session)
+{
+    ezGainSession_ = std::move(session);
+    emit ezGainSessionChanged();
 }
 
 SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& parsed)
@@ -280,10 +727,16 @@ SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& p
             } else if (parts.size() == 3 && parts[2] == QStringLiteral("low_cut_hz")) {
                 recognized = true;
                 validValue = inRange(parameter.value, 20.0, 600.0)
-                    && std::trunc(parameter.value) == parameter.value;
+                    && std::trunc(parameter.value) == parameter.value
+                    && channel.lowCutHz.has_value();
                 if (validValue) {
-                    mergeCounted(channel.lowCutHz, static_cast<quint16>(parameter.value),
+                    mergeCounted(*channel.lowCutHz, static_cast<quint16>(parameter.value),
                                  parameter.evidence, parameter.source, applied, rejected);
+                    if (channel.lowCut.has_value()) {
+                        (void)model::mergeObservedValue(
+                            channel.lowCut->frequencyHz, parameter.value,
+                            parameter.evidence, parameter.source);
+                    }
                 }
             } else if (parts.size() == 4 && parts[2] == QStringLiteral("eq")) {
                 static const QStringList bands {
@@ -302,9 +755,20 @@ SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& p
                 const qsizetype send = sends.indexOf(parts[3]);
                 recognized = send >= 0;
                 validValue = recognized && inRange(parameter.value, -144.0, 10.0);
-                if (validValue) mergeCounted(channel.sendLevelDb[static_cast<std::size_t>(send)],
-                                             parameter.value, parameter.evidence,
-                                             parameter.source, applied, rejected);
+                if (validValue) {
+                    mergeCounted(channel.sendLevelDb[static_cast<std::size_t>(send)],
+                                 parameter.value, parameter.evidence,
+                                 parameter.source, applied, rejected);
+                    if (send < 2) {
+                        (void)model::mergeObservedValue(
+                            channel.monitorSends[static_cast<std::size_t>(send)].levelDb,
+                            parameter.value, parameter.evidence, parameter.source);
+                    } else {
+                        (void)model::mergeObservedValue(
+                            channel.fxSendLevelDb[static_cast<std::size_t>(send - 2)],
+                            parameter.value, parameter.evidence, parameter.source);
+                    }
+                }
             }
         } else if (parts.size() >= 3 && parts[0] == QStringLiteral("bus")) {
             const auto index = pathIndex(parts, 1, buses_.size());
@@ -320,13 +784,13 @@ SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& p
                                              parameter.source, applied, rejected);
             } else if (parts.size() == 3 && parts[2] == QStringLiteral("balance")) {
                 recognized = true;
-                validValue = inRange(parameter.value, -1.0, 1.0);
-                if (validValue) mergeCounted(bus.balance, parameter.value, parameter.evidence,
+                validValue = bus.balance.has_value() && inRange(parameter.value, -1.0, 1.0);
+                if (validValue) mergeCounted(*bus.balance, parameter.value, parameter.evidence,
                                              parameter.source, applied, rejected);
             } else if (parts.size() == 3 && parts[2] == QStringLiteral("limiter_db")) {
                 recognized = true;
-                validValue = inRange(parameter.value, -30.0, 0.0);
-                if (validValue) mergeCounted(bus.limiterDb, parameter.value, parameter.evidence,
+                validValue = bus.limiterDb.has_value() && inRange(parameter.value, -30.0, 0.0);
+                if (validValue) mergeCounted(*bus.limiterDb, parameter.value, parameter.evidence,
                                              parameter.source, applied, rejected);
             } else if (parts.size() == 4 && parts[2] == QStringLiteral("graphic_eq")) {
                 static const QStringList bands {
@@ -336,9 +800,9 @@ SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& p
                     QStringLiteral("4khz_gain_db"), QStringLiteral("8khz_gain_db"),
                     QStringLiteral("16khz_gain_db")};
                 const qsizetype band = bands.indexOf(parts[3]);
-                recognized = band >= 0 && *index < 3;
+                recognized = band >= 0 && bus.eq.has_value();
                 validValue = recognized && inRange(parameter.value, -15.0, 15.0);
-                if (validValue) mergeCounted(bus.eq.gainDb[static_cast<std::size_t>(band)],
+                if (validValue) mergeCounted(bus.eq->gainDb[static_cast<std::size_t>(band)],
                                              parameter.value, parameter.evidence,
                                              parameter.source, applied, rejected);
             }
@@ -394,8 +858,12 @@ SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& p
         } else if (parts[2] == QStringLiteral("soloed")) {
             mergeCounted(channel.soloed, flag.value, flag.evidence, flag.source, applied, rejected);
         } else if (parts[2] == QStringLiteral("phantom_48v")) {
-            mergeCounted(channel.phantom48V, flag.value, flag.evidence, flag.source,
-                         applied, rejected);
+            if (channel.phantom48V.has_value()) {
+                mergeCounted(*channel.phantom48V, flag.value, flag.evidence, flag.source,
+                             applied, rejected);
+            } else {
+                ++rejected;
+            }
         } else {
             ++rejected;
         }
@@ -414,23 +882,88 @@ SysExApplyResult Flow8State::applySysExState(const protocol::ParsedSysExState& p
 
 void Flow8State::ensureReferenceStateShape()
 {
-    if (channels_.size() < 7) {
+    const auto inputProfile = model::createOfficialInputProfile();
+    if (channels_.size() < inputProfile.size()) {
         const qsizetype oldSize = channels_.size();
-        channels_.resize(7);
+        channels_.resize(inputProfile.size());
         for (qsizetype index = oldSize; index < channels_.size(); ++index) {
-            channels_[index].index = static_cast<int>(index);
+            channels_[index] = inputProfile[index];
         }
     }
-    if (buses_.size() < 5) {
+    for (qsizetype index = 0; index < channels_.size() && index < inputProfile.size(); ++index) {
+        auto& channel = channels_[index];
+        const auto& profile = inputProfile[index];
+        channel.index = profile.index;
+        channel.inputId = profile.inputId;
+        channel.inputType = profile.inputType;
+        channel.spatialControl = profile.spatialControl;
+        channel.stereoPair = profile.stereoPair;
+        channel.capabilities = profile.capabilities;
+        channel.defaultLabel = profile.defaultLabel;
+        if (!channel.icon.value.has_value()) {
+            channel.icon = profile.icon;
+        }
+        if (!channel.visible.value.has_value()) {
+            channel.visible = profile.visible;
+        }
+        if (profile.lowCut.has_value() && !channel.lowCut.has_value()) {
+            channel.lowCut.emplace();
+        } else if (!profile.lowCut.has_value()) {
+            channel.lowCut.reset();
+        }
+        if (profile.lowCutHz.has_value() && !channel.lowCutHz.has_value()) {
+            channel.lowCutHz.emplace();
+        } else if (!profile.lowCutHz.has_value()) {
+            channel.lowCutHz.reset();
+        }
+        if (profile.phantom48V.has_value() && !channel.phantom48V.has_value()) {
+            channel.phantom48V.emplace();
+        } else if (!profile.phantom48V.has_value()) {
+            channel.phantom48V.reset();
+        }
+    }
+
+    const auto busProfile = model::createOfficialBusProfile();
+    if (buses_.size() < busProfile.size()) {
         const qsizetype oldSize = buses_.size();
-        buses_.resize(5);
+        buses_.resize(busProfile.size());
         for (qsizetype index = oldSize; index < buses_.size(); ++index) {
-            buses_[index].index = static_cast<int>(index);
+            buses_[index] = busProfile[index];
         }
     }
-    if (effects_.size() < 2) {
+    for (qsizetype index = 0; index < buses_.size() && index < busProfile.size(); ++index) {
+        auto& bus = buses_[index];
+        const auto& profile = busProfile[index];
+        bus.index = profile.index;
+        bus.busId = profile.busId;
+        bus.capabilities = profile.capabilities;
+        if (!bus.name.value.has_value()) {
+            bus.name = profile.name;
+        }
+        if (profile.balance.has_value() && !bus.balance.has_value()) {
+            bus.balance.emplace();
+        } else if (!profile.balance.has_value()) {
+            bus.balance.reset();
+        }
+        if (profile.limiterDb.has_value() && !bus.limiterDb.has_value()) {
+            bus.limiterDb.emplace();
+        } else if (!profile.limiterDb.has_value()) {
+            bus.limiterDb.reset();
+        }
+        if (profile.eq.has_value() && !bus.eq.has_value()) {
+            bus.eq.emplace();
+        } else if (!profile.eq.has_value()) {
+            bus.eq.reset();
+        }
+        if (profile.outputDelay.has_value() && !bus.outputDelay.has_value()) {
+            bus.outputDelay.emplace();
+        } else if (!profile.outputDelay.has_value()) {
+            bus.outputDelay.reset();
+        }
+    }
+    if (effects_.size() < model::fxEngineCount) {
         const qsizetype oldSize = effects_.size();
-        effects_.resize(2);
+        effects_.resize(model::fxEngineCount);
         for (qsizetype index = oldSize; index < effects_.size(); ++index) {
             effects_[index].index = static_cast<int>(index);
         }
@@ -440,6 +973,16 @@ void Flow8State::ensureReferenceStateShape()
 model::ChannelState* Flow8State::mutableChannel(const int index) noexcept
 {
     return index >= 0 && index < channels_.size() ? &channels_[index] : nullptr;
+}
+
+model::BusState* Flow8State::mutableBus(const int index) noexcept
+{
+    return index >= 0 && index < buses_.size() ? &buses_[index] : nullptr;
+}
+
+model::FxState* Flow8State::mutableEffect(const int index) noexcept
+{
+    return index >= 0 && index < effects_.size() ? &effects_[index] : nullptr;
 }
 
 bool Flow8State::isUnitInterval(const double value) noexcept
