@@ -7,6 +7,7 @@ class SemanticCommandQueueTest final : public QObject {
 
 private slots:
     void coalescesOnlyMatchingRouteFaders();
+    void representsDestinationMasterWithEqualEndpoints();
     void preservesDiscreteActionsAndOneInFlightRule();
 };
 
@@ -23,11 +24,23 @@ void SemanticCommandQueueTest::coalescesOnlyMatchingRouteFaders()
 
     const auto first = queue.beginNext();
     QVERIFY(first.has_value());
-    QCOMPARE(first->sourceIndex, 0);
-    QCOMPARE(first->destination, Destination::Main);
+    QCOMPARE(first->sourceEndpoint, flow8::model::EndpointId::Input1);
+    QCOMPARE(first->destinationEndpoint, flow8::model::EndpointId::MainLr);
     QCOMPARE(first->normalized, 0.9);
     QVERIFY(!queue.beginNext().has_value());
     QVERIFY(queue.completeInFlight());
+}
+
+void SemanticCommandQueueTest::representsDestinationMasterWithEqualEndpoints()
+{
+    flow8::SemanticCommandQueue queue;
+    QVERIFY(queue.enqueueDestinationMaster(
+        flow8::model::RoutingDestination::Monitor1, 0.52));
+    const auto command = queue.beginNext();
+    QVERIFY(command.has_value());
+    QCOMPARE(command->sourceEndpoint, flow8::model::EndpointId::Monitor1);
+    QCOMPARE(command->destinationEndpoint, flow8::model::EndpointId::Monitor1);
+    QVERIFY(command->isDestinationMaster());
 }
 
 void SemanticCommandQueueTest::preservesDiscreteActionsAndOneInFlightRule()

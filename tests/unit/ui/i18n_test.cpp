@@ -45,6 +45,9 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
         "Main Mix", "Master", "Monitor 1 Send", "Monitor 2 Send",
         "FX 1 Send", "FX 2 Send", "Source → Destination",
         "Destination Master", "Route Level", "Pending", "Confirmed",
+        "USB Return / Playback", "USB Return 1/2", "USB Return 3/4",
+        "Monitor Outputs", "Headphones", "Headphone Tap Point",
+        "Physical Output Settings", "Bluetooth / USB to Headphones Only",
     };
     for (const auto language : languages) {
         QVERIFY2(manager.setLanguage(language, false), "compiled translator did not load");
@@ -58,6 +61,9 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
     QCOMPARE(flow8::ui::uiText("Main Mix"), QString::fromUtf8("主混音"));
     QCOMPARE(flow8::ui::uiText("Master"), QString::fromUtf8("主控"));
     QCOMPARE(flow8::ui::uiText("FX 1 Send"), QString::fromUtf8("FX 1 发送"));
+    QCOMPARE(flow8::ui::uiText("USB Return / Playback"),
+             QString::fromUtf8("USB 返回 / 播放"));
+    QCOMPARE(flow8::ui::uiText("Headphones"), QString::fromUtf8("耳机"));
 
     QString rejection;
     flow8::Flow8Device device;
@@ -101,7 +107,6 @@ void I18nTest::mainWindowRetranslatesAtRuntime()
     QVERIFY(manager.setLanguage(flow8::ui::UiLanguage::English, false));
     flow8::Flow8Device device;
     auto transport = std::make_unique<flow8::simulator::FakeTransport>();
-    transport->setRemoteChangesEnabled(false);
     device.setTransport(std::move(transport));
     flow8::ui::MainWindow window(device, manager);
     window.show();

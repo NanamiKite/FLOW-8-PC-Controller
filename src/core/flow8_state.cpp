@@ -41,7 +41,9 @@ void mergeCounted(model::StateValue<T>& target, T value,
 
 Flow8State::Flow8State(QObject* parent)
     : QObject(parent)
+    , signalSources_(model::createSignalSourceProfile())
     , routing_(model::createRoutingProfile())
+    , physicalOutputs_(model::createPhysicalOutputProfile())
 {
 }
 
@@ -83,6 +85,17 @@ void Flow8State::replaceChannels(QVector<model::ChannelState> channels)
             .gainReductionDb = {},
         });
     }
+    emit stateReset();
+}
+
+const QVector<model::SignalSourceState>& Flow8State::signalSources() const noexcept
+{
+    return signalSources_;
+}
+
+void Flow8State::replaceSignalSources(QVector<model::SignalSourceState> sources)
+{
+    signalSources_ = std::move(sources);
     emit stateReset();
 }
 
@@ -383,8 +396,10 @@ void Flow8State::replaceBuses(QVector<model::BusState> buses)
 {
     buses_ = std::move(buses);
     meters_.outputs.clear();
-    meters_.outputs.reserve(buses_.size());
-    for (int index = 0; index < buses_.size(); ++index) {
+    // Output meters belong to the five selectable Mixer destinations: three
+    // Mix Buses plus two FX engines. They are not physical-output objects.
+    meters_.outputs.reserve(model::mixerDestinationCount);
+    for (int index = 0; index < model::mixerDestinationCount; ++index) {
         meters_.outputs.append(model::OutputMeterState {
             .destination = static_cast<model::RoutingDestination>(index),
             .level = {},
@@ -508,6 +523,18 @@ bool Flow8State::setFxMuted(const int index, const bool muted,
     auto* target = mutableEffect(index);
     if (target == nullptr
         || !model::mergeObservedValue(target->muted, muted, evidence, source)) {
+        return false;
+    }
+    emit effectChanged(index);
+    return true;
+}
+
+bool Flow8State::setFxMaster(const int index, const double normalized,
+                             const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableEffect(index);
+    if (target == nullptr || !isUnitInterval(normalized)
+        || !model::mergeObservedValue(target->master, normalized, evidence, source)) {
         return false;
     }
     emit effectChanged(index);
@@ -669,48 +696,47 @@ bool Flow8State::failRouteLevel(
     return true;
 }
 
-bool Flow8State::setRouteEnabled(const int inputIndex,
-                                 const model::RoutingDestination destination,
-                                 const bool enabled, const model::EvidenceStatus evidence,
-                                 const QString& source)
-{
-    for (auto& route : routing_.routes) {
-        if (route.inputIndex == inputIndex && route.destination == destination) {
-            if (!model::mergeObservedValue(route.enabled, enabled, evidence, source)) {
-                return false;
-            }
-            emit routingChanged();
-            return true;
-        }
-    }
-    return false;
-}
-
 bool Flow8State::setUsbMode(const model::UsbMode mode,
                             const model::EvidenceStatus evidence, const QString& source)
 {
-    if (!model::mergeObservedValue(routing_.usbMode, mode, evidence, source)) {
+    if (!model::mergeObservedValue(routing_.usb.mode, mode, evidence, source)) {
         return false;
     }
     emit routingChanged();
     return true;
 }
 
-bool Flow8State::setUsbRouteEnabled(const model::UsbRouteDestination destination,
-                                    const bool enabled,
-                                    const model::EvidenceStatus evidence,
-                                    const QString& source)
+bool Flow8State::setUsbPlaybackAssignment(
+    const int pairIndex, const model::UsbPlaybackAssignment assignment,
+    const model::EvidenceStatus evidence, const QString& source)
 {
-    for (auto& route : routing_.usbRoutes) {
-        if (route.destination == destination) {
-            if (!model::mergeObservedValue(route.enabled, enabled, evidence, source)) {
-                return false;
-            }
-            emit routingChanged();
-            return true;
-        }
+    model::StateValue<model::UsbPlaybackAssignment>* target = nullptr;
+    if (pairIndex == 0) {
+        target = &routing_.usb.input56Source;
+    } else if (pairIndex == 1) {
+        target = &routing_.usb.input78Source;
     }
-    return false;
+    if (target == nullptr
+        || !model::mergeObservedValue(*target, assignment, evidence, source)) {
+        return false;
+    }
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setMonitorRouteSource(
+    const int monitorIndex, const model::MonitorRouteSource routeSource,
+    const model::EvidenceStatus evidence, const QString& source)
+{
+    if (monitorIndex < 0
+        || monitorIndex >= static_cast<int>(routing_.monitor.outputSources.size())
+        || !model::mergeObservedValue(
+            routing_.monitor.outputSources[static_cast<std::size_t>(monitorIndex)],
+            routeSource, evidence, source)) {
+        return false;
+    }
+    emit routingChanged();
+    return true;
 }
 
 bool Flow8State::setFxOutputRouteEnabled(
@@ -733,10 +759,49 @@ bool Flow8State::setHeadphoneSource(const model::HeadphoneSource sourceValue,
                                     const model::EvidenceStatus evidence,
                                     const QString& source)
 {
-    if (!model::mergeObservedValue(routing_.headphoneSource, sourceValue,
-                                   evidence, source)) {
+    if (!model::mergeObservedValue(
+            routing_.headphones.source, sourceValue, evidence, source)) {
         return false;
     }
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setHeadphoneTapPoint(const model::RoutingTapPoint tapPoint,
+                                      const model::EvidenceStatus evidence,
+                                      const QString& source)
+{
+    if (!model::mergeObservedValue(
+            routing_.headphones.tapPoint, tapPoint, evidence, source)) {
+        return false;
+    }
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setBluetoothUsbPhonesOnly(const bool enabled,
+                                           const model::EvidenceStatus evidence,
+                                           const QString& source)
+{
+    if (!model::mergeObservedValue(
+            routing_.headphones.bluetoothUsbPhonesOnly, enabled, evidence, source)) {
+        return false;
+    }
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setOutputPadMinus10Dbv(const model::PhysicalOutputId output,
+                                        const bool enabled,
+                                        const model::EvidenceStatus evidence,
+                                        const QString& source)
+{
+    auto* target = mutablePhysicalOutput(output);
+    if (target == nullptr || !target->padMinus10Dbv.has_value()
+        || !model::mergeObservedValue(*target->padMinus10Dbv, enabled, evidence, source)) {
+        return false;
+    }
+    emit physicalOutputChanged(output);
     emit routingChanged();
     return true;
 }
@@ -746,11 +811,33 @@ bool Flow8State::setMonitorStereoLink(const bool linked,
                                       const QString& source)
 {
     if (!model::mergeObservedValue(
-            routing_.monitorLink.stereoLinked, linked, evidence, source)) {
+            routing_.monitor.stereoLinked, linked, evidence, source)) {
         return false;
     }
     emit routingChanged();
     return true;
+}
+
+const QVector<model::PhysicalOutputState>& Flow8State::physicalOutputs() const noexcept
+{
+    return physicalOutputs_;
+}
+
+const model::PhysicalOutputState* Flow8State::physicalOutput(
+    const model::PhysicalOutputId id) const noexcept
+{
+    for (const auto& output : physicalOutputs_) {
+        if (output.id == id) {
+            return &output;
+        }
+    }
+    return nullptr;
+}
+
+void Flow8State::replacePhysicalOutputs(QVector<model::PhysicalOutputState> outputs)
+{
+    physicalOutputs_ = std::move(outputs);
+    emit stateReset();
 }
 
 const model::AppPreferences& Flow8State::preferences() const noexcept
@@ -1119,11 +1206,28 @@ model::FxState* Flow8State::mutableEffect(const int index) noexcept
     return index >= 0 && index < effects_.size() ? &effects_[index] : nullptr;
 }
 
+model::PhysicalOutputState* Flow8State::mutablePhysicalOutput(
+    const model::PhysicalOutputId id) noexcept
+{
+    for (auto& output : physicalOutputs_) {
+        if (output.id == id) {
+            return &output;
+        }
+    }
+    return nullptr;
+}
+
 model::RouteLevelState* Flow8State::mutableRouteLevel(
     const int sourceIndex, const model::RoutingDestination destination) noexcept
 {
+    const auto sourceEndpoint = model::inputEndpointForIndex(sourceIndex);
+    if (!sourceEndpoint.has_value()) {
+        return nullptr;
+    }
+    const auto destinationEndpoint = model::endpointForDestination(destination);
     for (auto& cell : routing_.routeLevels.cells) {
-        if (cell.sourceIndex == sourceIndex && cell.destination == destination) {
+        if (cell.sourceEndpoint == *sourceEndpoint
+            && cell.destinationEndpoint == destinationEndpoint) {
             return &cell;
         }
     }

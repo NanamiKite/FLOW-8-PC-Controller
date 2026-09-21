@@ -14,7 +14,13 @@ public:
         Disconnected,
         Scanning,
         Connecting,
+        // Confirmed APK lifecycle phases. Qt does not expose identical MTU
+        // control on every backend, so presence in this enum is not proof the
+        // current transport performed the Android operation.
+        RequestingMtu,
         DiscoveringServices,
+        WaitingForHandshake,
+        WaitingForHandshakeReply,
         Connected,
         Reconnecting,
         Error,

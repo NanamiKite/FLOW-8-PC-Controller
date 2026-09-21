@@ -80,7 +80,6 @@ private:
     QComboBox* controlGesture_ {};
     QComboBox* eqEditingMode_ {};
     QCheckBox* outputDelayIndicator_ {};
-    QCheckBox* outputLevel10dBV_ {};
     QComboBox* footswitchMode_ {};
     QComboBox* language_ {};
     QPushButton* sysExDump_ {};

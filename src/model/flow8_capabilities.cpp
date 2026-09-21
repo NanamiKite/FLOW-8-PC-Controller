@@ -101,15 +101,12 @@ QVector<BusState> createOfficialBusProfile()
         bool balance;
         bool equalizer;
         bool limiter;
-        bool fxEngine;
         bool outputDelay;
     };
     constexpr std::array definitions {
-        Definition {BusId::Main, "MAIN", true, true, true, true, false, true},
-        Definition {BusId::Monitor1, "MON 1", true, false, true, true, false, true},
-        Definition {BusId::Monitor2, "MON 2", true, false, true, true, false, true},
-        Definition {BusId::Fx1, "FX 1", false, false, false, false, true, false},
-        Definition {BusId::Fx2, "FX 2", false, false, false, false, true, false},
+        Definition {BusId::Main, "MAIN", true, true, true, true, true},
+        Definition {BusId::Monitor1, "MON 1", true, false, true, true, true},
+        Definition {BusId::Monitor2, "MON 2", true, false, true, true, true},
     };
 
     QVector<BusState> buses;
@@ -124,7 +121,6 @@ QVector<BusState> createOfficialBusProfile()
             .balance = definition.balance,
             .equalizer = definition.equalizer,
             .limiter = definition.limiter,
-            .fxEngine = definition.fxEngine,
             .outputDelay = definition.outputDelay,
             .evidence = qsgEvidence(),
         };
@@ -149,6 +145,97 @@ QVector<BusState> createOfficialBusProfile()
         buses.append(std::move(bus));
     }
     return buses;
+}
+
+QVector<SignalSourceState> createSignalSourceProfile()
+{
+    struct Definition {
+        SignalSourceId id;
+        SignalSourceType type;
+        const char* label;
+        std::optional<int> mixerInputIndex;
+    };
+    constexpr std::array definitions {
+        Definition {SignalSourceId::Input1, SignalSourceType::PhysicalInput,
+                    "Input 1", 0},
+        Definition {SignalSourceId::Input2, SignalSourceType::PhysicalInput,
+                    "Input 2", 1},
+        Definition {SignalSourceId::Input3, SignalSourceType::PhysicalInput,
+                    "Input 3", 2},
+        Definition {SignalSourceId::Input4, SignalSourceType::PhysicalInput,
+                    "Input 4", 3},
+        Definition {SignalSourceId::Input56, SignalSourceType::StereoPhysicalInput,
+                    "Input 5/6", 4},
+        Definition {SignalSourceId::Input78, SignalSourceType::StereoPhysicalInput,
+                    "Input 7/8", 5},
+        Definition {SignalSourceId::BluetoothUsbMixer, SignalSourceType::BluetoothUsbMixer,
+                    "Bluetooth / USB Mixer Channel", 6},
+        Definition {SignalSourceId::UsbReturn12, SignalSourceType::UsbReturn,
+                    "USB Return 1/2", std::nullopt},
+        Definition {SignalSourceId::UsbReturn34, SignalSourceType::UsbReturn,
+                    "USB Return 3/4", std::nullopt},
+    };
+    QVector<SignalSourceState> sources;
+    sources.reserve(static_cast<qsizetype>(definitions.size()));
+    for (const auto& definition : definitions) {
+        const auto endpoint = definition.mixerInputIndex.has_value()
+            ? inputEndpointForIndex(*definition.mixerInputIndex) : std::nullopt;
+        sources.append(SignalSourceState {
+            .id = definition.id,
+            .type = definition.type,
+            .defaultLabel = QString::fromLatin1(definition.label),
+            .mixerInputIndex = definition.mixerInputIndex,
+            .mixerEndpoint = endpoint,
+            .evidence = {
+                .source = CapabilitySource::OfficialApk,
+                .reference = QStringLiteral("docs/reverse-engineering.md sections 7 and 12"),
+            },
+        });
+    }
+    return sources;
+}
+
+QVector<PhysicalOutputState> createPhysicalOutputProfile()
+{
+    const CapabilityEvidence apkEvidence {
+        .source = CapabilitySource::OfficialApk,
+        .reference = QStringLiteral("docs/reverse-engineering.md sections 10 and 12"),
+    };
+    QVector<PhysicalOutputState> outputs;
+    outputs.reserve(4);
+    outputs.append(PhysicalOutputState {
+        .id = PhysicalOutputId::MainOut,
+        .defaultLabel = QStringLiteral("MAIN OUT"),
+        .sourceSelectable = false,
+        .nominalSource = PhysicalOutputSource::Main,
+        .padMinus10Dbv = StateValue<bool> {},
+        .evidence = apkEvidence,
+    });
+    outputs.append(PhysicalOutputState {
+        .id = PhysicalOutputId::MonitorOut1,
+        .defaultLabel = QStringLiteral("MON OUT 1"),
+        .sourceSelectable = true,
+        .nominalSource = PhysicalOutputSource::Monitor1,
+        .padMinus10Dbv = StateValue<bool> {},
+        .evidence = apkEvidence,
+    });
+    outputs.append(PhysicalOutputState {
+        .id = PhysicalOutputId::MonitorOut2,
+        .defaultLabel = QStringLiteral("MON OUT 2"),
+        .sourceSelectable = true,
+        .nominalSource = PhysicalOutputSource::Monitor2,
+        .padMinus10Dbv = StateValue<bool> {},
+        .evidence = apkEvidence,
+    });
+    outputs.append(PhysicalOutputState {
+        .id = PhysicalOutputId::Headphones,
+        .defaultLabel = QStringLiteral("HEADPHONES"),
+        .sourceSelectable = true,
+        .nominalSource = std::nullopt,
+        .padMinus10Dbv = std::nullopt,
+        .evidence = apkEvidence,
+    });
+    return outputs;
 }
 
 QVector<SnapshotState> createHardwareSnapshotProfile()
@@ -178,10 +265,9 @@ RoutingState createRoutingProfile()
         RoutingDestination::Fx1,
         RoutingDestination::Fx2,
     };
-    routing.routes.reserve(inputStripCount * static_cast<int>(destinations.size()));
     routing.routeLevels.cells.reserve(
-        inputStripCount * static_cast<int>(destinations.size()));
-    for (int input = 0; input < inputStripCount; ++input) {
+        conventionalMixerInputCount * static_cast<int>(destinations.size()));
+    for (int input = 0; input < conventionalMixerInputCount; ++input) {
         for (const auto destination : destinations) {
             routing.routeLevels.cells.append(RouteLevelState {
                 .sourceEndpoint = *inputEndpointForIndex(input),
@@ -190,31 +276,7 @@ RoutingState createRoutingProfile()
                 .pending = std::nullopt,
                 .error = {},
             });
-            routing.routes.append(RouteState {
-                .inputIndex = input,
-                .destination = destination,
-                .enabled = {},
-            });
         }
-    }
-
-    constexpr std::array usbDestinations {
-        UsbRouteDestination::Input1,
-        UsbRouteDestination::Input2,
-        UsbRouteDestination::Input3,
-        UsbRouteDestination::Input4,
-        UsbRouteDestination::Input56,
-        UsbRouteDestination::Input78,
-        UsbRouteDestination::UsbBluetooth,
-        UsbRouteDestination::Monitor1,
-        UsbRouteDestination::Monitor2,
-    };
-    routing.usbRoutes.reserve(static_cast<qsizetype>(usbDestinations.size()));
-    for (const auto destination : usbDestinations) {
-        routing.usbRoutes.append(UsbRouteState {
-            .destination = destination,
-            .enabled = {},
-        });
     }
     constexpr std::array fxDestinations {
         FxOutputDestination::Main,

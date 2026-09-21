@@ -27,7 +27,6 @@ struct AppPreferences {
     ControlGesture controlGesture {ControlGesture::Linear};
     EqEditingMode eqEditingMode {EqEditingMode::Parametric};
     bool showOutputDelayIndicator {true};
-    bool outputLevel10dBV {};
     FootswitchMode footswitchMode {FootswitchMode::Fx};
 };
 

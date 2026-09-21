@@ -13,8 +13,11 @@ namespace {
 
 constexpr double minimumFrequency = 20.0;
 constexpr double maximumFrequency = 20000.0;
-constexpr double minimumGain = -18.0;
-constexpr double maximumGain = 18.0;
+constexpr double minimumGain = -15.0;
+constexpr double maximumGain = 15.0;
+constexpr double plotInset = 8.0;
+constexpr double plotBottomInset = 20.0;
+constexpr double handleHitRadius = 18.0;
 
 } // namespace
 
@@ -23,6 +26,7 @@ EqGraphWidget::EqGraphWidget(QWidget* parent)
 {
     setMinimumHeight(180);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setMouseTracking(true);
 }
 
 void EqGraphWidget::setBands(QVector<EqGraphBand> bands)
@@ -61,7 +65,7 @@ void EqGraphWidget::paintEvent(QPaintEvent*)
         const double x = xForFrequency(frequency);
         painter.drawLine(QPointF(x, 8.0), QPointF(x, height() - 20.0));
     }
-    for (const double gain : {-18.0, -12.0, -6.0, 0.0, 6.0, 12.0, 18.0}) {
+    for (const double gain : {-15.0, -10.0, -5.0, 0.0, 5.0, 10.0, 15.0}) {
         const double y = yForGain(gain);
         painter.setPen(QPen(gain == 0.0 ? QColor(78, 84, 94) : QColor(44, 48, 55), 1.0));
         painter.drawLine(QPointF(8.0, y), QPointF(width() - 8.0, y));
@@ -122,22 +126,76 @@ void EqGraphWidget::paintEvent(QPaintEvent*)
 void EqGraphWidget::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
-        int closest = -1;
-        double distance = 18.0;
-        for (int index = 0; index < bands_.size(); ++index) {
-            const double candidate = QLineF(event->position(), pointForBand(bands_[index])).length();
-            if (candidate < distance) {
-                distance = candidate;
-                closest = index;
-            }
-        }
+        const int closest = bandAt(event->position());
         if (closest >= 0) {
             setSelectedBand(closest);
+            draggedBand_ = closest;
+            setCursor(Qt::ClosedHandCursor);
+            editBandAt(closest, event->position());
             event->accept();
             return;
         }
     }
     QWidget::mousePressEvent(event);
+}
+
+void EqGraphWidget::mouseMoveEvent(QMouseEvent* event)
+{
+    if (draggedBand_ >= 0) {
+        editBandAt(draggedBand_, event->position());
+        event->accept();
+        return;
+    }
+
+    setCursor(bandAt(event->position()) >= 0
+        ? Qt::OpenHandCursor : Qt::ArrowCursor);
+    QWidget::mouseMoveEvent(event);
+}
+
+void EqGraphWidget::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && draggedBand_ >= 0) {
+        editBandAt(draggedBand_, event->position());
+        draggedBand_ = -1;
+        setCursor(bandAt(event->position()) >= 0
+            ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+    QWidget::mouseReleaseEvent(event);
+}
+
+int EqGraphWidget::bandAt(const QPointF& position) const
+{
+    int closest = -1;
+    double closestDistance = handleHitRadius;
+    for (int index = 0; index < bands_.size(); ++index) {
+        if (!bands_[index].available) {
+            continue;
+        }
+        const double candidate = QLineF(position, pointForBand(bands_[index])).length();
+        if (candidate < closestDistance) {
+            closestDistance = candidate;
+            closest = index;
+        }
+    }
+    return closest;
+}
+
+void EqGraphWidget::editBandAt(const int index, const QPointF& position)
+{
+    if (index < 0 || index >= bands_.size() || !bands_[index].available) {
+        return;
+    }
+
+    auto& band = bands_[index];
+    const double gain = gainForY(position.y());
+    if (qFuzzyCompare(gain + 1.0, band.gainDb + 1.0)) {
+        return;
+    }
+    band.gainDb = gain;
+    update();
+    emit bandGainEdited(index, gain);
 }
 
 QPointF EqGraphWidget::pointForBand(const EqGraphBand& band) const
@@ -150,14 +208,23 @@ double EqGraphWidget::xForFrequency(const double frequencyHz) const
     const double bounded = std::clamp(frequencyHz, minimumFrequency, maximumFrequency);
     const double normalized = (std::log10(bounded) - std::log10(minimumFrequency))
         / (std::log10(maximumFrequency) - std::log10(minimumFrequency));
-    return 8.0 + normalized * (width() - 16.0);
+    return plotInset + normalized * (width() - 2.0 * plotInset);
 }
 
 double EqGraphWidget::yForGain(const double gainDb) const
 {
     const double normalized = (std::clamp(gainDb, minimumGain, maximumGain) - minimumGain)
         / (maximumGain - minimumGain);
-    return (height() - 20.0) - normalized * (height() - 28.0);
+    return (height() - plotBottomInset)
+        - normalized * (height() - plotBottomInset - plotInset);
+}
+
+double EqGraphWidget::gainForY(const double y) const
+{
+    const double plotHeight = std::max(1.0, height() - plotBottomInset - plotInset);
+    const double normalized = std::clamp(
+        ((height() - plotBottomInset) - y) / plotHeight, 0.0, 1.0);
+    return minimumGain + normalized * (maximumGain - minimumGain);
 }
 
 } // namespace flow8::ui

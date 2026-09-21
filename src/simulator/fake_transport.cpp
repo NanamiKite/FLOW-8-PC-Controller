@@ -7,8 +7,6 @@ namespace flow8::simulator {
 FakeTransport::FakeTransport(QObject* parent)
     : Flow8Transport(parent)
 {
-    remoteChangeTimer_.setInterval(3500);
-    connect(&remoteChangeTimer_, &QTimer::timeout, this, &FakeTransport::emitSyntheticRemoteChange);
 }
 
 QString FakeTransport::displayName() const
@@ -34,15 +32,11 @@ void FakeTransport::connectTransport()
     setState(State::Connecting);
     QTimer::singleShot(25, this, [this] {
         setState(State::Connected);
-        if (remoteChangesEnabled_) {
-            remoteChangeTimer_.start();
-        }
     });
 }
 
 void FakeTransport::disconnectTransport()
 {
-    remoteChangeTimer_.stop();
     setState(State::Disconnected);
 }
 
@@ -71,16 +65,6 @@ void FakeTransport::simulateIncoming(const QByteArray& payload)
     }
 }
 
-void FakeTransport::setRemoteChangesEnabled(const bool enabled)
-{
-    remoteChangesEnabled_ = enabled;
-    if (enabled && state_ == State::Connected) {
-        remoteChangeTimer_.start();
-    } else {
-        remoteChangeTimer_.stop();
-    }
-}
-
 void FakeTransport::setState(const State state)
 {
     if (state_ == state) {
@@ -88,13 +72,6 @@ void FakeTransport::setState(const State state)
     }
     state_ = state;
     emit stateChanged(state_);
-}
-
-void FakeTransport::emitSyntheticRemoteChange()
-{
-    // Synthetic device-side control changes are applied at the semantic state
-    // layer by Flow8Device. Do not manufacture an unverified 0x06 payload.
-    ++remoteStep_;
 }
 
 } // namespace flow8::simulator

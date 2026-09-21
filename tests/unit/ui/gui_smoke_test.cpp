@@ -21,6 +21,7 @@
 #include <QComboBox>
 #include <QListWidget>
 #include <QSlider>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QTest>
 
@@ -49,7 +50,6 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QVERIFY(languageManager.setLanguage(static_cast<flow8::ui::UiLanguage>(language), false));
     flow8::Flow8Device device;
     auto transport = std::make_unique<flow8::simulator::FakeTransport>();
-    transport->setRemoteChangesEnabled(false);
     device.setTransport(std::move(transport));
     flow8::ui::MainWindow window(device, languageManager);
     window.show();
@@ -83,6 +83,40 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QTRY_VERIFY(inspector->isVisible());
     QCOMPARE(inspector->selectedChannel(), 0);
     QCOMPARE(inspector->selectedDestination(), flow8::model::RoutingDestination::Main);
+    auto* inspectorTabs = inspector->findChild<QTabWidget*>();
+    QVERIFY(inspectorTabs != nullptr);
+    inspectorTabs->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    auto* channelEqGraph = inspector->findChild<flow8::ui::EqGraphWidget*>(
+        QStringLiteral("channelEqGraph"));
+    QVERIFY(channelEqGraph != nullptr);
+    QTRY_VERIFY(channelEqGraph->isVisible());
+    for (int band = 0; band < 4; ++band) {
+        auto* eqGain = inspector->findChild<QSlider*>(
+            QStringLiteral("eqGain%1").arg(band));
+        QVERIFY(eqGain != nullptr);
+        QCOMPARE(eqGain->orientation(), Qt::Vertical);
+    }
+
+    const double frequencyBefore = device.state().channel(0)->eq.frequencyHz[0]
+        .value.value_or(80.0);
+    const double normalizedFrequency =
+        (std::log10(frequencyBefore) - std::log10(20.0))
+        / (std::log10(20000.0) - std::log10(20.0));
+    const int handleX = qRound(8.0 + normalizedFrequency * (channelEqGraph->width() - 16.0));
+    const int zeroGainY = qRound((channelEqGraph->height() - 20.0)
+        - 0.5 * (channelEqGraph->height() - 28.0));
+    const QPoint dragStart(handleX, zeroGainY);
+    const QPoint dragEnd(
+        qMin(channelEqGraph->width() - 9, handleX + 70),
+        qMax(9, zeroGainY - 45));
+    QTest::mousePress(channelEqGraph, Qt::LeftButton, Qt::NoModifier, dragStart);
+    QTest::mouseMove(channelEqGraph, dragEnd);
+    QTest::mouseRelease(channelEqGraph, Qt::LeftButton, Qt::NoModifier, dragEnd);
+    QTRY_VERIFY(device.state().channel(0)->eq.gainDb[0].value.value_or(0.0) > 0.0);
+    QCOMPARE(device.state().channel(0)->eq.frequencyHz[0].value,
+             std::optional(frequencyBefore));
+
     auto* currentSend = inspector->findChild<QSlider*>(
         QStringLiteral("currentDestinationSend"));
     QVERIFY(currentSend != nullptr);
@@ -186,13 +220,21 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
         QStringLiteral("hardwareSnapshot\\d+"))).size(), 15);
     setupNavigation->setCurrentRow(4);
     QCoreApplication::processEvents();
-    QVERIFY(setup->findChild<QCheckBox*>(QStringLiteral("usbRoute7")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbInput56Source")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbInput78Source")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("monitorRouteSource0")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("headphoneSource")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("headphoneTapPoint")) != nullptr);
+    QVERIFY(setup->findChild<QCheckBox*>(
+        QStringLiteral("bluetoothUsbPhonesOnly")) != nullptr);
+    QVERIFY(setup->findChild<QCheckBox*>(
+        QStringLiteral("outputPadMinus10Dbv0")) != nullptr);
     QVERIFY(setup->findChild<QCheckBox*>(QStringLiteral("fxOutputRoute0")) != nullptr);
     auto* stereoLink = setup->findChild<QCheckBox*>(
         QStringLiteral("monitorStereoLink"));
     QVERIFY(stereoLink != nullptr);
     stereoLink->setChecked(true);
-    QCOMPARE(device.state().routing().monitorLink.stereoLinked.value,
+    QCOMPARE(device.state().routing().monitor.stereoLinked.value,
              std::optional(true));
     setupNavigation->setCurrentRow(3);
     QCoreApplication::processEvents();

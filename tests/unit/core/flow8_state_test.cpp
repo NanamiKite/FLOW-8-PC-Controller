@@ -16,6 +16,7 @@ private slots:
     void preservesStrongerEvidence();
     void keepsMixBusesAndFxRoutesIndependent();
     void routeMatrixKeepsDestinationsIndependent();
+    void headphoneRoutingDoesNotMutateMixerState();
     void meterUpdatesStayOutsideControlSignals();
 };
 
@@ -103,9 +104,38 @@ void Flow8StateTest::keepsMixBusesAndFxRoutesIndependent()
 
     QVERIFY(state.setMonitorStereoLink(
         true, flow8::model::EvidenceStatus::Unknown, source));
-    QCOMPARE(state.routing().monitorLink.stereoLinked.value, std::optional(true));
+    QCOMPARE(state.routing().monitor.stereoLinked.value, std::optional(true));
     QCOMPARE(state.bus(1)->fader.value, std::optional(0.40));
     QCOMPARE(state.bus(2)->fader.value, std::optional(0.20));
+}
+
+void Flow8StateTest::headphoneRoutingDoesNotMutateMixerState()
+{
+    flow8::Flow8State state;
+    state.replaceChannels(flow8::model::createOfficialInputProfile());
+    state.replaceBuses(flow8::model::createOfficialBusProfile());
+    state.replacePhysicalOutputs(flow8::model::createPhysicalOutputProfile());
+    const QString source = QStringLiteral("SYNTHETIC physical-output test");
+    QVERIFY(state.setBusFader(0, 0.73, flow8::model::EvidenceStatus::Synthetic, source));
+    QVERIFY(state.setBusFader(1, 0.41, flow8::model::EvidenceStatus::Synthetic, source));
+    QVERIFY(state.setRouteLevel(0, flow8::model::RoutingDestination::Main, 0.62,
+                                flow8::model::EvidenceStatus::Synthetic, source));
+
+    QVERIFY(state.setHeadphoneSource(
+        flow8::model::HeadphoneSource::Monitor,
+        flow8::model::EvidenceStatus::Synthetic, source));
+    QVERIFY(state.setHeadphoneTapPoint(
+        flow8::model::RoutingTapPoint::PreFader,
+        flow8::model::EvidenceStatus::Synthetic, source));
+
+    QCOMPARE(state.routing().headphones.source.value,
+             std::optional(flow8::model::HeadphoneSource::Monitor));
+    QCOMPARE(state.routing().headphones.tapPoint.value,
+             std::optional(flow8::model::RoutingTapPoint::PreFader));
+    QCOMPARE(state.bus(0)->fader.value, std::optional(0.73));
+    QCOMPARE(state.bus(1)->fader.value, std::optional(0.41));
+    QCOMPARE(state.routeLevel(0, flow8::model::RoutingDestination::Main)
+                 ->confirmed.value, std::optional(0.62));
 }
 
 void Flow8StateTest::routeMatrixKeepsDestinationsIndependent()

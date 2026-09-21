@@ -10,15 +10,19 @@ class BleServicesTest final : public QObject {
     Q_OBJECT
 
 private slots:
-    void constantsMatchReferenceEvidence();
+    void constantsKeepApkAndReferenceEvidenceSeparate();
     void candidateFilterAcceptsNameOrService();
     void propertiesAreRenderedWithoutLosingFlags();
     void transportRejectsConnectWithoutDevice();
 };
 
-void BleServicesTest::constantsMatchReferenceEvidence()
+void BleServicesTest::constantsKeepApkAndReferenceEvidenceSeparate()
 {
-    QCOMPARE(flow8::ble::flow8AdvertisedName(), QStringLiteral("FLOW 8 LE"));
+    QCOMPARE(flow8::ble::flow8AdvertisedName(), QStringLiteral("FLOW 8"));
+    QCOMPARE(flow8::ble::flow8ApkDeviceName(), QStringLiteral("FLOW 8"));
+    QCOMPARE(flow8::ble::flow8LegacyReferenceName(), QStringLiteral("FLOW 8 LE"));
+    QCOMPARE(flow8::ble::flow8ApkRequestedMtu(), 255);
+    QCOMPARE(flow8::ble::flow8ApkScanTimeoutMs(), 5'000);
     QCOMPARE(flow8::ble::flow8ServiceUuid().toString(QUuid::WithoutBraces),
              QStringLiteral("14839ad4-8d7e-415c-9a42-167340cf2339"));
     QCOMPARE(flow8::ble::flow8CharacteristicUuid().toString(QUuid::WithoutBraces),
@@ -29,8 +33,13 @@ void BleServicesTest::candidateFilterAcceptsNameOrService()
 {
     // SYNTHETIC metadata for testing the filter only; not a hardware capture.
     QBluetoothDeviceInfo byName(QBluetoothAddress(QStringLiteral("00:11:22:33:44:55")),
-                                QStringLiteral("FLOW 8 LE"), 0);
+                                QStringLiteral("FLOW 8"), 0);
     QVERIFY(flow8::ble::isFlow8Candidate(byName));
+
+    QBluetoothDeviceInfo byLegacyReferenceName(
+        QBluetoothAddress(QStringLiteral("00:11:22:33:44:56")),
+        QStringLiteral("FLOW 8 LE"), 0);
+    QVERIFY(flow8::ble::isFlow8Candidate(byLegacyReferenceName));
 
     QBluetoothDeviceInfo byService(QBluetoothAddress(QStringLiteral("00:11:22:33:44:66")),
                                    QStringLiteral("unknown"), 0);

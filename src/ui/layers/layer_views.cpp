@@ -47,7 +47,7 @@ QScrollArea* createSendSurface(Flow8Device& device,
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(7);
     layout->setAlignment(Qt::AlignLeft);
-    for (int input = 0; input < model::inputStripCount; ++input) {
+    for (int input = 0; input < model::conventionalMixerInputCount; ++input) {
         auto* strip = new MixSendStrip(device, input, destination, container);
         strips.append(strip);
         layout->addWidget(strip);
@@ -125,10 +125,10 @@ FxView::FxView(Flow8Device& device, const int engineIndex, QWidget* parent)
     layout->addWidget(split, 1);
     details_->showFx(engineIndex_);
     connect(master_, &FaderWidget::valueChanged, this, [this](const double value) {
-        (void)device_.setBusFader(3 + engineIndex_, value);
+        (void)device_.setFxMaster(engineIndex_, value);
     });
-    connect(&device_.state(), &Flow8State::busChanged, this, [this](const int bus) {
-        if (bus == 3 + engineIndex_) refresh();
+    connect(&device_.state(), &Flow8State::effectChanged, this, [this](const int effect) {
+        if (effect == engineIndex_) refresh();
     });
     connect(&device_.state(), &Flow8State::routingChanged, this, &FxView::refresh);
     retranslateUi();
@@ -137,9 +137,10 @@ FxView::FxView(Flow8Device& device, const int engineIndex, QWidget* parent)
 void FxView::refresh()
 {
     for (auto* send : sends_) send->refresh();
-    if (const auto* bus = device_.state().bus(3 + engineIndex_); bus != nullptr) {
+    if (engineIndex_ >= 0 && engineIndex_ < device_.state().effects().size()) {
         const QSignalBlocker blocker(master_);
-        master_->setValue(bus->fader.value.value_or(0.0));
+        master_->setValue(
+            device_.state().effects().at(engineIndex_).master.value.value_or(0.0));
     }
     for (int destination = 0; destination < outputRoutes_.size(); ++destination) {
         const auto* route = device_.state().routing().fxOutputRoute(
@@ -214,7 +215,7 @@ void MonitorView::refresh()
     for (auto* send : sends_) send->refresh();
     const QSignalBlocker blocker(stereoLink_);
     stereoLink_->setChecked(
-        device_.state().routing().monitorLink.stereoLinked.value.value_or(false));
+        device_.state().routing().monitor.stereoLinked.value.value_or(false));
     details_->showBus(monitorIndex_ + 1);
     details_->refresh();
 }
@@ -330,6 +331,12 @@ MainOutView::MainOutView(Flow8Device& device, QWidget* parent)
             });
     connect(&device_.state(), &Flow8State::preferencesChanged,
             this, &MainOutView::refresh);
+    connect(&device_.state(), &Flow8State::physicalOutputChanged,
+            this, [this](const model::PhysicalOutputId output) {
+                if (output == model::PhysicalOutputId::MainOut) {
+                    refresh();
+                }
+            });
     retranslateUi();
 }
 
@@ -359,7 +366,12 @@ void MainOutView::refresh()
     } else {
         delayState_->setText(uiText("Output Delay: Unknown · Hardware Required"));
     }
-    outputLevelMode_->setText(device_.state().preferences().outputLevel10dBV
+    const auto* mainOutput = device_.state().physicalOutput(
+        model::PhysicalOutputId::MainOut);
+    const bool padEnabled = mainOutput != nullptr
+        && mainOutput->padMinus10Dbv.has_value()
+        && mainOutput->padMinus10Dbv->value.value_or(false);
+    outputLevelMode_->setText(padEnabled
         ? uiText("10 dBV Output Level: On") : uiText("10 dBV Output Level: Off"));
 }
 

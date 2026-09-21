@@ -60,10 +60,11 @@ address path is hard-coded.
 
 Run `flow8-controller` and choose Assisted Setup, Load Snapshot, Start New, or Continue
 Session. The bundled transport is explicitly `Simulator (SYNTHETIC)`. The mixer provides
-seven correctly typed input strips (`1`, `2`, `3`, `4`, `5/6`, `7/8`, `USB/BT`), five
-buses, two FX engines, 15 hardware snapshot slots, routing, animated meters, channel and
-bus EQ, compressor amount, and send controls. Simulator values are functional test data,
-not FLOW 8 captures or protocol evidence.
+seven conventional input strips (`1`, `2`, `3`, `4`, `5/6`, `7/8`, `USB/BT`), three
+independent Mix Buses (MAIN/MON1/MON2), two FX engines, four physical output sinks,
+15 hardware snapshot slots, routing, animated meters, channel/bus EQ, compressor amount,
+and send controls. Simulator values are functional test data, not FLOW 8 captures or
+protocol evidence.
 
 The Mixer follows the APK-derived source-to-destination model. One shared set of seven
 channel strips is controlled by a MAIN/MON1/MON2/FX1/FX2 destination selector. Switching
@@ -73,13 +74,18 @@ or an in-context Input Inspector. Stage reads the same matrix rather than mainta
 second mixer state. Setup remains a distinct sidebar workspace for Configure Inputs, the
 local Snapshot Library, 15 device Snapshot slots, Preferences, Routing, and Info.
 
-The canonical mixer state includes a 7×5 route matrix with confirmed/pending/error
-values, independent destination masters, MON stereo link, and independent FX input
-sends versus FX output returns. Meter state is high-rate transient data kept outside
-ordinary control state. Simulator data uses explicit `SYNTHETIC` evidence.
+The 7×5 matrix is deliberately scoped to conventional Mixer inputs feeding
+MAIN/MON1/MON2/FX1/FX2. It is not the device's complete routing graph. A broader signal
+catalog separately represents USB Return 1/2 and USB Return 3/4; physical outputs
+separately represent MAIN OUT, MON OUT 1, MON OUT 2, and HEADPHONES. USB playback
+assignment, monitor-source selection, headphone MAIN/MON plus Pre/Post selection, output
+pads, MON stereo link, and six FX return routes are independent routing state. Meter state
+is high-rate transient data kept outside ordinary control state. Simulator data uses
+explicit `SYNTHETIC` evidence.
 
 The simulator models channel names/icons/hide-show, Gain/Phase/Low Cut, phantom power where
-applicable, MON pre/post sends, expanded USB/FX/headphone routing, MON stereo link,
+applicable, MON pre/post sends, two independent USB returns, USB/FX/headphone routing,
+physical outputs, MON stereo link,
 app-snapshot store/load/rename/delete, Assisted Setup, EZ-GAIN, global Tap Tempo, and
 output preferences. Hardware commands for these additions remain
 `UNKNOWN / BLOCKED: NEED_HARDWARE`; the simulator never emits guessed packets.
@@ -110,7 +116,8 @@ that this project operated it on hardware.
 
 - Inputs 5/6 and 7/8 are stereo pairs; USB/BT is a separate digital input strip.
 - Phantom power is exposed only for inputs 1 and 2.
-- MAIN, MON1, and MON2 have 9-band EQ and limiter capability; FX buses do not.
+- MAIN, MON1, and MON2 are Mix Buses with 9-band EQ and limiter capability; FX1/FX2 are
+  separate engines rather than output buses.
 - FX1 and FX2 are independent engines with 16 documented preset numbers each.
 - Hardware snapshots have 15 slots; the app-library concept is separate.
 - The MIDI channel/CC/PC/Note map is represented in `MidiParameterMap` with source
@@ -152,7 +159,8 @@ The state-dump decoder reports input SHA-256 and keeps all extracted offsets mar
 - [State model](docs/state-model.md)
 - [FLOW Mix feature matrix](docs/flow-mix-feature-matrix.md)
 - [Reverse-engineering record](docs/reverse-engineering.md)
-- [FLOW Mix APK semantic record](docs/reverse-engineering-apk.md)
+
+`docs/reverse-engineering.md` is the current APK/native fact source used by the PC model.
 
 `reference/flow-8-midi/` is research evidence, not an authority or a substitute for this
 project's hardware validation.

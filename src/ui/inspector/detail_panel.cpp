@@ -58,11 +58,14 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     , renameAppSnapshot_(new QPushButton(this))
     , deleteAppSnapshot_(new QPushButton(this))
     , shareSnapshot_(new QPushButton(this))
-    , routingGrid_(new QWidget(this))
     , routingTitle_(new QLabel(this))
     , advancedRoutingTitle_(new QLabel(this))
     , usbMode_(new QComboBox(this))
+    , usbInput56_(new QComboBox(this))
+    , usbInput78_(new QComboBox(this))
     , headphoneSource_(new QComboBox(this))
+    , headphoneTapPoint_(new QComboBox(this))
+    , bluetoothUsbPhonesOnly_(new QCheckBox(this))
     , monitorStereoLink_(new QCheckBox(this))
     , routingEvidence_(new QLabel(this))
 {
@@ -103,6 +106,7 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     busLayout->addLayout(busHeader);
     busLayout->addLayout(levelRow);
     auto* busEqRow = new QHBoxLayout;
+    busEqGraph_->setObjectName(QStringLiteral("busEqGraph"));
     busEqRow->addWidget(busEqGraph_, 2);
     auto* busSliders = new QGridLayout;
     for (int band = 0; band < 9; ++band) {
@@ -121,6 +125,10 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     }
     busEqRow->addLayout(busSliders, 3);
     busLayout->addLayout(busEqRow, 1);
+    connect(busEqGraph_, &EqGraphWidget::bandGainEdited, this,
+            [this](const int band, const double gainDb) {
+                (void)device_.setBusEqGain(selectedBus_, band, gainDb);
+            });
     connect(busLevel_, &QSlider::valueChanged, this, [this](const int value) {
         (void)device_.setBusFader(selectedBus_, value / 1000.0);
     });
@@ -308,7 +316,6 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     routingTitle_->setParent(routingPage);
     routingTitle_->setProperty("class", QStringLiteral("inspectorTitle"));
     routingLayout->addWidget(routingTitle_);
-    routingLayout->addWidget(routingGrid_);
     advancedRoutingTitle_->setParent(routingPage);
     advancedRoutingTitle_->setProperty("class", QStringLiteral("navigationTitle"));
     routingLayout->addWidget(advancedRoutingTitle_);
@@ -327,7 +334,16 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     usbModeRow->addWidget(usbModeLabel);
     usbModeRow->addWidget(usbMode_, 1);
     usbLayout->addLayout(usbModeRow);
-    auto* usbRoutesLayout = new QGridLayout;
+    auto* usb56Label = new QLabel(usbCard);
+    usb56Label->setObjectName(QStringLiteral("usbInput56Label"));
+    usbInput56_->setObjectName(QStringLiteral("usbInput56Source"));
+    usbLayout->addWidget(usb56Label);
+    usbLayout->addWidget(usbInput56_);
+    auto* usb78Label = new QLabel(usbCard);
+    usb78Label->setObjectName(QStringLiteral("usbInput78Label"));
+    usbInput78_->setObjectName(QStringLiteral("usbInput78Source"));
+    usbLayout->addWidget(usb78Label);
+    usbLayout->addWidget(usbInput78_);
 
     auto* monitorCard = new QWidget(advancedRouting);
     monitorCard->setProperty("class", QStringLiteral("detailCard"));
@@ -337,12 +353,46 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     monitorSection->setProperty("class", QStringLiteral("sectionLabel"));
     monitorLayout->addWidget(monitorSection);
     monitorStereoLink_->setObjectName(QStringLiteral("monitorStereoLink"));
-    auto* headphoneLabel = new QLabel(monitorCard);
-    headphoneLabel->setObjectName(QStringLiteral("headphoneSourceLabel"));
-    monitorLayout->addWidget(headphoneLabel);
-    monitorLayout->addWidget(headphoneSource_);
+    for (int monitor = 0; monitor < 2; ++monitor) {
+        auto* label = new QLabel(monitorCard);
+        label->setObjectName(QStringLiteral("monitorSourceLabel%1").arg(monitor));
+        auto* source = new QComboBox(monitorCard);
+        source->setObjectName(QStringLiteral("monitorRouteSource%1").arg(monitor));
+        monitorSources_.append(source);
+        monitorLayout->addWidget(label);
+        monitorLayout->addWidget(source);
+        connect(source, &QComboBox::currentIndexChanged, this,
+                [this, monitor, source](const int index) {
+                    if (index >= 0) {
+                        (void)device_.setMonitorRouteSource(
+                            monitor, static_cast<model::MonitorRouteSource>(
+                                source->itemData(index).toInt()));
+                    }
+                });
+    }
     monitorLayout->addWidget(monitorStereoLink_);
     monitorLayout->addStretch();
+
+    auto* headphoneCard = new QWidget(advancedRouting);
+    headphoneCard->setProperty("class", QStringLiteral("detailCard"));
+    auto* headphoneLayout = new QVBoxLayout(headphoneCard);
+    auto* headphoneSection = new QLabel(headphoneCard);
+    headphoneSection->setObjectName(QStringLiteral("headphoneRoutingSection"));
+    headphoneSection->setProperty("class", QStringLiteral("sectionLabel"));
+    headphoneLayout->addWidget(headphoneSection);
+    auto* headphoneLabel = new QLabel(headphoneCard);
+    headphoneLabel->setObjectName(QStringLiteral("headphoneSourceLabel"));
+    headphoneLayout->addWidget(headphoneLabel);
+    headphoneSource_->setObjectName(QStringLiteral("headphoneSource"));
+    headphoneLayout->addWidget(headphoneSource_);
+    auto* tapLabel = new QLabel(headphoneCard);
+    tapLabel->setObjectName(QStringLiteral("headphoneTapLabel"));
+    headphoneLayout->addWidget(tapLabel);
+    headphoneTapPoint_->setObjectName(QStringLiteral("headphoneTapPoint"));
+    headphoneLayout->addWidget(headphoneTapPoint_);
+    bluetoothUsbPhonesOnly_->setObjectName(QStringLiteral("bluetoothUsbPhonesOnly"));
+    headphoneLayout->addWidget(bluetoothUsbPhonesOnly_);
+    headphoneLayout->addStretch();
 
     auto* fxCard = new QWidget(advancedRouting);
     fxCard->setProperty("class", QStringLiteral("detailCard"));
@@ -351,18 +401,6 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     fxSection->setObjectName(QStringLiteral("fxRoutingSection"));
     fxSection->setProperty("class", QStringLiteral("sectionLabel"));
     fxRoutingLayout->addWidget(fxSection, 0, 0, 1, 3);
-    for (int destination = 0; destination < 9; ++destination) {
-        auto* check = new QCheckBox(usbCard);
-        check->setObjectName(QStringLiteral("usbRoute%1").arg(destination));
-        usbRouteChecks_.append(check);
-        usbRoutesLayout->addWidget(check, destination / 3, destination % 3);
-        connect(check, &QCheckBox::toggled, this,
-                [this, destination](const bool enabled) {
-                    (void)device_.setUsbRouteEnabled(
-                        static_cast<model::UsbRouteDestination>(destination), enabled);
-                });
-    }
-    usbLayout->addLayout(usbRoutesLayout);
     for (int effect = 0; effect < 2; ++effect) {
         for (int destination = 0; destination < 3; ++destination) {
             const int route = effect * 3 + destination;
@@ -378,9 +416,37 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
                     });
         }
     }
-    advancedGrid->addWidget(usbCard, 0, 0, 1, 2);
-    advancedGrid->addWidget(monitorCard, 1, 0);
+
+    auto* outputCard = new QWidget(advancedRouting);
+    outputCard->setProperty("class", QStringLiteral("detailCard"));
+    auto* outputLayout = new QVBoxLayout(outputCard);
+    auto* outputSection = new QLabel(outputCard);
+    outputSection->setObjectName(QStringLiteral("outputRoutingSection"));
+    outputSection->setProperty("class", QStringLiteral("sectionLabel"));
+    outputLayout->addWidget(outputSection);
+    constexpr std::array outputIds {
+        model::PhysicalOutputId::MainOut,
+        model::PhysicalOutputId::MonitorOut1,
+        model::PhysicalOutputId::MonitorOut2,
+    };
+    for (int index = 0; index < static_cast<int>(outputIds.size()); ++index) {
+        auto* check = new QCheckBox(outputCard);
+        check->setObjectName(QStringLiteral("outputPadMinus10Dbv%1").arg(index));
+        outputPadChecks_.append(check);
+        outputLayout->addWidget(check);
+        connect(check, &QCheckBox::toggled, this,
+                [this, output = outputIds[static_cast<std::size_t>(index)]](
+                    const bool enabled) {
+                    (void)device_.setOutputPadMinus10Dbv(output, enabled);
+                });
+    }
+    outputLayout->addStretch();
+
+    advancedGrid->addWidget(usbCard, 0, 0);
+    advancedGrid->addWidget(monitorCard, 0, 1);
+    advancedGrid->addWidget(headphoneCard, 1, 0);
     advancedGrid->addWidget(fxCard, 1, 1);
+    advancedGrid->addWidget(outputCard, 2, 0, 1, 2);
     routingEvidence_->setParent(routingPage);
     routingEvidence_->setWordWrap(true);
     routingEvidence_->setProperty("class", QStringLiteral("secondaryText"));
@@ -393,12 +459,38 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
                 static_cast<model::UsbMode>(usbMode_->itemData(index).toInt()));
         }
     });
+    connect(usbInput56_, &QComboBox::currentIndexChanged, this, [this](const int index) {
+        if (index >= 0) {
+            (void)device_.setUsbPlaybackAssignment(
+                0, static_cast<model::UsbPlaybackAssignment>(
+                    usbInput56_->itemData(index).toInt()));
+        }
+    });
+    connect(usbInput78_, &QComboBox::currentIndexChanged, this, [this](const int index) {
+        if (index >= 0) {
+            (void)device_.setUsbPlaybackAssignment(
+                1, static_cast<model::UsbPlaybackAssignment>(
+                    usbInput78_->itemData(index).toInt()));
+        }
+    });
     connect(headphoneSource_, &QComboBox::currentIndexChanged, this, [this](const int index) {
         if (index >= 0) {
             (void)device_.setHeadphoneSource(
                 static_cast<model::HeadphoneSource>(headphoneSource_->itemData(index).toInt()));
         }
     });
+    connect(headphoneTapPoint_, &QComboBox::currentIndexChanged, this,
+            [this](const int index) {
+                if (index >= 0) {
+                    (void)device_.setHeadphoneTapPoint(
+                        static_cast<model::RoutingTapPoint>(
+                            headphoneTapPoint_->itemData(index).toInt()));
+                }
+            });
+    connect(bluetoothUsbPhonesOnly_, &QCheckBox::toggled, this,
+            [this](const bool enabled) {
+                (void)device_.setBluetoothUsbPhonesOnly(enabled);
+            });
     connect(monitorStereoLink_, &QCheckBox::toggled,
             this, [this](const bool linked) {
                 (void)device_.setMonitorStereoLink(linked);
@@ -415,7 +507,6 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     connect(&device_.state(), &Flow8State::stateReset, this, &DetailPanel::refresh);
     connect(&device_.state(), &Flow8State::busChanged, this, [this](const int index) {
         if (index == selectedBus_) refreshBus();
-        if (index == 3 + selectedFx_) refreshFx();
     });
     connect(&device_.state(), &Flow8State::effectChanged, this, [this](const int index) {
         if (index == selectedFx_) refreshFx();
@@ -485,7 +576,7 @@ void DetailPanel::refreshBus()
     if (bus->capabilities.limiter) features.append(uiText("Limiter"));
     if (bus->busId == model::BusId::Monitor1 || bus->busId == model::BusId::Monitor2) {
         features.append(uiText("Channel Sends · Pre/Post-Fader"));
-        if (device_.state().routing().monitorLink.stereoLinked.value.value_or(false)) {
+        if (device_.state().routing().monitor.stereoLinked.value.value_or(false)) {
             features.append(uiText("MON1/2 LINKED"));
         }
     }
@@ -551,10 +642,9 @@ void DetailPanel::refreshFx()
         uiText("Preset-specific type (unavailable)")));
     refreshFxMeter();
     {
-        const auto* bus = device_.state().bus(3 + selectedFx_);
         const QSignalBlocker blocker(fxMaster_);
         fxMaster_->setValue(static_cast<int>(std::lround(
-            (bus == nullptr ? 0.0 : bus->fader.value.value_or(0.0)) * 1000.0)));
+            effect.master.value.value_or(0.0) * 1000.0)));
     }
     const QSignalBlocker presetBlocker(fxPreset_);
     fxPreset_->setCurrentIndex(std::max(0, effect.preset.value.value_or(1) - 1));
@@ -621,68 +711,30 @@ void DetailPanel::refreshSnapshots()
 
 void DetailPanel::refreshRouting()
 {
-    if (routingGrid_->layout() == nullptr) {
-        auto* grid = new QGridLayout(routingGrid_);
-        for (int destination = 0; destination < 5; ++destination) {
-            auto* label = new QLabel(routingGrid_);
-            routingDestinationLabels_.append(label);
-            grid->addWidget(label, 0, destination + 1, Qt::AlignCenter);
-        }
-        for (int input = 0; input < 7; ++input) {
-            const auto* channel = device_.state().channel(input);
-            auto* label = new QLabel(routingGrid_);
-            if (channel != nullptr) label->setProperty("flow8InputId", static_cast<int>(channel->inputId));
-            routingInputLabels_.append(label);
-            grid->addWidget(label, input + 1, 0);
-            for (int destination = 0; destination < 5; ++destination) {
-                auto* check = new QCheckBox(routingGrid_);
-                check->setObjectName(QStringLiteral("routing_%1_%2").arg(input).arg(destination));
-                routingChecks_.append(check);
-                grid->addWidget(check, input + 1, destination + 1, Qt::AlignCenter);
-                connect(check, &QCheckBox::toggled, this,
-                        [this, input, destination](const bool enabled) {
-                            (void)device_.setRouteEnabled(
-                                input, static_cast<model::RoutingDestination>(destination), enabled);
-                        });
-            }
-        }
-    }
-    const std::array<model::BusId, 5> destinations {
-        model::BusId::Main, model::BusId::Monitor1, model::BusId::Monitor2,
-        model::BusId::Fx1, model::BusId::Fx2,
-    };
-    for (int index = 0; index < routingDestinationLabels_.size(); ++index) {
-        routingDestinationLabels_[index]->setText(
-            busDisplayName(destinations[static_cast<std::size_t>(index)]));
-    }
-    for (int index = 0; index < routingInputLabels_.size(); ++index) {
-        const auto* channel = device_.state().channel(index);
-        routingInputLabels_[index]->setText(channel == nullptr
-            ? uiText("Input %1").arg(index + 1) : inputDisplayName(channel->inputId));
-    }
-    for (int input = 0; input < 7; ++input) {
-        for (int destination = 0; destination < 5; ++destination) {
-            const int widgetIndex = input * 5 + destination;
-            if (widgetIndex >= routingChecks_.size()) continue;
-            const auto* route = device_.state().routing().route(
-                input, static_cast<model::RoutingDestination>(destination));
-            const QSignalBlocker blocker(routingChecks_[widgetIndex]);
-            routingChecks_[widgetIndex]->setChecked(
-                route != nullptr && route->enabled.value.value_or(false));
-        }
-    }
     const auto& routing = device_.state().routing();
     {
         const QSignalBlocker blocker(usbMode_);
         usbMode_->setCurrentIndex(usbMode_->findData(static_cast<int>(
-            routing.usbMode.value.value_or(model::UsbMode::Streaming))));
+            routing.usb.mode.value.value_or(model::UsbMode::Streaming))));
     }
-    for (int destination = 0; destination < usbRouteChecks_.size(); ++destination) {
-        const auto* route = routing.usbRoute(
-            static_cast<model::UsbRouteDestination>(destination));
-        const QSignalBlocker blocker(usbRouteChecks_[destination]);
-        usbRouteChecks_[destination]->setChecked(
-            route != nullptr && route->enabled.value.value_or(false));
+    {
+        const QSignalBlocker blocker(usbInput56_);
+        usbInput56_->setCurrentIndex(usbInput56_->findData(static_cast<int>(
+            routing.usb.input56Source.value.value_or(
+                model::UsbPlaybackAssignment::AnalogInput))));
+    }
+    {
+        const QSignalBlocker blocker(usbInput78_);
+        usbInput78_->setCurrentIndex(usbInput78_->findData(static_cast<int>(
+            routing.usb.input78Source.value.value_or(
+                model::UsbPlaybackAssignment::AnalogInput))));
+    }
+    for (int monitor = 0; monitor < monitorSources_.size(); ++monitor) {
+        const QSignalBlocker blocker(monitorSources_[monitor]);
+        monitorSources_[monitor]->setCurrentIndex(
+            monitorSources_[monitor]->findData(static_cast<int>(
+                routing.monitor.outputSources[static_cast<std::size_t>(monitor)]
+                    .value.value_or(model::MonitorRouteSource::MonitorMix))));
     }
     for (int effect = 0; effect < 2; ++effect) {
         for (int destination = 0; destination < 3; ++destination) {
@@ -697,12 +749,37 @@ void DetailPanel::refreshRouting()
     {
         const QSignalBlocker blocker(headphoneSource_);
         headphoneSource_->setCurrentIndex(headphoneSource_->findData(static_cast<int>(
-            routing.headphoneSource.value.value_or(model::HeadphoneSource::Main))));
+            routing.headphones.source.value.value_or(model::HeadphoneSource::Main))));
+    }
+    {
+        const QSignalBlocker blocker(headphoneTapPoint_);
+        headphoneTapPoint_->setCurrentIndex(
+            headphoneTapPoint_->findData(static_cast<int>(
+                routing.headphones.tapPoint.value.value_or(
+                    model::RoutingTapPoint::PostFader))));
+    }
+    {
+        const QSignalBlocker blocker(bluetoothUsbPhonesOnly_);
+        bluetoothUsbPhonesOnly_->setChecked(
+            routing.headphones.bluetoothUsbPhonesOnly.value.value_or(false));
     }
     {
         const QSignalBlocker blocker(monitorStereoLink_);
         monitorStereoLink_->setChecked(
-            routing.monitorLink.stereoLinked.value.value_or(false));
+            routing.monitor.stereoLinked.value.value_or(false));
+    }
+    constexpr std::array outputIds {
+        model::PhysicalOutputId::MainOut,
+        model::PhysicalOutputId::MonitorOut1,
+        model::PhysicalOutputId::MonitorOut2,
+    };
+    for (int index = 0; index < outputPadChecks_.size(); ++index) {
+        const auto* output = device_.state().physicalOutput(
+            outputIds[static_cast<std::size_t>(index)]);
+        const QSignalBlocker blocker(outputPadChecks_[index]);
+        outputPadChecks_[index]->setChecked(
+            output != nullptr && output->padMinus10Dbv.has_value()
+            && output->padMinus10Dbv->value.value_or(false));
     }
 }
 
@@ -778,16 +855,31 @@ void DetailPanel::retranslateUi()
     deleteAppSnapshot_->setText(uiText("Delete"));
     shareSnapshot_->setText(uiText("Share / Export"));
     shareSnapshot_->setToolTip(uiText("Snapshot export is not implemented yet."));
-    routingTitle_->setText(uiText("Routing · Source → Destination"));
-    advancedRoutingTitle_->setText(uiText("USB, FX and Headphone Routing"));
+    routingTitle_->setText(uiText("Routing · Signal Paths and Physical Outputs"));
+    advancedRoutingTitle_->setText(
+        uiText("USB, Monitor, Headphones, FX Returns and Outputs"));
     findChild<QLabel*>(QStringLiteral("usbModeLabel"))->setText(uiText("USB Mode"));
+    findChild<QLabel*>(QStringLiteral("usbInput56Label"))->setText(
+        uiText("Input 5/6 Playback Source"));
+    findChild<QLabel*>(QStringLiteral("usbInput78Label"))->setText(
+        uiText("Input 7/8 Playback Source"));
     findChild<QLabel*>(QStringLiteral("headphoneSourceLabel"))->setText(
         uiText("Headphone Source"));
+    findChild<QLabel*>(QStringLiteral("headphoneTapLabel"))->setText(
+        uiText("Headphone Tap Point"));
     findChild<QLabel*>(QStringLiteral("usbRoutingSection"))->setText(
-        uiText("USB / Bluetooth"));
+        uiText("USB Return / Playback"));
     findChild<QLabel*>(QStringLiteral("monitorRoutingSection"))->setText(
-        uiText("Monitor / Headphones"));
+        uiText("Monitor Outputs"));
+    findChild<QLabel*>(QStringLiteral("headphoneRoutingSection"))->setText(
+        uiText("Headphones"));
     findChild<QLabel*>(QStringLiteral("fxRoutingSection"))->setText(uiText("FX Returns"));
+    findChild<QLabel*>(QStringLiteral("outputRoutingSection"))->setText(
+        uiText("Physical Output Settings"));
+    for (int monitor = 0; monitor < 2; ++monitor) {
+        findChild<QLabel*>(QStringLiteral("monitorSourceLabel%1").arg(monitor))->setText(
+            uiText("MON %1 Physical Output Source").arg(monitor + 1));
+    }
     const int selectedUsbMode = usbMode_->currentData().toInt();
     {
         const QSignalBlocker blocker(usbMode_);
@@ -798,13 +890,33 @@ void DetailPanel::retranslateUi()
                           static_cast<int>(model::UsbMode::Recording));
         usbMode_->setCurrentIndex(qMax(0, usbMode_->findData(selectedUsbMode)));
     }
-    const std::array<const char*, 9> usbRoutes {
-        "USB → Input 1", "USB → Input 2", "USB → Input 3", "USB → Input 4",
-        "USB → Input 5/6", "USB → Input 7/8", "USB → USB / Bluetooth",
-        "USB → Monitor 1", "USB → Monitor 2",
+    const auto populateUsbAssignment = [this](QComboBox* combo,
+                                               const QString& analogLabel,
+                                               const QString& usbLabel) {
+        const int selected = combo->currentData().toInt();
+        const QSignalBlocker blocker(combo);
+        combo->clear();
+        combo->addItem(analogLabel,
+                       static_cast<int>(model::UsbPlaybackAssignment::AnalogInput));
+        combo->addItem(usbLabel,
+                       static_cast<int>(model::UsbPlaybackAssignment::UsbReturn));
+        combo->setCurrentIndex(qMax(0, combo->findData(selected)));
     };
-    for (int index = 0; index < usbRouteChecks_.size(); ++index) {
-        usbRouteChecks_[index]->setText(uiText(usbRoutes[static_cast<std::size_t>(index)]));
+    populateUsbAssignment(usbInput56_, uiText("Analog Input 5/6"),
+                          uiText("USB Return 1/2"));
+    populateUsbAssignment(usbInput78_, uiText("Analog Input 7/8"),
+                          uiText("USB Return 3/4"));
+    for (auto* combo : monitorSources_) {
+        const int selected = combo->currentData().toInt();
+        const QSignalBlocker blocker(combo);
+        combo->clear();
+        combo->addItem(uiText("Monitor Mix"),
+                       static_cast<int>(model::MonitorRouteSource::MonitorMix));
+        combo->addItem(uiText("USB Return 1/2"),
+                       static_cast<int>(model::MonitorRouteSource::UsbReturn12));
+        combo->addItem(uiText("USB Return 3/4"),
+                       static_cast<int>(model::MonitorRouteSource::UsbReturn34));
+        combo->setCurrentIndex(qMax(0, combo->findData(selected)));
     }
     const std::array<const char*, 6> fxRoutes {
         "FX 1 → Main", "FX 1 → Monitor 1", "FX 1 → Monitor 2",
@@ -819,14 +931,31 @@ void DetailPanel::retranslateUi()
         headphoneSource_->clear();
         headphoneSource_->addItem(uiText("Main"),
             static_cast<int>(model::HeadphoneSource::Main));
-        headphoneSource_->addItem(uiText("Monitor 1"),
-            static_cast<int>(model::HeadphoneSource::Monitor1));
-        headphoneSource_->addItem(uiText("Monitor 2"),
-            static_cast<int>(model::HeadphoneSource::Monitor2));
+        headphoneSource_->addItem(uiText("Monitor"),
+            static_cast<int>(model::HeadphoneSource::Monitor));
         headphoneSource_->setCurrentIndex(
             qMax(0, headphoneSource_->findData(selectedHeadphone)));
     }
+    const int selectedTapPoint = headphoneTapPoint_->currentData().toInt();
+    {
+        const QSignalBlocker blocker(headphoneTapPoint_);
+        headphoneTapPoint_->clear();
+        headphoneTapPoint_->addItem(uiText("Pre-Fader"),
+            static_cast<int>(model::RoutingTapPoint::PreFader));
+        headphoneTapPoint_->addItem(uiText("Post-Fader"),
+            static_cast<int>(model::RoutingTapPoint::PostFader));
+        headphoneTapPoint_->setCurrentIndex(
+            qMax(0, headphoneTapPoint_->findData(selectedTapPoint)));
+    }
+    bluetoothUsbPhonesOnly_->setText(uiText("Bluetooth / USB to Headphones Only"));
     monitorStereoLink_->setText(uiText("MON1/2 Linked"));
+    const std::array<const char*, 3> outputPadLabels {
+        "MAIN OUT -10 dBV", "MON OUT 1 -10 dBV", "MON OUT 2 -10 dBV",
+    };
+    for (int index = 0; index < outputPadChecks_.size(); ++index) {
+        outputPadChecks_[index]->setText(
+            uiText(outputPadLabels[static_cast<std::size_t>(index)]));
+    }
     routingEvidence_->setText(uiText(
         "Official capability · Simulator only · BLE routing protocol UNKNOWN"));
 

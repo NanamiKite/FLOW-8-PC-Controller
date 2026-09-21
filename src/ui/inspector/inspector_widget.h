@@ -73,7 +73,6 @@ private:
     QVector<QSlider*> sendSliders_;
     QVector<QLabel*> sendLabels_;
     QVector<QComboBox*> monitorSendModes_;
-    QVector<QCheckBox*> routeChecks_;
 };
 
 } // namespace flow8::ui

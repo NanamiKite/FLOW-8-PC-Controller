@@ -77,6 +77,8 @@ int main(int argc, char* argv[])
                           QString::fromLatin1(flow8::protocol::toHexBytes(packet.payload)));
             object.insert(QStringLiteral("evidence"),
                           flow8::model::evidenceStatusName(packet.evidence).toString());
+            object.insert(QStringLiteral("payloadEvidence"),
+                          flow8::model::evidenceStatusName(packet.payloadEvidence).toString());
         } else {
             failed = true;
         }
@@ -87,7 +89,9 @@ int main(int argc, char* argv[])
                 << object.value(QStringLiteral("name")).toString() << " fragments="
                 << object.value(QStringLiteral("fragmentCount")).toInt() << " payload="
                 << object.value(QStringLiteral("payload")).toString() << " evidence="
-                << object.value(QStringLiteral("evidence")).toString() << '\n';
+                << object.value(QStringLiteral("evidence")).toString()
+                << " payloadEvidence="
+                << object.value(QStringLiteral("payloadEvidence")).toString() << '\n';
         } else {
             out << "INVALID raw=" << object.value(QStringLiteral("raw")).toString()
                 << " error=" << result.message << '\n';

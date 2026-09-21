@@ -23,17 +23,12 @@ public:
 
     [[nodiscard]] const QVector<QByteArray>& sentPackets() const noexcept;
     void simulateIncoming(const QByteArray& payload);
-    void setRemoteChangesEnabled(bool enabled);
 
 private:
     void setState(State state);
-    void emitSyntheticRemoteChange();
 
     State state_ {State::Disconnected};
     QVector<QByteArray> sentPackets_;
-    QTimer remoteChangeTimer_;
-    int remoteStep_ {};
-    bool remoteChangesEnabled_ {true};
 };
 
 } // namespace flow8::simulator

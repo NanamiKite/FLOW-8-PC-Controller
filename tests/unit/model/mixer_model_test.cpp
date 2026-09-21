@@ -10,7 +10,8 @@ class MixerModelTest final : public QObject {
 
 private slots:
     void officialInputTopologyIsExplicit();
-    void busCapabilitiesDoNotLeakIntoFxBuses();
+    void signalSourcesExtendBeyondMixerStrips();
+    void mixBusesAndPhysicalOutputsAreDistinct();
     void snapshotAndRoutingShapesAreDistinct();
     void flowMixFunctionalExtensionsRemainExplicit();
 };
@@ -47,10 +48,32 @@ void MixerModelTest::officialInputTopologyIsExplicit()
              flow8::model::CapabilitySource::OfficialManual);
 }
 
-void MixerModelTest::busCapabilitiesDoNotLeakIntoFxBuses()
+void MixerModelTest::signalSourcesExtendBeyondMixerStrips()
+{
+    const auto sources = flow8::model::createSignalSourceProfile();
+    QCOMPARE(sources.size(), 9);
+    for (int index = 0; index < 7; ++index) {
+        QCOMPARE(sources[index].mixerInputIndex, std::optional(index));
+        QVERIFY(sources[index].mixerEndpoint.has_value());
+    }
+    QCOMPARE(sources[6].id, flow8::model::SignalSourceId::BluetoothUsbMixer);
+    QCOMPARE(sources[7].id, flow8::model::SignalSourceId::UsbReturn12);
+    QCOMPARE(sources[8].id, flow8::model::SignalSourceId::UsbReturn34);
+    QVERIFY(!sources[7].mixerInputIndex.has_value());
+    QVERIFY(!sources[7].mixerEndpoint.has_value());
+    QVERIFY(!sources[8].mixerInputIndex.has_value());
+    QVERIFY(!sources[8].mixerEndpoint.has_value());
+    QCOMPARE(sources[7].evidence.source,
+             flow8::model::CapabilitySource::OfficialApk);
+}
+
+void MixerModelTest::mixBusesAndPhysicalOutputsAreDistinct()
 {
     const auto buses = flow8::model::createOfficialBusProfile();
-    QCOMPARE(buses.size(), 5);
+    QCOMPARE(buses.size(), 3);
+    QCOMPARE(buses[0].busId, flow8::model::BusId::Main);
+    QCOMPARE(buses[1].busId, flow8::model::BusId::Monitor1);
+    QCOMPARE(buses[2].busId, flow8::model::BusId::Monitor2);
     QVERIFY(buses[0].balance.has_value());
     QVERIFY(buses[0].eq.has_value());
     QVERIFY(buses[0].limiterDb.has_value());
@@ -58,13 +81,17 @@ void MixerModelTest::busCapabilitiesDoNotLeakIntoFxBuses()
     QVERIFY(!buses[1].balance.has_value());
     QVERIFY(buses[1].eq.has_value());
     QVERIFY(buses[2].limiterDb.has_value());
-    for (int index = 3; index < 5; ++index) {
-        QVERIFY(!buses[index].balance.has_value());
-        QVERIFY(!buses[index].eq.has_value());
-        QVERIFY(!buses[index].limiterDb.has_value());
-        QVERIFY(!buses[index].outputDelay.has_value());
-        QVERIFY(buses[index].capabilities.fxEngine);
-    }
+
+    const auto outputs = flow8::model::createPhysicalOutputProfile();
+    QCOMPARE(outputs.size(), 4);
+    QCOMPARE(outputs[0].id, flow8::model::PhysicalOutputId::MainOut);
+    QCOMPARE(outputs[1].id, flow8::model::PhysicalOutputId::MonitorOut1);
+    QCOMPARE(outputs[2].id, flow8::model::PhysicalOutputId::MonitorOut2);
+    QCOMPARE(outputs[3].id, flow8::model::PhysicalOutputId::Headphones);
+    QCOMPARE(outputs[0].nominalSource,
+             std::optional(flow8::model::PhysicalOutputSource::Main));
+    QVERIFY(!outputs[3].nominalSource.has_value());
+    QVERIFY(!outputs[3].padMinus10Dbv.has_value());
 }
 
 void MixerModelTest::snapshotAndRoutingShapesAreDistinct()
@@ -76,24 +103,28 @@ void MixerModelTest::snapshotAndRoutingShapesAreDistinct()
     QVERIFY(!snapshots.first().scope.value.has_value());
 
     const auto routing = flow8::model::createRoutingProfile();
-    QCOMPARE(routing.routes.size(), 35);
     QCOMPARE(routing.routeLevels.cells.size(), 35);
-    QCOMPARE(routing.usbRoutes.size(), 9);
     QCOMPARE(routing.fxOutputRoutes.size(), 6);
-    QVERIFY(routing.route(4, flow8::model::RoutingDestination::Fx2) != nullptr);
+    QVERIFY(routing.routeLevels.level(4, flow8::model::RoutingDestination::Fx2) != nullptr);
     QVERIFY(routing.fxOutputRoute(0, flow8::model::FxOutputDestination::Main) != nullptr);
     QVERIFY(routing.fxOutputRoute(1, flow8::model::FxOutputDestination::Monitor2) != nullptr);
-    QVERIFY(routing.route(7, flow8::model::RoutingDestination::Main) == nullptr);
+    QVERIFY(routing.routeLevels.level(7, flow8::model::RoutingDestination::Main) == nullptr);
+    QCOMPARE(routing.routeLevels.cells.first().sourceEndpoint,
+             flow8::model::EndpointId::Input1);
+    QCOMPARE(routing.routeLevels.cells.first().destinationEndpoint,
+             flow8::model::EndpointId::MainLr);
 }
 
 void MixerModelTest::flowMixFunctionalExtensionsRemainExplicit()
 {
     const auto routing = flow8::model::createRoutingProfile();
-    QVERIFY(routing.usbRoute(flow8::model::UsbRouteDestination::Monitor2) != nullptr);
     QVERIFY(routing.fxOutputRoute(1, flow8::model::FxOutputDestination::Monitor2) != nullptr);
-    QVERIFY(!routing.usbMode.value.has_value());
-    QVERIFY(!routing.headphoneSource.value.has_value());
-    QVERIFY(!routing.monitorLink.stereoLinked.value.has_value());
+    QVERIFY(!routing.usb.mode.value.has_value());
+    QVERIFY(!routing.usb.input56Source.value.has_value());
+    QVERIFY(!routing.usb.input78Source.value.has_value());
+    QVERIFY(!routing.headphones.source.value.has_value());
+    QVERIFY(!routing.headphones.tapPoint.value.has_value());
+    QVERIFY(!routing.monitor.stereoLinked.value.has_value());
 
     const flow8::model::AppPreferences preferences;
     QVERIFY(preferences.showMuteButtons);

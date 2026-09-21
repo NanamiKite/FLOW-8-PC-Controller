@@ -4,25 +4,38 @@ namespace flow8::ble {
 
 QBluetoothUuid flow8ServiceUuid()
 {
-    // INFERRED from reference/flow-8-midi; BLOCKED: NEED_HARDWARE in this project.
+    // VERIFIED_FROM_APK; real GATT presence remains BLOCKED: NEED_HARDWARE.
     return QBluetoothUuid(QStringLiteral("14839ad4-8d7e-415c-9a42-167340cf2339"));
 }
 
 QBluetoothUuid flow8CharacteristicUuid()
 {
-    // INFERRED from reference/flow-8-midi; BLOCKED: NEED_HARDWARE in this project.
+    // VERIFIED_FROM_APK; real GATT presence remains BLOCKED: NEED_HARDWARE.
     return QBluetoothUuid(QStringLiteral("0034594a-a8e7-4b1a-a6b1-cd5243059a57"));
+}
+
+QString flow8ApkDeviceName()
+{
+    // VERIFIED_FROM_APK native constant. This is not an advertisement capture.
+    return QStringLiteral("FLOW 8");
+}
+
+QString flow8LegacyReferenceName()
+{
+    // Retained only as an INFERRED reference-project candidate. The current
+    // APK artifacts do not contain this string.
+    return QStringLiteral("FLOW 8 LE");
 }
 
 QString flow8AdvertisedName()
 {
-    // INFERRED from reference/flow-8-midi; BLOCKED: NEED_HARDWARE in this project.
-    return QStringLiteral("FLOW 8 LE");
+    return flow8ApkDeviceName();
 }
 
 bool isFlow8Candidate(const QBluetoothDeviceInfo& device)
 {
-    if (device.name().compare(flow8AdvertisedName(), Qt::CaseInsensitive) == 0) {
+    if (device.name().compare(flow8ApkDeviceName(), Qt::CaseInsensitive) == 0
+        || device.name().compare(flow8LegacyReferenceName(), Qt::CaseInsensitive) == 0) {
         return true;
     }
     return device.serviceUuids().contains(flow8ServiceUuid());

@@ -14,7 +14,6 @@ private slots:
 void FakeTransportTest::connectsAndEchoesBytes()
 {
     flow8::simulator::FakeTransport transport;
-    transport.setRemoteChangesEnabled(false);
     QSignalSpy receivedSpy(&transport, &flow8::Flow8Transport::bytesReceived);
 
     transport.connectTransport();

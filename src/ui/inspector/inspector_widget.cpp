@@ -203,22 +203,28 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     auto* eqPage = createPage(tabs_);
     auto* eqLayout = new QHBoxLayout(eqPage);
     eqLayout->setContentsMargins(10, 8, 10, 8);
+    eqGraph_->setObjectName(QStringLiteral("channelEqGraph"));
     eqLayout->addWidget(eqGraph_, 2);
     auto* eqControls = new QGridLayout;
     for (int band = 0; band < 4; ++band) {
         auto* label = new QLabel(eqPage);
-        auto* slider = new QSlider(Qt::Horizontal, eqPage);
+        auto* slider = new QSlider(Qt::Vertical, eqPage);
         slider->setRange(-150, 150);
+        slider->setMinimumHeight(140);
         slider->setObjectName(QStringLiteral("eqGain%1").arg(band));
         eqGainSliders_.append(slider);
         eqBandLabels_.append(label);
-        eqControls->addWidget(label, band, 0);
-        eqControls->addWidget(slider, band, 1);
+        eqControls->addWidget(slider, 0, band, Qt::AlignHCenter);
+        eqControls->addWidget(label, 1, band, Qt::AlignHCenter);
         connect(slider, &QSlider::valueChanged, this, [this, band](const int value) {
             (void)device_.setChannelEqGain(selectedChannel_, band, value / 10.0);
         });
     }
     eqLayout->addLayout(eqControls, 1);
+    connect(eqGraph_, &EqGraphWidget::bandGainEdited, this,
+            [this](const int band, const double gainDb) {
+                (void)device_.setChannelEqGain(selectedChannel_, band, gainDb);
+            });
 
     auto* compressorPage = createPage(tabs_);
     auto* compressorLayout = new QFormLayout(compressorPage);
@@ -280,33 +286,10 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
         });
     }
 
-    auto* routingPage = createPage(tabs_);
-    auto* routingLayout = new QHBoxLayout(routingPage);
-    routingLayout->setContentsMargins(18, 12, 18, 12);
-    const std::array destinations {
-        model::RoutingDestination::Main,
-        model::RoutingDestination::Monitor1,
-        model::RoutingDestination::Monitor2,
-        model::RoutingDestination::Fx1,
-        model::RoutingDestination::Fx2,
-    };
-    for (int route = 0; route < 5; ++route) {
-        auto* check = new QCheckBox(routingPage);
-        check->setObjectName(QStringLiteral("route%1").arg(route));
-        routeChecks_.append(check);
-        routingLayout->addWidget(check);
-        connect(check, &QCheckBox::toggled, this,
-                [this, destination = destinations[static_cast<std::size_t>(route)]](const bool enabled) {
-                    (void)device_.setRouteEnabled(selectedChannel_, destination, enabled);
-                });
-    }
-    routingLayout->addStretch();
-
     tabs_->addTab(channelPage, {});
     tabs_->addTab(eqPage, {});
     tabs_->addTab(compressorPage, {});
     tabs_->addTab(sendsPage, {});
-    tabs_->addTab(routingPage, {});
 
     auto* header = new QHBoxLayout;
     header->addWidget(title_);
@@ -519,19 +502,6 @@ void InspectorWidget::refresh()
         }
     }
 
-    const std::array destinations {
-        model::RoutingDestination::Main,
-        model::RoutingDestination::Monitor1,
-        model::RoutingDestination::Monitor2,
-        model::RoutingDestination::Fx1,
-        model::RoutingDestination::Fx2,
-    };
-    for (int route = 0; route < routeChecks_.size(); ++route) {
-        const auto* state = device_.state().routing().route(
-            selectedChannel_, destinations[static_cast<std::size_t>(route)]);
-        const QSignalBlocker blocker(routeChecks_[route]);
-        routeChecks_[route]->setChecked(state != nullptr && state->enabled.value.value_or(false));
-    }
 }
 
 void InspectorWidget::retranslateUi()
@@ -540,7 +510,6 @@ void InspectorWidget::retranslateUi()
     tabs_->setTabText(1, uiText("Equalizer"));
     tabs_->setTabText(2, uiText("Compressor"));
     tabs_->setTabText(3, uiText("Sends"));
-    tabs_->setTabText(4, uiText("Routing"));
     evidenceNote_->setText(uiText(
         "Hardware control for advanced parameters is unavailable in this build."));
     syntheticBadge_->setText(uiText("SYNTHETIC"));
@@ -600,10 +569,6 @@ void InspectorWidget::retranslateUi()
         mode->addItem(uiText("Post-Fader"),
                       static_cast<int>(model::MonitorSendMode::PostFader));
         mode->setCurrentIndex(qMax(0, mode->findData(selected)));
-    }
-    const std::array<const char*, 5> routeNames {"Main", "Monitor 1", "Monitor 2", "FX 1", "FX 2"};
-    for (int index = 0; index < routeChecks_.size(); ++index) {
-        routeChecks_[index]->setText(uiText(routeNames[static_cast<std::size_t>(index)]));
     }
     refresh();
 }

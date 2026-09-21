@@ -16,6 +16,7 @@ struct FxParameterState {
 
 struct FxState {
     int index {};
+    StateValue<double> master;
     StateValue<int> preset;
     StateValue<QString> presetName;
     StateValue<double> parameter1;
@@ -32,5 +33,7 @@ struct FxState {
 struct GlobalTempoState {
     StateValue<double> bpm;
 };
+
+inline constexpr int fxPresetCount = 16;
 
 } // namespace flow8::model

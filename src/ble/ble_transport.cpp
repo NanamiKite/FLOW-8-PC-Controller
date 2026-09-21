@@ -348,11 +348,15 @@ void BleTransport::handleServiceDetails(const QLowEnergyService::ServiceState se
                     QStringLiteral("FLOW 8 characteristic was not found"));
         return;
     }
-    setState(State::Connected);
     if (!subscribeNotifications(true)) {
         emit errorOccurred(QStringLiteral(
             "GATT notification subscription is unavailable (properties or CCCD missing)"));
+        return;
     }
+    // APK evidence confirms that notification setup is followed by a FLOW 8
+    // handshake. Its final payload is still unknown, so a generic GATT link
+    // must not be reported as a ready device connection.
+    setState(State::WaitingForHandshake);
 }
 
 void BleTransport::clearConnectionObjects()

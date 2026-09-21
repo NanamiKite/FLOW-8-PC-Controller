@@ -52,7 +52,6 @@ SettingsDialog::SettingsDialog(Flow8Device& device, LanguageManager& languageMan
     , controlGesture_(new QComboBox(this))
     , eqEditingMode_(new QComboBox(this))
     , outputDelayIndicator_(new QCheckBox(this))
-    , outputLevel10dBV_(new QCheckBox(this))
     , footswitchMode_(new QComboBox(this))
     , sysexDump_(new QPushButton(this))
     , diagnosticsNote_(new QLabel(this))
@@ -87,7 +86,7 @@ SettingsDialog::SettingsDialog(Flow8Device& device, LanguageManager& languageMan
     showChannelIcons_->setObjectName(QStringLiteral("showChannelIcons"));
     static_cast<QVBoxLayout*>(mixerPage->layout())->addWidget(showMuteButtons_);
     static_cast<QVBoxLayout*>(mixerPage->layout())->addWidget(showChannelIcons_);
-    for (int index = 0; index < model::inputStripCount; ++index) {
+    for (int index = 0; index < model::conventionalMixerInputCount; ++index) {
         auto* visible = new QCheckBox(mixerPage);
         visible->setObjectName(QStringLiteral("channelVisible%1").arg(index));
         channelVisibility_.append(visible);
@@ -125,9 +124,7 @@ SettingsDialog::SettingsDialog(Flow8Device& device, LanguageManager& languageMan
 
     auto* outputPage = settingsPage(tabs_);
     outputDelayIndicator_->setObjectName(QStringLiteral("outputDelayIndicator"));
-    outputLevel10dBV_->setObjectName(QStringLiteral("outputLevel10dBV"));
     static_cast<QVBoxLayout*>(outputPage->layout())->addWidget(outputDelayIndicator_);
-    static_cast<QVBoxLayout*>(outputPage->layout())->addWidget(outputLevel10dBV_);
     auto* outputNote = new QLabel(outputPage);
     outputNote->setObjectName(QStringLiteral("outputPreferenceNote"));
     outputNote->setWordWrap(true);
@@ -157,8 +154,7 @@ SettingsDialog::SettingsDialog(Flow8Device& device, LanguageManager& languageMan
         const auto language = static_cast<UiLanguage>(languageSelector_->itemData(index).toInt());
         (void)languageManager_.setLanguage(language);
     });
-    for (auto* check : {showMuteButtons_, showChannelIcons_,
-                        outputDelayIndicator_, outputLevel10dBV_}) {
+    for (auto* check : {showMuteButtons_, showChannelIcons_, outputDelayIndicator_}) {
         connect(check, &QCheckBox::toggled, this, &SettingsDialog::commitPreferences);
     }
     connect(controlGesture_, &QComboBox::currentIndexChanged,
@@ -173,7 +169,6 @@ SettingsDialog::SettingsDialog(Flow8Device& device, LanguageManager& languageMan
     showMuteButtons_->setChecked(preferences.showMuteButtons);
     showChannelIcons_->setChecked(preferences.showChannelIcons);
     outputDelayIndicator_->setChecked(preferences.showOutputDelayIndicator);
-    outputLevel10dBV_->setChecked(preferences.outputLevel10dBV);
     retranslateUi();
 }
 
@@ -195,7 +190,6 @@ void SettingsDialog::commitPreferences()
     preferences.showMuteButtons = showMuteButtons_->isChecked();
     preferences.showChannelIcons = showChannelIcons_->isChecked();
     preferences.showOutputDelayIndicator = outputDelayIndicator_->isChecked();
-    preferences.outputLevel10dBV = outputLevel10dBV_->isChecked();
     preferences.controlGesture = static_cast<model::ControlGesture>(
         controlGesture_->currentData().toInt());
     preferences.eqEditingMode = static_cast<model::EqEditingMode>(
@@ -276,7 +270,6 @@ void SettingsDialog::retranslateUi()
         "Standard / Parametric is a PC interaction preference, not a protocol claim."));
 
     outputDelayIndicator_->setText(uiText("Show Output Delay Indicator"));
-    outputLevel10dBV_->setText(uiText("10 dBV Output Level"));
     findChild<QLabel*>(QStringLiteral("outputPreferenceNote"))->setText(uiText(
         "Output hardware values are unknown until a FLOW 8 is connected and verified."));
     sysexDump_->setText(uiText("Request / Save MIDI SysEx Dump"));

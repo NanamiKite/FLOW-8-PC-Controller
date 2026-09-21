@@ -93,17 +93,18 @@ private:
     QPushButton* hardwareDelete_ {};
     QPushButton* hardwareReset_ {};
 
-    QWidget* routingGrid_ {};
     QLabel* routingTitle_ {};
-    QVector<QLabel*> routingDestinationLabels_;
-    QVector<QLabel*> routingInputLabels_;
-    QVector<QCheckBox*> routingChecks_;
     QLabel* advancedRoutingTitle_ {};
     QComboBox* usbMode_ {};
-    QVector<QCheckBox*> usbRouteChecks_;
+    QComboBox* usbInput56_ {};
+    QComboBox* usbInput78_ {};
+    QVector<QComboBox*> monitorSources_;
     QVector<QCheckBox*> fxOutputChecks_;
     QComboBox* headphoneSource_ {};
+    QComboBox* headphoneTapPoint_ {};
+    QCheckBox* bluetoothUsbPhonesOnly_ {};
     QCheckBox* monitorStereoLink_ {};
+    QVector<QCheckBox*> outputPadChecks_;
     QLabel* routingEvidence_ {};
 };
 

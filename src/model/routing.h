@@ -1,8 +1,10 @@
 #pragma once
 
 #include "model/endpoint.h"
+#include "model/signal_path.h"
 #include "model/state_value.h"
 
+#include <array>
 #include <QVector>
 
 #include <optional>
@@ -22,22 +24,15 @@ enum class UsbMode {
     Recording,
 };
 
-enum class UsbRouteDestination {
-    Input1,
-    Input2,
-    Input3,
-    Input4,
-    Input56,
-    Input78,
-    UsbBluetooth,
-    Monitor1,
-    Monitor2,
+enum class UsbPlaybackAssignment {
+    AnalogInput,
+    UsbReturn,
 };
 
-enum class HeadphoneSource {
-    Main,
-    Monitor1,
-    Monitor2,
+enum class MonitorRouteSource {
+    MonitorMix,
+    UsbReturn12,
+    UsbReturn34,
 };
 
 // FX input sends live on ChannelState. These destinations describe only the
@@ -47,12 +42,6 @@ enum class FxOutputDestination {
     Main,
     Monitor1,
     Monitor2,
-};
-
-struct RouteState {
-    int inputIndex {};
-    RoutingDestination destination {RoutingDestination::Main};
-    StateValue<bool> enabled;
 };
 
 struct RouteLevelState {
@@ -118,9 +107,21 @@ struct RouteLevelMatrix {
     }
 }
 
-struct UsbRouteState {
-    UsbRouteDestination destination {UsbRouteDestination::Input1};
-    StateValue<bool> enabled;
+struct UsbRoutingState {
+    StateValue<UsbMode> mode;
+    StateValue<UsbPlaybackAssignment> input56Source;
+    StateValue<UsbPlaybackAssignment> input78Source;
+};
+
+struct MonitorRoutingState {
+    std::array<StateValue<MonitorRouteSource>, 2> outputSources;
+    StateValue<bool> stereoLinked;
+};
+
+struct HeadphoneRoutingState {
+    StateValue<HeadphoneSource> source;
+    StateValue<RoutingTapPoint> tapPoint;
+    StateValue<bool> bluetoothUsbPhonesOnly;
 };
 
 struct FxOutputRouteState {
@@ -129,40 +130,12 @@ struct FxOutputRouteState {
     StateValue<bool> enabled;
 };
 
-struct MonitorLinkState {
-    StateValue<bool> stereoLinked;
-};
-
 struct RoutingState {
     RouteLevelMatrix routeLevels;
-    QVector<RouteState> routes;
-    StateValue<UsbMode> usbMode;
-    QVector<UsbRouteState> usbRoutes;
+    UsbRoutingState usb;
+    MonitorRoutingState monitor;
+    HeadphoneRoutingState headphones;
     QVector<FxOutputRouteState> fxOutputRoutes;
-    StateValue<HeadphoneSource> headphoneSource;
-    MonitorLinkState monitorLink;
-
-    [[nodiscard]] const RouteState* route(int inputIndex,
-                                          RoutingDestination destination) const noexcept
-    {
-        for (const auto& candidate : routes) {
-            if (candidate.inputIndex == inputIndex && candidate.destination == destination) {
-                return &candidate;
-            }
-        }
-        return nullptr;
-    }
-
-    [[nodiscard]] const UsbRouteState* usbRoute(
-        UsbRouteDestination destination) const noexcept
-    {
-        for (const auto& candidate : usbRoutes) {
-            if (candidate.destination == destination) {
-                return &candidate;
-            }
-        }
-        return nullptr;
-    }
 
     [[nodiscard]] const FxOutputRouteState* fxOutputRoute(
         int effectIndex, FxOutputDestination destination) const noexcept
@@ -184,8 +157,9 @@ struct RoutingState {
     case RoutingDestination::Main: return 0;
     case RoutingDestination::Monitor1: return 1;
     case RoutingDestination::Monitor2: return 2;
-    case RoutingDestination::Fx1: return 3;
-    case RoutingDestination::Fx2: return 4;
+    case RoutingDestination::Fx1:
+    case RoutingDestination::Fx2:
+        return -1;
     }
     return -1;
 }

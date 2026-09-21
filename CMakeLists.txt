@@ -130,9 +130,12 @@ add_library(flow8_core STATIC
     src/core/semantic_command_queue.h
     src/model/flow8_capabilities.cpp
     src/model/flow8_capabilities.h
+    src/model/endpoint.h
     src/model/meter.h
     src/model/preferences.h
+    src/model/routing.h
     src/model/session.h
+    src/model/signal_path.h
 )
 add_library(flow8::core ALIAS flow8_core)
 

@@ -91,19 +91,24 @@ public:
     [[nodiscard]] bool setFxPreset(int index, int preset);
     [[nodiscard]] bool setFxParameter(int index, int parameter, double normalized);
     [[nodiscard]] bool setFxMuted(int index, bool muted);
+    [[nodiscard]] bool setFxMaster(int index, double normalized);
     [[nodiscard]] bool tapTempo();
     [[nodiscard]] bool recallSnapshot(int index);
     [[nodiscard]] bool storeAppSnapshot(const QString& name, model::SnapshotScope scope);
     [[nodiscard]] bool loadAppSnapshot(int libraryIndex);
     [[nodiscard]] bool renameAppSnapshot(int libraryIndex, const QString& name);
     [[nodiscard]] bool deleteAppSnapshot(int libraryIndex);
-    [[nodiscard]] bool setRouteEnabled(int inputIndex,
-                                       model::RoutingDestination destination, bool enabled);
     [[nodiscard]] bool setUsbMode(model::UsbMode mode);
-    [[nodiscard]] bool setUsbRouteEnabled(model::UsbRouteDestination destination, bool enabled);
+    [[nodiscard]] bool setUsbPlaybackAssignment(
+        int pairIndex, model::UsbPlaybackAssignment assignment);
+    [[nodiscard]] bool setMonitorRouteSource(
+        int monitorIndex, model::MonitorRouteSource source);
     [[nodiscard]] bool setFxOutputRouteEnabled(
         int effectIndex, model::FxOutputDestination destination, bool enabled);
     [[nodiscard]] bool setHeadphoneSource(model::HeadphoneSource source);
+    [[nodiscard]] bool setHeadphoneTapPoint(model::RoutingTapPoint tapPoint);
+    [[nodiscard]] bool setBluetoothUsbPhonesOnly(bool enabled);
+    [[nodiscard]] bool setOutputPadMinus10Dbv(model::PhysicalOutputId output, bool enabled);
     [[nodiscard]] bool setMonitorStereoLink(bool linked);
     void setPreferences(model::AppPreferences preferences);
     [[nodiscard]] bool configureAssistedSetup(model::InputId input,

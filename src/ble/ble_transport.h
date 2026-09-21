@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ble/ble_services.h"
 #include "core/flow8_transport.h"
 
 #include <QBluetoothDeviceInfo>
@@ -25,7 +26,7 @@ public:
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] State state() const noexcept override;
 
-    void startScan(int timeoutMs = 10'000);
+    void startScan(int timeoutMs = flow8ApkScanTimeoutMs());
     void stopScan();
     void setDevice(const QBluetoothDeviceInfo& device);
     [[nodiscard]] const QBluetoothDeviceInfo& device() const noexcept;

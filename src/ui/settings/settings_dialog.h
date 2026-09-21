@@ -53,7 +53,6 @@ private:
     QComboBox* controlGesture_ {};
     QComboBox* eqEditingMode_ {};
     QCheckBox* outputDelayIndicator_ {};
-    QCheckBox* outputLevel10dBV_ {};
     QComboBox* footswitchMode_ {};
     QPushButton* sysexDump_ {};
     QLabel* diagnosticsNote_ {};

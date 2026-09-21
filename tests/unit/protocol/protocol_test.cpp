@@ -16,6 +16,7 @@ private slots:
     void recognizesOnlyDocumentedPacketTypes();
     void decodesCapturedFaderPacket();
     void preservesUnknownStatePayload();
+    void preservesMultiFragmentHeadersWithoutGuessingMeaning();
     void rejectsBadChecksum();
     void unitIntervalRoundTrip_data();
     void unitIntervalRoundTrip();
@@ -42,19 +43,30 @@ void ProtocolTest::validatesReferenceChecksums()
     for (const auto& packet : packets) {
         QVERIFY2(flow8::protocol::hasValidChecksum(packet), packet.toHex().constData());
     }
-    QCOMPARE(flow8::protocol::sessionStartPacket(), QByteArray::fromHex("370138"));
-    QCOMPARE(flow8::protocol::configRequestPacket(), QByteArray::fromHex("070108"));
-    QCOMPARE(flow8::protocol::dumpTriggerPacket(), QByteArray::fromHex("4b014c"));
+    QCOMPARE(flow8::protocol::referenceSessionStartPacket(), QByteArray::fromHex("370138"));
+    QCOMPARE(flow8::protocol::referenceConfigRequestPacket(), QByteArray::fromHex("070108"));
+    QCOMPARE(flow8::protocol::referenceDumpTriggerPacket(), QByteArray::fromHex("4b014c"));
     QCOMPARE(flow8::protocol::referenceAuthenticationPacket(), packets.constLast());
 }
 
 void ProtocolTest::recognizesOnlyDocumentedPacketTypes()
 {
-    const QList<quint8> documented {0x06, 0x07, 0x21, 0x22, 0x25, 0x26, 0x27,
-                                    0x35, 0x36, 0x37, 0x38, 0x39, 0x4B};
-    for (const quint8 type : documented) {
+    const QList<quint8> apkDocumented {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x27, 0x29, 0x30, 0x31,
+        0x32, 0x33, 0x37, 0x38, 0x40, 0x41, 0x4A,
+    };
+    for (const quint8 type : apkDocumented) {
         QVERIFY(flow8::protocol::knownPacketType(type).has_value());
-        QCOMPARE(flow8::protocol::packetEvidence(type), flow8::model::EvidenceStatus::Inferred);
+        QCOMPARE(flow8::protocol::packetEvidence(type),
+                 flow8::model::EvidenceStatus::VerifiedFromApk);
+    }
+    const QList<quint8> referenceOnly {0x26, 0x35, 0x36, 0x39, 0x4B};
+    for (const quint8 type : referenceOnly) {
+        QVERIFY(flow8::protocol::knownPacketType(type).has_value());
+        QCOMPARE(flow8::protocol::packetEvidence(type),
+                 flow8::model::EvidenceStatus::Inferred);
     }
     QVERIFY(!flow8::protocol::knownPacketType(0xFF).has_value());
     QCOMPARE(flow8::protocol::packetEvidence(0xFF), flow8::model::EvidenceStatus::Unknown);
@@ -66,10 +78,10 @@ void ProtocolTest::decodesCapturedFaderPacket()
     const QByteArray raw = QByteArray::fromHex("0601010fff16");
     const auto result = flow8::protocol::parsePacket(raw);
     QVERIFY(result.ok());
-    const auto change = flow8::protocol::decodeParameterChange(*result.packet);
+    const auto change = flow8::protocol::decodeLegacyReferenceParameterChange(*result.packet);
     QVERIFY(change.has_value());
     QCOMPARE(change->channel, quint8(1));
-    QCOMPARE(change->parameter, flow8::protocol::faderLevelParameter);
+    QCOMPARE(change->parameter, flow8::protocol::legacyReferenceFaderLevelParameter);
     QCOMPARE(change->value, quint8(255));
     QCOMPARE(change->evidence, flow8::model::EvidenceStatus::Inferred);
 }
@@ -78,12 +90,27 @@ void ProtocolTest::preservesUnknownStatePayload()
 {
     // SYNTHETIC framing test: payload meaning is deliberately not interpreted.
     const QByteArray payload = QByteArray::fromHex("0201020304");
-    const QByteArray raw = flow8::protocol::framePacket(0x38, 0x04, payload);
+    const QByteArray raw = flow8::protocol::frameSingleFragment(0x38, payload);
     const auto result = flow8::protocol::parsePacket(raw);
     QVERIFY(result.ok());
     QCOMPARE(result.packet->type, quint8(0x38));
-    QCOMPARE(result.packet->discriminator, quint8(0x04));
+    QCOMPARE(result.packet->fragmentCount, quint8(0x01));
     QCOMPARE(result.packet->payload, payload);
+    QCOMPARE(result.packet->payloadEvidence, flow8::model::EvidenceStatus::Unknown);
+}
+
+void ProtocolTest::preservesMultiFragmentHeadersWithoutGuessingMeaning()
+{
+    // SYNTHETIC structure-only vector. Header A/B meaning remains unknown.
+    QByteArray raw = QByteArray::fromHex("3802aabb0102");
+    raw.append(static_cast<char>(flow8::protocol::checksum(raw)));
+    const auto result = flow8::protocol::parsePacket(raw);
+    QVERIFY(result.ok());
+    QCOMPARE(result.packet->fragmentCount, quint8(2));
+    QCOMPARE(result.packet->fragmentHeaderA, std::optional<quint8>(0xaa));
+    QCOMPARE(result.packet->fragmentHeaderB, std::optional<quint8>(0xbb));
+    QCOMPARE(result.packet->payload, QByteArray::fromHex("0102"));
+    QCOMPARE(result.packet->payloadEvidence, flow8::model::EvidenceStatus::Unknown);
 }
 
 void ProtocolTest::rejectsBadChecksum()
@@ -119,14 +146,28 @@ void ProtocolTest::packetSemanticRoundTrip()
     const QByteArray captured = QByteArray::fromHex("0601010fff16");
     const auto decoded = flow8::protocol::parsePacket(captured);
     QVERIFY(decoded.ok());
-    const QByteArray encoded = flow8::protocol::framePacket(
-        decoded.packet->type, decoded.packet->discriminator, decoded.packet->payload);
+    const QByteArray encoded = flow8::protocol::frameSingleFragment(
+        decoded.packet->type, decoded.packet->payload);
     QCOMPARE(encoded, captured);
     QCOMPARE(flow8::protocol::parsePacket(encoded).packet->payload, decoded.packet->payload);
 }
 
 void ProtocolTest::recordsApkSemanticsWithoutInventingPayloads()
 {
+    const QList<quint8> apkCommands {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x27, 0x29, 0x30, 0x31,
+        0x32, 0x33, 0x37, 0x38, 0x40, 0x41, 0x4a,
+    };
+    for (const quint8 command : apkCommands) {
+        const auto descriptor = flow8::protocol::apkCommandDescriptor(command);
+        QVERIFY(descriptor.has_value());
+        QCOMPARE(descriptor->evidence,
+                 flow8::model::EvidenceStatus::VerifiedFromApk);
+        QVERIFY(descriptor->commandByteConfirmed);
+        QVERIFY(!descriptor->payloadLayoutKnown);
+    }
     const auto route = flow8::protocol::apkCommandDescriptor(0x06);
     QVERIFY(route.has_value());
     QCOMPARE(route->id, flow8::protocol::ApkCommandId::RouteLevel);
@@ -143,6 +184,9 @@ void ProtocolTest::recordsApkSemanticsWithoutInventingPayloads()
     QCOMPARE(flow8::protocol::apkRouteDestinationId(
                  flow8::model::RoutingDestination::Monitor1),
              std::optional(flow8::protocol::ApkRouteDestinationId::Monitor1));
+    QCOMPARE(flow8::protocol::apkEndpointId(13),
+             std::optional(flow8::protocol::ApkEndpointId::Fx2));
+    QVERIFY(!flow8::protocol::apkEndpointId(14).has_value());
 }
 
 QTEST_GUILESS_MAIN(ProtocolTest)

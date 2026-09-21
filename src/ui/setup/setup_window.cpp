@@ -65,7 +65,6 @@ SetupWindow::SetupWindow(Flow8Device& device, LanguageManager& languageManager,
     , controlGesture_(new QComboBox(this))
     , eqEditingMode_(new QComboBox(this))
     , outputDelayIndicator_(new QCheckBox(this))
-    , outputLevel10dBV_(new QCheckBox(this))
     , footswitchMode_(new QComboBox(this))
     , language_(new QComboBox(this))
     , sysExDump_(new QPushButton(this))
@@ -146,8 +145,7 @@ SetupWindow::SetupWindow(Flow8Device& device, LanguageManager& languageManager,
                 static_cast<UiLanguage>(language_->itemData(index).toInt()));
         }
     });
-    for (auto* check : {showMuteButtons_, showChannelIcons_, outputDelayIndicator_,
-                        outputLevel10dBV_}) {
+    for (auto* check : {showMuteButtons_, showChannelIcons_, outputDelayIndicator_}) {
         connect(check, &QCheckBox::toggled, this, &SetupWindow::commitPreferences);
     }
     connect(controlGesture_, &QComboBox::currentIndexChanged,
@@ -173,7 +171,7 @@ QWidget* SetupWindow::buildConfigureInputsPage()
     auto* container = new QWidget(page);
     auto* grid = new QGridLayout(container);
     grid->setSpacing(10);
-    for (int input = 0; input < model::inputStripCount; ++input) {
+    for (int input = 0; input < model::conventionalMixerInputCount; ++input) {
         auto* card = new QWidget(container);
         card->setProperty("class", QStringLiteral("inputCard"));
         card->setObjectName(QStringLiteral("inputCard%1").arg(input));
@@ -280,7 +278,6 @@ QWidget* SetupWindow::buildPreferencesPage()
     form->addRow(gestureLabel, controlGesture_);
     form->addRow(eqLabel, eqEditingMode_);
     form->addRow(outputDelayIndicator_);
-    form->addRow(outputLevel10dBV_);
     form->addRow(footswitchLabel, footswitchMode_);
     form->addRow(languageLabel, language_);
     layout->addLayout(form);
@@ -372,7 +369,6 @@ void SetupWindow::commitPreferences()
     preferences.showMuteButtons = showMuteButtons_->isChecked();
     preferences.showChannelIcons = showChannelIcons_->isChecked();
     preferences.showOutputDelayIndicator = outputDelayIndicator_->isChecked();
-    preferences.outputLevel10dBV = outputLevel10dBV_->isChecked();
     preferences.controlGesture = static_cast<model::ControlGesture>(
         controlGesture_->currentData().toInt());
     preferences.eqEditingMode = static_cast<model::EqEditingMode>(
@@ -440,7 +436,6 @@ void SetupWindow::retranslateUi()
     showMuteButtons_->setText(uiText("Show Mute Buttons"));
     showChannelIcons_->setText(uiText("Show Channel Icons"));
     outputDelayIndicator_->setText(uiText("Show Output Delay Indicator"));
-    outputLevel10dBV_->setText(uiText("10 dBV Output Level"));
     findChild<QLabel*>(QStringLiteral("setupGestureLabel"))->setText(uiText("Control Gesture"));
     findChild<QLabel*>(QStringLiteral("setupEqLabel"))->setText(uiText("EQ Editing Mode"));
     findChild<QLabel*>(QStringLiteral("setupFootswitchLabel"))->setText(uiText("Footswitch Mode"));
@@ -479,7 +474,6 @@ void SetupWindow::retranslateUi()
     showMuteButtons_->setChecked(device_.state().preferences().showMuteButtons);
     showChannelIcons_->setChecked(device_.state().preferences().showChannelIcons);
     outputDelayIndicator_->setChecked(device_.state().preferences().showOutputDelayIndicator);
-    outputLevel10dBV_->setChecked(device_.state().preferences().outputLevel10dBV);
     sysExDump_->setText(uiText("Request / Save MIDI SysEx Dump"));
     sysExDump_->setToolTip(uiText("Hardware Required"));
     findChild<QLabel*>(QStringLiteral("setupPreferencesNote"))->setText(uiText(

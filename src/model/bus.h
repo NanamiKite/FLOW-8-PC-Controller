@@ -11,6 +11,9 @@
 
 namespace flow8::model {
 
+// BusId remains a broad stable target identifier for MIDI/UI compatibility.
+// Only values for which isMixBus() is true may appear in Flow8State::buses();
+// FX1/FX2 are represented by FxState.
 enum class BusId {
     Main,
     Monitor1,
@@ -19,12 +22,16 @@ enum class BusId {
     Fx2,
 };
 
+[[nodiscard]] constexpr bool isMixBus(const BusId bus) noexcept
+{
+    return bus == BusId::Main || bus == BusId::Monitor1 || bus == BusId::Monitor2;
+}
+
 struct BusCapabilities {
     bool mute {};
     bool balance {};
     bool equalizer {};
     bool limiter {};
-    bool fxEngine {};
     bool outputDelay {};
     CapabilityEvidence evidence;
 };
@@ -34,7 +41,7 @@ struct OutputDelayState {
     StateValue<double> milliseconds;
 };
 
-struct BusState {
+struct MixBusState {
     int index {};
     BusId busId {BusId::Main};
     BusCapabilities capabilities;
@@ -47,5 +54,9 @@ struct BusState {
     std::optional<BusEqState> eq;
     std::optional<OutputDelayState> outputDelay;
 };
+
+// Compatibility name for existing high-level APIs. The vector now contains
+// only MAIN, MON1, and MON2; FX engines live in FxState.
+using BusState = MixBusState;
 
 } // namespace flow8::model
