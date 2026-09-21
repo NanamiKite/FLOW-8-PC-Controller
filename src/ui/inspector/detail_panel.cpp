@@ -2,6 +2,7 @@
 
 #include "core/flow8_device.h"
 #include "ui/widgets/eq_graph_widget.h"
+#include "ui/widgets/meter_widget.h"
 #include "ui/ui_text.h"
 
 #include <QCheckBox>
@@ -32,6 +33,7 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     , pages_(new QStackedWidget(this))
     , busTitle_(new QLabel(this))
     , busCapability_(new QLabel(this))
+    , busMeter_(new MeterWidget(this))
     , busLevel_(new QSlider(Qt::Horizontal, this))
     , busMute_(new QCheckBox(this))
     , busBalance_(new QSlider(Qt::Horizontal, this))
@@ -39,6 +41,8 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     , busEqGraph_(new EqGraphWidget(this))
     , busOutputDelay_(new QLabel(this))
     , fxTitle_(new QLabel(this))
+    , fxMeter_(new MeterWidget(this))
+    , fxMaster_(new QSlider(Qt::Horizontal, this))
     , fxPreset_(new QComboBox(this))
     , fxType_(new QLabel(this))
     , fxMute_(new QCheckBox(this))
@@ -52,6 +56,7 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     , storeSnapshot_(new QPushButton(this))
     , loadAppSnapshot_(new QPushButton(this))
     , renameAppSnapshot_(new QPushButton(this))
+    , deleteAppSnapshot_(new QPushButton(this))
     , shareSnapshot_(new QPushButton(this))
     , routingGrid_(new QWidget(this))
     , routingTitle_(new QLabel(this))
@@ -87,6 +92,7 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     busLimiter_->setRange(-300, 0);
     busLimiter_->setObjectName(QStringLiteral("busLimiter"));
     auto* levelRow = new QHBoxLayout;
+    levelRow->addWidget(busMeter_);
     levelRow->addWidget(busLevelLabel_);
     levelRow->addWidget(busLevel_, 1);
     levelRow->addWidget(busMute_);
@@ -131,12 +137,21 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     auto* fxPage = new QWidget(pages_);
     auto* fxLayout = new QVBoxLayout(fxPage);
     fxTitle_->setProperty("class", QStringLiteral("inspectorTitle"));
-    fxLayout->addWidget(fxTitle_);
+    auto* fxHeader = new QHBoxLayout;
+    fxHeader->addWidget(fxTitle_);
+    fxHeader->addStretch();
+    fxHeader->addWidget(fxMeter_);
+    fxLayout->addLayout(fxHeader);
     auto* fxForm = new QFormLayout;
+    auto* masterLabel = new QLabel(fxPage);
     auto* presetLabel = new QLabel(fxPage);
     auto* effectTypeLabel = new QLabel(fxPage);
+    fxMaster_->setRange(0, 1000);
+    fxMaster_->setObjectName(QStringLiteral("fxMaster"));
+    fxFormLabels_.append(masterLabel);
     fxFormLabels_.append(presetLabel);
     fxFormLabels_.append(effectTypeLabel);
+    fxForm->addRow(masterLabel, fxMaster_);
     fxForm->addRow(presetLabel, fxPreset_);
     fxForm->addRow(effectTypeLabel, fxType_);
     for (int parameter = 0; parameter < 2; ++parameter) {
@@ -159,6 +174,25 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     auto* engineLabel = new QLabel(fxPage);
     fxFormLabels_.append(engineLabel);
     fxForm->addRow(engineLabel, fxActions);
+    auto* returnRow = new QWidget(fxPage);
+    auto* returnLayout = new QHBoxLayout(returnRow);
+    returnLayout->setContentsMargins(0, 0, 0, 0);
+    for (int destination = 0; destination < 3; ++destination) {
+        auto* route = new QCheckBox(returnRow);
+        route->setObjectName(QStringLiteral("fxInspectorOutput%1").arg(destination));
+        fxReturnChecks_.append(route);
+        returnLayout->addWidget(route);
+        connect(route, &QCheckBox::toggled, this,
+                [this, destination](const bool enabled) {
+                    (void)device_.setFxOutputRouteEnabled(
+                        selectedFx_,
+                        static_cast<model::FxOutputDestination>(destination),
+                        enabled);
+                });
+    }
+    auto* returnLabel = new QLabel(fxPage);
+    fxFormLabels_.append(returnLabel);
+    fxForm->addRow(returnLabel, returnRow);
     fxInfo_ = new QLabel(fxPage);
     fxInfo_->setWordWrap(true);
     fxInfo_->setProperty("class", QStringLiteral("secondaryText"));
@@ -169,6 +203,12 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
         if (index >= 0) {
             (void)device_.setFxPreset(selectedFx_, fxPreset_->itemData(index).toInt());
         }
+    });
+    connect(fxMaster_, &QSlider::valueChanged, this, [this](const int value) {
+        (void)device_.setDestinationMaster(
+            selectedFx_ == 0 ? model::RoutingDestination::Fx1
+                             : model::RoutingDestination::Fx2,
+            value / 1000.0);
     });
     connect(fxMute_, &QCheckBox::toggled, this, [this](const bool muted) {
         (void)device_.setFxMuted(selectedFx_, muted);
@@ -185,7 +225,20 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     hardwareSnapshots_->setObjectName(QStringLiteral("hardwareSnapshots"));
     hardwareLayout->addWidget(hardwareSnapshots_);
     recallButton_ = new QPushButton(hardwareCard);
-    hardwareLayout->addWidget(recallButton_);
+    hardwareStore_ = new QPushButton(hardwareCard);
+    hardwareRename_ = new QPushButton(hardwareCard);
+    hardwareDelete_ = new QPushButton(hardwareCard);
+    hardwareReset_ = new QPushButton(hardwareCard);
+    auto* hardwareActions = new QGridLayout;
+    hardwareActions->addWidget(recallButton_, 0, 0);
+    hardwareActions->addWidget(hardwareStore_, 0, 1);
+    hardwareActions->addWidget(hardwareRename_, 1, 0);
+    hardwareActions->addWidget(hardwareDelete_, 1, 1);
+    hardwareActions->addWidget(hardwareReset_, 2, 0, 1, 2);
+    hardwareLayout->addLayout(hardwareActions);
+    for (auto* unavailable : {hardwareStore_, hardwareRename_, hardwareDelete_, hardwareReset_}) {
+        unavailable->setEnabled(false);
+    }
     connect(recallButton_, &QPushButton::clicked, this, [this] {
         if (hardwareSnapshots_->currentRow() >= 0) {
             (void)device_.recallSnapshot(hardwareSnapshots_->currentRow());
@@ -209,11 +262,13 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     storeSnapshot_->setObjectName(QStringLiteral("storeAppSnapshot"));
     loadAppSnapshot_->setObjectName(QStringLiteral("loadAppSnapshot"));
     renameAppSnapshot_->setObjectName(QStringLiteral("renameAppSnapshot"));
+    deleteAppSnapshot_->setObjectName(QStringLiteral("deleteAppSnapshot"));
     shareSnapshot_->setObjectName(QStringLiteral("shareAppSnapshot"));
     shareSnapshot_->setEnabled(false);
     libraryActions->addWidget(storeSnapshot_);
     libraryActions->addWidget(loadAppSnapshot_);
     libraryActions->addWidget(renameAppSnapshot_);
+    libraryActions->addWidget(deleteAppSnapshot_);
     libraryActions->addWidget(shareSnapshot_);
     libraryLayout->addLayout(libraryActions);
     snapshotLayout->addWidget(hardwareCard, 1);
@@ -241,6 +296,12 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
             refreshSnapshots();
         }
     });
+    connect(deleteAppSnapshot_, &QPushButton::clicked, this, [this] {
+        if (appSnapshots_->currentRow() >= 0) {
+            (void)device_.deleteAppSnapshot(appSnapshots_->currentRow());
+            refreshSnapshots();
+        }
+    });
 
     auto* routingPage = new QWidget(pages_);
     auto* routingLayout = new QVBoxLayout(routingPage);
@@ -253,33 +314,62 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     routingLayout->addWidget(advancedRoutingTitle_);
     auto* advancedRouting = new QWidget(routingPage);
     auto* advancedGrid = new QGridLayout(advancedRouting);
-    auto* usbModeLabel = new QLabel(advancedRouting);
+    auto* usbCard = new QWidget(advancedRouting);
+    usbCard->setProperty("class", QStringLiteral("detailCard"));
+    auto* usbLayout = new QVBoxLayout(usbCard);
+    auto* usbSection = new QLabel(usbCard);
+    usbSection->setObjectName(QStringLiteral("usbRoutingSection"));
+    usbSection->setProperty("class", QStringLiteral("sectionLabel"));
+    usbLayout->addWidget(usbSection);
+    auto* usbModeRow = new QHBoxLayout;
+    auto* usbModeLabel = new QLabel(usbCard);
     usbModeLabel->setObjectName(QStringLiteral("usbModeLabel"));
-    auto* headphoneLabel = new QLabel(advancedRouting);
+    usbModeRow->addWidget(usbModeLabel);
+    usbModeRow->addWidget(usbMode_, 1);
+    usbLayout->addLayout(usbModeRow);
+    auto* usbRoutesLayout = new QGridLayout;
+
+    auto* monitorCard = new QWidget(advancedRouting);
+    monitorCard->setProperty("class", QStringLiteral("detailCard"));
+    auto* monitorLayout = new QVBoxLayout(monitorCard);
+    auto* monitorSection = new QLabel(monitorCard);
+    monitorSection->setObjectName(QStringLiteral("monitorRoutingSection"));
+    monitorSection->setProperty("class", QStringLiteral("sectionLabel"));
+    monitorLayout->addWidget(monitorSection);
+    monitorStereoLink_->setObjectName(QStringLiteral("monitorStereoLink"));
+    auto* headphoneLabel = new QLabel(monitorCard);
     headphoneLabel->setObjectName(QStringLiteral("headphoneSourceLabel"));
-    advancedGrid->addWidget(usbModeLabel, 0, 0);
-    advancedGrid->addWidget(usbMode_, 0, 1);
-    advancedGrid->addWidget(headphoneLabel, 0, 2);
-    advancedGrid->addWidget(headphoneSource_, 0, 3);
-    advancedGrid->addWidget(monitorStereoLink_, 0, 4);
+    monitorLayout->addWidget(headphoneLabel);
+    monitorLayout->addWidget(headphoneSource_);
+    monitorLayout->addWidget(monitorStereoLink_);
+    monitorLayout->addStretch();
+
+    auto* fxCard = new QWidget(advancedRouting);
+    fxCard->setProperty("class", QStringLiteral("detailCard"));
+    auto* fxRoutingLayout = new QGridLayout(fxCard);
+    auto* fxSection = new QLabel(fxCard);
+    fxSection->setObjectName(QStringLiteral("fxRoutingSection"));
+    fxSection->setProperty("class", QStringLiteral("sectionLabel"));
+    fxRoutingLayout->addWidget(fxSection, 0, 0, 1, 3);
     for (int destination = 0; destination < 9; ++destination) {
-        auto* check = new QCheckBox(advancedRouting);
+        auto* check = new QCheckBox(usbCard);
         check->setObjectName(QStringLiteral("usbRoute%1").arg(destination));
         usbRouteChecks_.append(check);
-        advancedGrid->addWidget(check, 1 + destination / 5, destination % 5);
+        usbRoutesLayout->addWidget(check, destination / 3, destination % 3);
         connect(check, &QCheckBox::toggled, this,
                 [this, destination](const bool enabled) {
                     (void)device_.setUsbRouteEnabled(
                         static_cast<model::UsbRouteDestination>(destination), enabled);
                 });
     }
+    usbLayout->addLayout(usbRoutesLayout);
     for (int effect = 0; effect < 2; ++effect) {
         for (int destination = 0; destination < 3; ++destination) {
             const int route = effect * 3 + destination;
-            auto* check = new QCheckBox(advancedRouting);
+            auto* check = new QCheckBox(fxCard);
             check->setObjectName(QStringLiteral("fxOutputRoute%1").arg(route));
             fxOutputChecks_.append(check);
-            advancedGrid->addWidget(check, 3 + effect, destination);
+            fxRoutingLayout->addWidget(check, 1 + effect, destination);
             connect(check, &QCheckBox::toggled, this,
                     [this, effect, destination](const bool enabled) {
                         (void)device_.setFxOutputRouteEnabled(
@@ -288,6 +378,9 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
                     });
         }
     }
+    advancedGrid->addWidget(usbCard, 0, 0, 1, 2);
+    advancedGrid->addWidget(monitorCard, 1, 0);
+    advancedGrid->addWidget(fxCard, 1, 1);
     routingEvidence_->setParent(routingPage);
     routingEvidence_->setWordWrap(true);
     routingEvidence_->setProperty("class", QStringLiteral("secondaryText"));
@@ -322,12 +415,26 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     connect(&device_.state(), &Flow8State::stateReset, this, &DetailPanel::refresh);
     connect(&device_.state(), &Flow8State::busChanged, this, [this](const int index) {
         if (index == selectedBus_) refreshBus();
+        if (index == 3 + selectedFx_) refreshFx();
     });
     connect(&device_.state(), &Flow8State::effectChanged, this, [this](const int index) {
         if (index == selectedFx_) refreshFx();
     });
     connect(&device_.state(), &Flow8State::snapshotChanged, this, &DetailPanel::refreshSnapshots);
-    connect(&device_.state(), &Flow8State::routingChanged, this, &DetailPanel::refreshRouting);
+    connect(&device_.state(), &Flow8State::routingChanged, this, [this] {
+        refreshRouting();
+        refreshFx();
+    });
+    connect(&device_.state(), &Flow8State::outputMeterChanged, this,
+            [this](const model::RoutingDestination destination) {
+                if (model::busIndexForDestination(destination) == selectedBus_) {
+                    refreshBusMeter();
+                }
+                if (static_cast<int>(destination)
+                    == static_cast<int>(model::RoutingDestination::Fx1) + selectedFx_) {
+                    refreshFxMeter();
+                }
+            });
     retranslateUi();
 }
 
@@ -398,7 +505,10 @@ void DetailPanel::refreshBus()
     const QSignalBlocker balanceBlocker(busBalance_);
     const QSignalBlocker limiterBlocker(busLimiter_);
     busLevel_->setValue(static_cast<int>(std::lround(bus->fader.value.value_or(0.0) * 1000.0)));
-    busMute_->setChecked(bus->muted.value.value_or(false));
+    refreshBusMeter();
+    busMute_->setVisible(bus->muted.has_value());
+    busMute_->setChecked(bus->muted.has_value()
+        && bus->muted->value.value_or(false));
     busBalance_->setVisible(bus->balance.has_value());
     busBalance_->setValue(static_cast<int>(std::lround(
         (bus->balance.has_value() ? bus->balance->value.value_or(0.0) : 0.0) * 100.0)));
@@ -421,6 +531,15 @@ void DetailPanel::refreshBus()
     busEqGraph_->setBands(std::move(graphBands));
 }
 
+void DetailPanel::refreshBusMeter()
+{
+    const auto* meter = device_.state().outputMeter(
+        static_cast<model::RoutingDestination>(selectedBus_));
+    busMeter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    busMeter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    busMeter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
+}
+
 void DetailPanel::refreshFx()
 {
     if (selectedFx_ < 0 || selectedFx_ >= device_.state().effects().size()) {
@@ -430,6 +549,13 @@ void DetailPanel::refreshFx()
     fxTitle_->setText(uiText("FX %1 · Independent Engine").arg(selectedFx_ + 1));
     fxType_->setText(effect.effectType.value.value_or(
         uiText("Preset-specific type (unavailable)")));
+    refreshFxMeter();
+    {
+        const auto* bus = device_.state().bus(3 + selectedFx_);
+        const QSignalBlocker blocker(fxMaster_);
+        fxMaster_->setValue(static_cast<int>(std::lround(
+            (bus == nullptr ? 0.0 : bus->fader.value.value_or(0.0)) * 1000.0)));
+    }
     const QSignalBlocker presetBlocker(fxPreset_);
     fxPreset_->setCurrentIndex(std::max(0, effect.preset.value.value_or(1) - 1));
     for (int parameter = 0; parameter < fxParameters_.size(); ++parameter) {
@@ -440,8 +566,25 @@ void DetailPanel::refreshFx()
     }
     const QSignalBlocker muteBlocker(fxMute_);
     fxMute_->setChecked(effect.muted.value.value_or(false));
+    for (int destination = 0; destination < fxReturnChecks_.size(); ++destination) {
+        const auto* route = device_.state().routing().fxOutputRoute(
+            selectedFx_, static_cast<model::FxOutputDestination>(destination));
+        const QSignalBlocker blocker(fxReturnChecks_[destination]);
+        fxReturnChecks_[destination]->setChecked(
+            route != nullptr && route->enabled.value.value_or(false));
+    }
     fxTempo_->setText(QStringLiteral("%1 BPM").arg(
         QLocale().toString(effect.tapTempoBpm.value.value_or(120.0), 'f', 1)));
+}
+
+void DetailPanel::refreshFxMeter()
+{
+    const auto* meter = device_.state().outputMeter(
+        selectedFx_ == 0 ? model::RoutingDestination::Fx1
+                         : model::RoutingDestination::Fx2);
+    fxMeter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    fxMeter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    fxMeter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
 }
 
 void DetailPanel::refreshSnapshots()
@@ -575,21 +718,37 @@ void DetailPanel::retranslateUi()
     for (int preset = 1; preset <= 16; ++preset) {
         fxPreset_->addItem(uiText("Preset %1").arg(preset), preset);
     }
-    if (fxFormLabels_.size() >= 5) {
-        fxFormLabels_[0]->setText(uiText("Preset"));
-        fxFormLabels_[1]->setText(uiText("Effect Type"));
-        fxFormLabels_[2]->setText(uiText("Parameter %1 (UNKNOWN)").arg(1));
-        fxFormLabels_[3]->setText(uiText("Parameter %1 (UNKNOWN)").arg(2));
-        fxFormLabels_[4]->setText(uiText("Engine"));
+    if (fxFormLabels_.size() >= 7) {
+        fxFormLabels_[0]->setText(uiText("Master"));
+        fxFormLabels_[1]->setText(uiText("Preset"));
+        fxFormLabels_[2]->setText(uiText("Effect Type"));
+        fxFormLabels_[3]->setText(uiText("Parameter %1 (UNKNOWN)").arg(1));
+        fxFormLabels_[4]->setText(uiText("Parameter %1 (UNKNOWN)").arg(2));
+        fxFormLabels_[5]->setText(uiText("Engine"));
+        fxFormLabels_[6]->setText(uiText("Output Routing"));
     }
     fxMute_->setText(uiText("Mute"));
     fxTap_->setText(uiText("Tap Tempo"));
+    const std::array<const char*, 3> returnLabels {
+        "Main", "Monitor 1", "Monitor 2",
+    };
+    for (int index = 0; index < fxReturnChecks_.size(); ++index) {
+        fxReturnChecks_[index]->setText(
+            uiText(returnLabels[static_cast<std::size_t>(index)]));
+    }
     fxInfo_->setText(uiText(
         "Tap tempo is global in the official MIDI chart and applies only to compatible effects.\n"
         "Effect-specific parameter names remain unavailable."));
 
     hardwareTitle_->setText(uiText("Hardware Slots · 15"));
     recallButton_->setText(uiText("Recall in Simulator"));
+    hardwareStore_->setText(uiText("Store"));
+    hardwareRename_->setText(uiText("Rename"));
+    hardwareDelete_->setText(uiText("Delete"));
+    hardwareReset_->setText(uiText("Reset"));
+    for (auto* unavailable : {hardwareStore_, hardwareRename_, hardwareDelete_, hardwareReset_}) {
+        unavailable->setToolTip(uiText("Needs Hardware Verification"));
+    }
     libraryTitle_->setText(uiText("App Library"));
     appLibrary_->setText(uiText(
         "No app-library snapshots yet.\nThis is separate from the 15 hardware slots."));
@@ -616,6 +775,7 @@ void DetailPanel::retranslateUi()
     storeSnapshot_->setText(uiText("Store in App Library"));
     loadAppSnapshot_->setText(uiText("Load in Simulator"));
     renameAppSnapshot_->setText(uiText("Rename"));
+    deleteAppSnapshot_->setText(uiText("Delete"));
     shareSnapshot_->setText(uiText("Share / Export"));
     shareSnapshot_->setToolTip(uiText("Snapshot export is not implemented yet."));
     routingTitle_->setText(uiText("Routing · Source → Destination"));
@@ -623,6 +783,11 @@ void DetailPanel::retranslateUi()
     findChild<QLabel*>(QStringLiteral("usbModeLabel"))->setText(uiText("USB Mode"));
     findChild<QLabel*>(QStringLiteral("headphoneSourceLabel"))->setText(
         uiText("Headphone Source"));
+    findChild<QLabel*>(QStringLiteral("usbRoutingSection"))->setText(
+        uiText("USB / Bluetooth"));
+    findChild<QLabel*>(QStringLiteral("monitorRoutingSection"))->setText(
+        uiText("Monitor / Headphones"));
+    findChild<QLabel*>(QStringLiteral("fxRoutingSection"))->setText(uiText("FX Returns"));
     const int selectedUsbMode = usbMode_->currentData().toInt();
     {
         const QSignalBlocker blocker(usbMode_);

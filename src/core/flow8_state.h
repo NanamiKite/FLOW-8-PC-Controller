@@ -4,6 +4,7 @@
 #include "model/channel.h"
 #include "model/fx.h"
 #include "model/preferences.h"
+#include "model/meter.h"
 #include "model/routing.h"
 #include "model/session.h"
 #include "model/snapshot.h"
@@ -51,7 +52,10 @@ public:
     [[nodiscard]] bool setChannelFader(int index, double normalized,
                                        model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setChannelGain(int index, double normalized,
-                                      model::EvidenceStatus evidence, const QString& source);
+                                       model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelPhaseInverted(int index, bool inverted,
+                                                model::EvidenceStatus evidence,
+                                                const QString& source);
     [[nodiscard]] bool setChannelMuted(int index, bool muted,
                                        model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setChannelSoloed(int index, bool soloed,
@@ -82,6 +86,14 @@ public:
                                              const QString& source);
     [[nodiscard]] bool setChannelMeter(int index, double level, double peak, bool clipping,
                                        model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] const model::MeterState& meters() const noexcept;
+    [[nodiscard]] const model::InputMeterState* inputMeter(int index) const noexcept;
+    [[nodiscard]] const model::OutputMeterState* outputMeter(
+        model::RoutingDestination destination) const noexcept;
+    [[nodiscard]] bool setOutputMeter(model::RoutingDestination destination,
+                                      double level, double peak, bool clipping,
+                                      model::EvidenceStatus evidence,
+                                      const QString& source);
 
     [[nodiscard]] const QVector<model::BusState>& buses() const noexcept;
     [[nodiscard]] const model::BusState* bus(int index) const noexcept;
@@ -120,7 +132,20 @@ public:
                                        const QString& source);
 
     [[nodiscard]] const model::RoutingState& routing() const noexcept;
+    [[nodiscard]] const model::RouteLevelState* routeLevel(
+        int sourceIndex, model::RoutingDestination destination) const noexcept;
     void replaceRouting(model::RoutingState routing);
+    [[nodiscard]] bool setRouteLevel(int sourceIndex,
+                                     model::RoutingDestination destination,
+                                     double normalized,
+                                     model::EvidenceStatus evidence,
+                                     const QString& source);
+    [[nodiscard]] bool setRouteLevelPending(int sourceIndex,
+                                            model::RoutingDestination destination,
+                                            double normalized);
+    [[nodiscard]] bool failRouteLevel(int sourceIndex,
+                                      model::RoutingDestination destination,
+                                      const QString& error);
     [[nodiscard]] bool setRouteEnabled(int inputIndex, model::RoutingDestination destination,
                                        bool enabled, model::EvidenceStatus evidence,
                                        const QString& source);
@@ -162,11 +187,15 @@ signals:
     void assistedSetupChanged();
     void ezGainSessionChanged();
     void globalTempoChanged();
+    void inputMeterChanged(int index);
+    void outputMeterChanged(flow8::model::RoutingDestination destination);
 
 private:
     [[nodiscard]] model::ChannelState* mutableChannel(int index) noexcept;
     [[nodiscard]] model::BusState* mutableBus(int index) noexcept;
     [[nodiscard]] model::FxState* mutableEffect(int index) noexcept;
+    [[nodiscard]] model::RouteLevelState* mutableRouteLevel(
+        int sourceIndex, model::RoutingDestination destination) noexcept;
     void ensureReferenceStateShape();
     [[nodiscard]] static bool isUnitInterval(double value) noexcept;
 
@@ -181,6 +210,7 @@ private:
     model::AppPreferences preferences_;
     model::AssistedSetupState assistedSetup_;
     model::EzGainSession ezGainSession_;
+    model::MeterState meters_;
 };
 
 } // namespace flow8

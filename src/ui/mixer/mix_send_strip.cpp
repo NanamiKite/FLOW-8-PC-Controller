@@ -16,11 +16,6 @@
 namespace flow8::ui {
 namespace {
 
-double dbToNormalized(const double db)
-{
-    return db <= -70.0 ? 0.0 : qBound(0.0, (db + 70.0) / 80.0, 1.0);
-}
-
 QString destinationName(const model::RoutingDestination destination)
 {
     switch (destination) {
@@ -106,11 +101,7 @@ MixSendStrip::MixSendStrip(Flow8Device& device, const int inputIndex,
     }
 
     connect(fader_, &FaderWidget::valueChanged, this, [this](const double value) {
-        if (destination_ == model::RoutingDestination::Main) {
-            (void)device_.setChannelFader(inputIndex_, value);
-        } else {
-            (void)device_.setChannelSendLevel(inputIndex_, sendIndex(), value);
-        }
+        (void)device_.setRouteLevel(inputIndex_, destination_, value);
     });
     connect(&device_.state(), &Flow8State::channelChanged, this,
             [this](const int index) {
@@ -136,9 +127,10 @@ void MixSendStrip::refresh()
     destinationLabel_->setText(destinationName(destination_));
     const QSignalBlocker faderBlocker(fader_);
     fader_->setValue(normalizedLevel());
-    meter_->setLevel(channel->meterLevel.value.value_or(0.0));
-    meter_->setPeak(channel->meterPeak.value.value_or(0.0));
-    meter_->setClipping(channel->clipping.value.value_or(false));
+    const auto* meter = device_.state().inputMeter(inputIndex_);
+    meter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    meter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    meter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
     if (monitorMode_ != nullptr) {
         const QSignalBlocker blocker(monitorMode_);
         monitorMode_->setCurrentIndex(monitorMode_->findData(static_cast<int>(
@@ -170,23 +162,8 @@ int MixSendStrip::sendIndex() const noexcept
 
 double MixSendStrip::normalizedLevel() const noexcept
 {
-    const auto* channel = device_.state().channel(inputIndex_);
-    if (channel == nullptr) {
-        return 0.0;
-    }
-    switch (destination_) {
-    case model::RoutingDestination::Main:
-        return channel->fader.value.value_or(0.0);
-    case model::RoutingDestination::Monitor1:
-    case model::RoutingDestination::Monitor2:
-        return dbToNormalized(channel->monitorSends[static_cast<std::size_t>(sendIndex())]
-            .levelDb.value.value_or(-144.0));
-    case model::RoutingDestination::Fx1:
-    case model::RoutingDestination::Fx2:
-        return dbToNormalized(channel->fxSendLevelDb[static_cast<std::size_t>(sendIndex() - 2)]
-            .value.value_or(-144.0));
-    }
-    return 0.0;
+    const auto* route = device_.state().routeLevel(inputIndex_, destination_);
+    return route == nullptr ? 0.0 : route->effectiveValue();
 }
 
 } // namespace flow8::ui

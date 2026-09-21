@@ -16,12 +16,9 @@ namespace flow8::ui {
 
 class ChannelEditView;
 class ConnectionBar;
-class FxView;
 class LanguageManager;
 class MainOutView;
-class MainView;
 class MixerWidget;
-class MonitorView;
 class SessionStartView;
 class SetupWindow;
 class StageView;
@@ -49,11 +46,6 @@ private:
     FlowLayerBar* layerBar_ {};
     MixerWidget* mixer_ {};
     StageView* stage_ {};
-    FxView* fx1_ {};
-    FxView* fx2_ {};
-    MonitorView* monitor1_ {};
-    MonitorView* monitor2_ {};
-    MainView* mainView_ {};
     MainOutView* mainOut_ {};
     ChannelEditView* channelEdit_ {};
     SetupWindow* setup_ {};

@@ -78,9 +78,12 @@ void MainStrip::refresh()
     const QSignalBlocker faderBlocker(fader_);
     const QSignalBlocker muteBlocker(mute_);
     fader_->setValue(main->fader.value.value_or(0.0));
-    mute_->setChecked(main->muted.value.value_or(false));
-    meter_->setLevel(main->fader.value.value_or(0.0) * 0.78);
-    meter_->setPeak(main->fader.value.value_or(0.0) * 0.84);
+    mute_->setChecked(main->muted.has_value()
+        && main->muted->value.value_or(false));
+    const auto* meter = device_.state().outputMeter(model::RoutingDestination::Main);
+    meter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    meter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    meter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
 }
 
 void MainStrip::retranslateUi()

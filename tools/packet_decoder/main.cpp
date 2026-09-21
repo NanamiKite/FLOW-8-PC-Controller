@@ -66,7 +66,13 @@ int main(int argc, char* argv[])
             object.insert(QStringLiteral("typeHex"),
                           QStringLiteral("0x%1").arg(packet.type, 2, 16, QLatin1Char('0')));
             object.insert(QStringLiteral("name"), flow8::protocol::packetTypeName(packet.type));
-            object.insert(QStringLiteral("discriminator"), static_cast<int>(packet.discriminator));
+            object.insert(QStringLiteral("fragmentCount"), static_cast<int>(packet.fragmentCount));
+            if (packet.fragmentHeaderA.has_value()) {
+                object.insert(QStringLiteral("fragmentHeaderA"),
+                              static_cast<int>(*packet.fragmentHeaderA));
+                object.insert(QStringLiteral("fragmentHeaderB"),
+                              static_cast<int>(*packet.fragmentHeaderB));
+            }
             object.insert(QStringLiteral("payload"),
                           QString::fromLatin1(flow8::protocol::toHexBytes(packet.payload)));
             object.insert(QStringLiteral("evidence"),
@@ -78,8 +84,8 @@ int main(int argc, char* argv[])
             out << QJsonDocument(object).toJson(QJsonDocument::Compact) << '\n';
         } else if (result.ok()) {
             out << object.value(QStringLiteral("typeHex")).toString() << ' '
-                << object.value(QStringLiteral("name")).toString() << " discriminator="
-                << object.value(QStringLiteral("discriminator")).toInt() << " payload="
+                << object.value(QStringLiteral("name")).toString() << " fragments="
+                << object.value(QStringLiteral("fragmentCount")).toInt() << " payload="
                 << object.value(QStringLiteral("payload")).toString() << " evidence="
                 << object.value(QStringLiteral("evidence")).toString() << '\n';
         } else {

@@ -12,10 +12,17 @@ namespace {
 
 std::optional<model::EvidenceStatus> parseEvidence(const QString& value)
 {
-    if (value == QStringLiteral("VERIFIED")) return model::EvidenceStatus::Verified;
+    if (value == QStringLiteral("VERIFIED")) return model::EvidenceStatus::VerifiedOffline;
+    if (value == QStringLiteral("VERIFIED_FROM_DEVICE"))
+        return model::EvidenceStatus::VerifiedFromDevice;
+    if (value == QStringLiteral("VERIFIED_FROM_APK"))
+        return model::EvidenceStatus::VerifiedFromApk;
+    if (value == QStringLiteral("VERIFIED_OFFLINE"))
+        return model::EvidenceStatus::VerifiedOffline;
     if (value == QStringLiteral("INFERRED")) return model::EvidenceStatus::Inferred;
     if (value == QStringLiteral("UNKNOWN")) return model::EvidenceStatus::Unknown;
     if (value == QStringLiteral("BLOCKED")) return model::EvidenceStatus::Blocked;
+    if (value == QStringLiteral("SYNTHETIC")) return model::EvidenceStatus::Synthetic;
     return std::nullopt;
 }
 

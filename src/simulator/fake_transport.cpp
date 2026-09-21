@@ -1,7 +1,5 @@
 #include "simulator/fake_transport.h"
 
-#include "protocol/flow8_protocol.h"
-
 #include <QTimer>
 
 namespace flow8::simulator {
@@ -94,14 +92,9 @@ void FakeTransport::setState(const State state)
 
 void FakeTransport::emitSyntheticRemoteChange()
 {
-    constexpr int channelCount = 7;
-    const int channel = remoteStep_ % channelCount;
-    const double value = static_cast<double>((remoteStep_ * 37) % 256) / 255.0;
+    // Synthetic device-side control changes are applied at the semantic state
+    // layer by Flow8Device. Do not manufacture an unverified 0x06 payload.
     ++remoteStep_;
-    if (const auto packet = protocol::encodeFaderLevel(static_cast<quint8>(channel + 1), value);
-        packet.has_value()) {
-        emit bytesReceived(*packet);
-    }
 }
 
 } // namespace flow8::simulator

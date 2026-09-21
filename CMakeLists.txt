@@ -97,6 +97,8 @@ else()
 endif()
 
 add_library(flow8_protocol STATIC
+    src/protocol/apk_command_catalog.cpp
+    src/protocol/apk_command_catalog.h
     src/protocol/codec.cpp
     src/protocol/codec.h
     src/protocol/flow8_protocol.cpp
@@ -124,8 +126,11 @@ add_library(flow8_core STATIC
     src/core/flow8_state.h
     src/core/flow8_transport.cpp
     src/core/flow8_transport.h
+    src/core/semantic_command_queue.cpp
+    src/core/semantic_command_queue.h
     src/model/flow8_capabilities.cpp
     src/model/flow8_capabilities.h
+    src/model/meter.h
     src/model/preferences.h
     src/model/session.h
 )

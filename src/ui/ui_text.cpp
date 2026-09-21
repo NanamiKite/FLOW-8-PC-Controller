@@ -70,8 +70,12 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Connect the line-level source to a compatible input."),
     QT_TRANSLATE_NOOP("Flow8Ui", "Connect the microphone with an XLR cable."),
     QT_TRANSLATE_NOOP("Flow8Ui", "Connect with an XLR cable. Phantom Power applies only to Input 1 or Input 2."),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Confirm that the connected source supports 48 V phantom power."),
     QT_TRANSLATE_NOOP("Flow8Ui", "Continue Session"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Control"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Confirmed"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Current Destination Send"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Destination Master"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Control Gesture"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Digital Input"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Delay: %1 ms"),
@@ -82,6 +86,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Disconnect"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Disconnected"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Effect Type"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Enable Phantom Power?"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Empty Slot"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Engine"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Equalizer"),
@@ -94,6 +99,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "FX %1 · Independent Engine"),
     QT_TRANSLATE_NOOP("Flow8Ui", "FX 1"),
     QT_TRANSLATE_NOOP("Flow8Ui", "FX 2"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "FX Returns"),
     QT_TRANSLATE_NOOP("Flow8Ui", "FX 1 → Monitor 1"),
     QT_TRANSLATE_NOOP("Flow8Ui", "FX 1 → Monitor 2"),
     QT_TRANSLATE_NOOP("Flow8Ui", "FX 2 → Monitor 1"),
@@ -105,6 +111,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Gain"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Gain Reduction"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Gain: %1   48 V: %2   Low Cut: %3   EQ: 4-band parametric   Compressor: %4   Sends: MON1 / MON2 / FX1 / FX2"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Gain: %1   48 V: %2   Phase: %3   Low Cut: %4   EQ: 4-band parametric   Compressor: %5   Sends: MON1 / MON2 / FX1 / FX2"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Guitar / Bass"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Guitar / Bass starting preset"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Hardware BLE and MIDI controls are not available in this build."),
@@ -150,6 +157,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Monitor 2"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Monitor 1 Send"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Monitor 2 Send"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Monitor / Headphones"),
     QT_TRANSLATE_NOOP("Flow8Ui", "MON1/2 Linked"),
     QT_TRANSLATE_NOOP("Flow8Ui", "MON1/2 LINKED"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Mute"),
@@ -162,9 +170,11 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Official mapping model ready; transport not implemented"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Official capability · Simulator only · BLE routing protocol UNKNOWN"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Output"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Output Routing"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Output hardware values are unknown until a FLOW 8 is connected and verified."),
     QT_TRANSLATE_NOOP("Flow8Ui", "Pan"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Pan / Balance"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Pending"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Parameter %1 (UNKNOWN)"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Parametric"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Playback"),
@@ -186,6 +196,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Release"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Routing"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Routing · Source → Destination"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Route Level"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Rotary"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Scanning"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Send"),
@@ -209,6 +220,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Snapshot Name"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Stage"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Stage View"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Source → Destination"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Standard"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Standard / Parametric is a PC interaction preference, not a protocol claim."),
     QT_TRANSLATE_NOOP("Flow8Ui", "Start a FLOW 8 Session"),
@@ -252,7 +264,12 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "USB → Monitor 2"),
     QT_TRANSLATE_NOOP("Flow8Ui", "USB / Bluetooth"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Verified"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Verified from FLOW Mix APK"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Verified from FLOW 8 hardware"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Verified offline"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Visible in Mixer and Stage"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "%1 → %2 Send"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Live control · %1 destination"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Choose how you want to begin"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Choose the input you want to prepare."),
     QT_TRANSLATE_NOOP("Flow8Ui", "Choose the source connected to this input."),
@@ -317,10 +334,16 @@ QString inputTypeDisplayName(const model::InputType type)
 QString evidenceDisplayName(const model::EvidenceStatus evidence)
 {
     switch (evidence) {
-    case model::EvidenceStatus::Verified: return uiText("Verified");
+    case model::EvidenceStatus::VerifiedFromDevice:
+        return uiText("Verified from FLOW 8 hardware");
+    case model::EvidenceStatus::VerifiedFromApk:
+        return uiText("Verified from FLOW Mix APK");
+    case model::EvidenceStatus::VerifiedOffline:
+        return uiText("Verified offline");
     case model::EvidenceStatus::Inferred: return uiText("Inferred");
     case model::EvidenceStatus::Unknown: return uiText("Unknown");
     case model::EvidenceStatus::Blocked: return uiText("Needs Hardware Verification");
+    case model::EvidenceStatus::Synthetic: return uiText("SYNTHETIC");
     }
     return uiText("Unknown");
 }

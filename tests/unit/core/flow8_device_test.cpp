@@ -58,6 +58,7 @@ void Flow8DeviceTest::simulatorConnectsAndCreatesProfile()
     QCOMPARE(device.state().effects().size(), 2);
     QCOMPARE(device.state().snapshots().size(), 15);
     QCOMPARE(device.state().routing().routes.size(), 35);
+    QCOMPARE(device.state().routing().routeLevels.cells.size(), 35);
     QCOMPARE(device.state().routing().usbRoutes.size(), 9);
     QCOMPARE(device.state().routing().fxOutputRoutes.size(), 6);
     QCOMPARE(device.state().buses().at(0).busId, flow8::model::BusId::Main);
@@ -74,6 +75,9 @@ void Flow8DeviceTest::simulatorConnectsAndCreatesProfile()
              std::optional(-8.0));
     QCOMPARE(device.state().channel(0)->fxSendLevelDb[1].value,
              std::optional(-12.0));
+    QCOMPARE(device.state().routeLevel(
+                 0, flow8::model::RoutingDestination::Main)->confirmed.value,
+             std::optional(0.72));
     QCOMPARE(device.state().routing().fxOutputRoute(
                  0, flow8::model::FxOutputDestination::Main)->enabled.value,
              std::optional(true));
@@ -105,9 +109,9 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
 
     QVERIFY(device.setChannelFader(0, 0.25));
     QTRY_VERIFY(qAbs(*device.state().channel(0)->fader.value - 0.25) < 0.01);
-    QCOMPARE(transportPointer->sentPackets().size(), 1);
+    QCOMPARE(transportPointer->sentPackets().size(), 0);
     QCOMPARE(device.state().channel(0)->fader.evidence,
-             flow8::model::EvidenceStatus::Unknown);
+             flow8::model::EvidenceStatus::Synthetic);
     QVERIFY(device.state().channel(0)->fader.source.contains(QStringLiteral("SYNTHETIC")));
 
     QVERIFY(device.setChannelMuted(0, true));
@@ -124,6 +128,9 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
     QVERIFY(device.setChannelPhantom(0, true));
     QCOMPARE(device.state().channel(0)->phantom48V->value, std::optional(true));
     QVERIFY(!device.setChannelPhantom(2, true));
+    QVERIFY(device.setChannelPhaseInverted(0, true));
+    QCOMPARE(device.state().channel(0)->phaseInverted->value, std::optional(true));
+    QVERIFY(!device.setChannelPhaseInverted(6, true));
     QVERIFY(device.setChannelLowCut(0, true, 95.0));
     QCOMPARE(device.state().channel(0)->lowCut->enabled.value, std::optional(true));
     QCOMPARE(device.state().channel(0)->lowCut->frequencyHz.value, std::optional(95.0));
@@ -199,10 +206,10 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
     QTRY_VERIFY(!device.state().ezGainSession().running);
     QCOMPARE(device.state().ezGainSession().results.size(), 2);
     // Advanced simulator controls are functional-model changes, not guessed BLE writes.
-    QCOMPARE(transportPointer->sentPackets().size(), 1);
-    QTRY_VERIFY(device.state().channel(0)->meterLevel.value.value_or(0.0) > 0.0);
-    QCOMPARE(device.state().channel(0)->meterLevel.evidence,
-             flow8::model::EvidenceStatus::Unknown);
+    QCOMPARE(transportPointer->sentPackets().size(), 0);
+    QTRY_VERIFY(device.state().inputMeter(0)->level.value.value_or(0.0) > 0.0);
+    QCOMPARE(device.state().inputMeter(0)->level.evidence,
+             flow8::model::EvidenceStatus::Synthetic);
 }
 
 void Flow8DeviceTest::mixBusesAndFxRoutingRemainIndependent()
@@ -224,13 +231,23 @@ void Flow8DeviceTest::mixBusesAndFxRoutingRemainIndependent()
     QVERIFY(device.setChannelSendLevel(0, 2, 0.60));
     QVERIFY(device.state().channel(0)->fxSendLevelDb[0].value.has_value());
     QCOMPARE(*device.state().channel(0)->fxSendLevelDb[1].value, originalFx2Send);
+    const double fx1 = device.state().routeLevel(
+        0, flow8::model::RoutingDestination::Fx1)->effectiveValue();
+    const double fx2 = device.state().routeLevel(
+        0, flow8::model::RoutingDestination::Fx2)->effectiveValue();
+    QVERIFY(fx1 != fx2);
 
     const double originalMainMaster = *device.state().bus(0)->fader.value;
     const double originalMon2Master = *device.state().bus(2)->fader.value;
-    QVERIFY(device.setBusFader(1, 0.22));
+    QVERIFY(device.setDestinationMaster(
+        flow8::model::RoutingDestination::Monitor1, 0.22));
     QCOMPARE(device.state().bus(1)->fader.value, std::optional(0.22));
     QCOMPARE(*device.state().bus(0)->fader.value, originalMainMaster);
     QCOMPARE(*device.state().bus(2)->fader.value, originalMon2Master);
+    QVERIFY(device.setDestinationMaster(
+        flow8::model::RoutingDestination::Fx1, 0.31));
+    QCOMPARE(device.state().bus(3)->fader.value, std::optional(0.31));
+    QVERIFY(device.state().bus(4)->fader.value != std::optional(0.31));
 
     QVERIFY(device.setFxOutputRouteEnabled(
         1, flow8::model::FxOutputDestination::Monitor2, false));

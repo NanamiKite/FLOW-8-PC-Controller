@@ -39,6 +39,7 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     , eqIndicator_(indicator({}, this))
     , compressorIndicator_(indicator({}, this))
     , sendIndicator_(indicator({}, this))
+    , routeStatus_(new QLabel(this))
     , panLabel_(new QLabel(this))
     , fader_(new FaderWidget(this))
     , meter_(new MeterWidget(this))
@@ -70,6 +71,8 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     soloButton_->setProperty("class", QStringLiteral("soloButton"));
     panSlider_->setRange(-100, 100);
     panSlider_->setObjectName(QStringLiteral("pan%1").arg(channelIndex));
+    routeStatus_->setProperty("class", QStringLiteral("secondaryText"));
+    routeStatus_->setAlignment(Qt::AlignCenter);
 
     auto* indicators = new QHBoxLayout;
     indicators->setSpacing(4);
@@ -97,12 +100,13 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     layout->addWidget(panLabel_);
     layout->addWidget(panSlider_);
     layout->addLayout(indicators);
+    layout->addWidget(routeStatus_);
     layout->addLayout(faderRow, 1);
     layout->addLayout(buttons);
 
     connect(fader_, &FaderWidget::valueChanged, this, [this](const double value) {
         requestSelection();
-        (void)device_.setChannelFader(channelIndex_, value);
+        (void)device_.setRouteLevel(channelIndex_, destination_, value);
     });
     connect(muteButton_, &QToolButton::toggled, this, [this](const bool checked) {
         requestSelection();
@@ -122,6 +126,20 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
 int ChannelStrip::channelIndex() const noexcept
 {
     return channelIndex_;
+}
+
+void ChannelStrip::setDestination(const model::RoutingDestination destination)
+{
+    if (destination_ == destination) {
+        return;
+    }
+    destination_ = destination;
+    refresh();
+}
+
+model::RoutingDestination ChannelStrip::destination() const noexcept
+{
+    return destination_;
 }
 
 void ChannelStrip::setSelected(const bool selected)
@@ -168,20 +186,37 @@ void ChannelStrip::refresh()
     const QSignalBlocker muteBlocker(muteButton_);
     const QSignalBlocker soloBlocker(soloButton_);
     const QSignalBlocker panBlocker(panSlider_);
-    fader_->setValue(channel->fader.value.value_or(0.0));
+    const auto* route = device_.state().routeLevel(channelIndex_, destination_);
+    fader_->setValue(route == nullptr ? 0.0 : route->effectiveValue());
+    if (route != nullptr && !route->error.isEmpty()) {
+        routeStatus_->setText(uiText("Error"));
+        routeStatus_->setProperty("routeState", QStringLiteral("error"));
+    } else if (route != nullptr && route->pending.has_value()) {
+        routeStatus_->setText(uiText("Pending"));
+        routeStatus_->setProperty("routeState", QStringLiteral("pending"));
+    } else {
+        routeStatus_->setText(uiText("Confirmed"));
+        routeStatus_->setProperty("routeState", QStringLiteral("confirmed"));
+    }
     muteButton_->setChecked(channel->muted.value.value_or(false));
     soloButton_->setChecked(channel->soloed.value.value_or(false));
     panSlider_->setValue(static_cast<int>(std::lround(channel->pan.value.value_or(0.0) * 100.0)));
-    meter_->setLevel(channel->meterLevel.value.value_or(0.0));
-    meter_->setPeak(channel->meterPeak.value.value_or(0.0));
-    meter_->setClipping(channel->clipping.value.value_or(false));
+    refreshMeter();
+}
+
+void ChannelStrip::refreshMeter()
+{
+    const auto* meter = device_.state().inputMeter(channelIndex_);
+    meter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    meter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    meter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
 }
 
 void ChannelStrip::retranslateUi()
 {
     eqIndicator_->setText(QStringLiteral("EQ"));
     compressorIndicator_->setText(uiText("Compressor"));
-    sendIndicator_->setText(uiText("4 Sends"));
+    sendIndicator_->setText(uiText("Route Level"));
     panLabel_->setText(uiText("Pan / Balance"));
     muteButton_->setText(uiText("Mute"));
     muteButton_->setToolTip(uiText("Mute"));

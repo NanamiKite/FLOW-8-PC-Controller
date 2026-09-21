@@ -61,6 +61,7 @@ struct MonitorSendState {
 
 struct InputCapabilities {
     bool gain {};
+    bool phase {};
     bool lowCut {};
     bool phantom48V {};
     bool equalizer {true};
@@ -82,6 +83,7 @@ struct ChannelState {
     StateValue<ChannelIcon> icon;
     StateValue<bool> visible;
     StateValue<double> gain;
+    std::optional<StateValue<bool>> phaseInverted;
     StateValue<double> fader;
     StateValue<bool> muted;
     StateValue<bool> soloed;

@@ -20,6 +20,7 @@ class Flow8Device;
 namespace flow8::ui {
 
 class EqGraphWidget;
+class MeterWidget;
 
 class DetailPanel final : public QWidget {
     Q_OBJECT
@@ -36,7 +37,9 @@ public:
 
 private:
     void refreshBus();
+    void refreshBusMeter();
     void refreshFx();
+    void refreshFxMeter();
     void refreshSnapshots();
     void refreshRouting();
 
@@ -46,6 +49,7 @@ private:
     int selectedBus_ {};
     QLabel* busTitle_ {};
     QLabel* busCapability_ {};
+    MeterWidget* busMeter_ {};
     QSlider* busLevel_ {};
     QCheckBox* busMute_ {};
     QSlider* busBalance_ {};
@@ -59,12 +63,15 @@ private:
 
     int selectedFx_ {};
     QLabel* fxTitle_ {};
+    MeterWidget* fxMeter_ {};
+    QSlider* fxMaster_ {};
     QComboBox* fxPreset_ {};
     QLabel* fxType_ {};
     QCheckBox* fxMute_ {};
     QLabel* fxTempo_ {};
     QPushButton* fxTap_ {};
     QVector<QSlider*> fxParameters_;
+    QVector<QCheckBox*> fxReturnChecks_;
     QVector<QLabel*> fxFormLabels_;
     QLabel* fxInfo_ {};
 
@@ -76,10 +83,15 @@ private:
     QPushButton* storeSnapshot_ {};
     QPushButton* loadAppSnapshot_ {};
     QPushButton* renameAppSnapshot_ {};
+    QPushButton* deleteAppSnapshot_ {};
     QPushButton* shareSnapshot_ {};
     QLabel* hardwareTitle_ {};
     QLabel* libraryTitle_ {};
     QPushButton* recallButton_ {};
+    QPushButton* hardwareStore_ {};
+    QPushButton* hardwareRename_ {};
+    QPushButton* hardwareDelete_ {};
+    QPushButton* hardwareReset_ {};
 
     QWidget* routingGrid_ {};
     QLabel* routingTitle_ {};

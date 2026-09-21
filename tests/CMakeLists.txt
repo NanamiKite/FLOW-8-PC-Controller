@@ -26,6 +26,7 @@ function(flow8_add_test test_name source_file)
 endfunction()
 
 flow8_add_test(flow8_state_tests unit/core/flow8_state_test.cpp)
+flow8_add_test(flow8_command_queue_tests unit/core/semantic_command_queue_test.cpp)
 flow8_add_test(flow8_device_tests unit/core/flow8_device_test.cpp)
 flow8_add_test(flow8_protocol_tests unit/protocol/protocol_test.cpp)
 flow8_add_test(flow8_sysex_tests unit/protocol/sysex_test.cpp)

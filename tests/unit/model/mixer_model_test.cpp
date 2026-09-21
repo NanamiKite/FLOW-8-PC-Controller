@@ -29,6 +29,7 @@ void MixerModelTest::officialInputTopologyIsExplicit()
     QVERIFY(inputs[6].stereoPair);
     QCOMPARE(inputs[4].spatialControl, flow8::model::SpatialControl::Balance);
     QVERIFY(inputs[0].phantom48V.has_value());
+    QVERIFY(inputs[0].phaseInverted.has_value());
     QVERIFY(inputs[0].lowCut.has_value());
     QCOMPARE(inputs[0].visible.value, std::optional(true));
     QCOMPARE(inputs[6].icon.value, std::optional(flow8::model::ChannelIcon::Playback));
@@ -40,6 +41,8 @@ void MixerModelTest::officialInputTopologyIsExplicit()
     QVERIFY(!inputs[6].capabilities.gain);
     QVERIFY(!inputs[6].capabilities.lowCut);
     QVERIFY(!inputs[6].capabilities.compressor);
+    QVERIFY(!inputs[6].capabilities.phase);
+    QVERIFY(!inputs[6].phaseInverted.has_value());
     QCOMPARE(inputs[0].capabilities.evidence.source,
              flow8::model::CapabilitySource::OfficialManual);
 }
@@ -74,6 +77,7 @@ void MixerModelTest::snapshotAndRoutingShapesAreDistinct()
 
     const auto routing = flow8::model::createRoutingProfile();
     QCOMPARE(routing.routes.size(), 35);
+    QCOMPARE(routing.routeLevels.cells.size(), 35);
     QCOMPARE(routing.usbRoutes.size(), 9);
     QCOMPARE(routing.fxOutputRoutes.size(), 6);
     QVERIFY(routing.route(4, flow8::model::RoutingDestination::Fx2) != nullptr);

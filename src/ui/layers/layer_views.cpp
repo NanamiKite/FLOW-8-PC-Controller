@@ -324,6 +324,10 @@ MainOutView::MainOutView(Flow8Device& device, QWidget* parent)
             this, [this](const bool muted) { (void)device_.setMainMuted(muted); });
     connect(&device_.state(), &Flow8State::busChanged,
             this, [this](int index) { if (index == 0) refresh(); });
+    connect(&device_.state(), &Flow8State::outputMeterChanged,
+            this, [this](const model::RoutingDestination destination) {
+                if (destination == model::RoutingDestination::Main) refresh();
+            });
     connect(&device_.state(), &Flow8State::preferencesChanged,
             this, &MainOutView::refresh);
     retranslateUi();
@@ -341,9 +345,12 @@ void MainOutView::refresh()
     const QSignalBlocker muteBlocker(mute_);
     const double level = main->fader.value.value_or(0.0);
     fader_->setValue(level);
-    meter_->setLevel(level * 0.78);
-    meter_->setPeak(level * 0.84);
-    mute_->setChecked(main->muted.value.value_or(false));
+    const auto* meter = device_.state().outputMeter(model::RoutingDestination::Main);
+    meter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    meter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    meter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
+    mute_->setChecked(main->muted.has_value()
+        && main->muted->value.value_or(false));
     outputState_->setText(uiText("Simulator Output · SYNTHETIC"));
     if (main->outputDelay.has_value()
         && main->outputDelay->milliseconds.value.has_value()) {

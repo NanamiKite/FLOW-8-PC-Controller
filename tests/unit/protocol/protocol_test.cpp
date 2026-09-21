@@ -1,3 +1,4 @@
+#include "protocol/apk_command_catalog.h"
 #include "protocol/codec.h"
 #include "protocol/flow8_protocol.h"
 #include "protocol/packet.h"
@@ -19,6 +20,7 @@ private slots:
     void unitIntervalRoundTrip_data();
     void unitIntervalRoundTrip();
     void packetSemanticRoundTrip();
+    void recordsApkSemanticsWithoutInventingPayloads();
 };
 
 void ProtocolTest::checksumWrapsModulo256()
@@ -121,6 +123,26 @@ void ProtocolTest::packetSemanticRoundTrip()
         decoded.packet->type, decoded.packet->discriminator, decoded.packet->payload);
     QCOMPARE(encoded, captured);
     QCOMPARE(flow8::protocol::parsePacket(encoded).packet->payload, decoded.packet->payload);
+}
+
+void ProtocolTest::recordsApkSemanticsWithoutInventingPayloads()
+{
+    const auto route = flow8::protocol::apkCommandDescriptor(0x06);
+    QVERIFY(route.has_value());
+    QCOMPARE(route->id, flow8::protocol::ApkCommandId::RouteLevel);
+    QCOMPARE(route->evidence, flow8::model::EvidenceStatus::VerifiedFromApk);
+    QVERIFY(!route->payloadLayoutKnown);
+    QVERIFY(!flow8::protocol::apkCommandDescriptor(0xff).has_value());
+
+    QCOMPARE(flow8::protocol::apkRouteSourceId(6),
+             std::optional(flow8::protocol::ApkRouteSourceId::BluetoothUsb));
+    QVERIFY(!flow8::protocol::apkRouteSourceId(7).has_value());
+    QCOMPARE(flow8::protocol::apkRouteDestinationId(
+                 flow8::model::RoutingDestination::Main),
+             std::optional(flow8::protocol::ApkRouteDestinationId::MainLr));
+    QCOMPARE(flow8::protocol::apkRouteDestinationId(
+                 flow8::model::RoutingDestination::Monitor1),
+             std::optional(flow8::protocol::ApkRouteDestinationId::Monitor1));
 }
 
 QTEST_GUILESS_MAIN(ProtocolTest)

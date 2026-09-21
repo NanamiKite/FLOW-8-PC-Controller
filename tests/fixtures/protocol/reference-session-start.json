@@ -10,7 +10,7 @@
   "sha256": "fe78f9f4e7395c338927cb0f627bb4144a0f736d1fa13f0e17c14cab4fac556f",
   "expected": {
     "packet_type": 55,
-    "discriminator": 1,
+    "fragmentCount": 1,
     "payload_hex": "",
     "checksum_valid": true
   }

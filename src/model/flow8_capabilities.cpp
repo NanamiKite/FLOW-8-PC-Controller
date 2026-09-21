@@ -27,19 +27,20 @@ QVector<ChannelState> createOfficialInputProfile()
         const char* name;
         bool stereoPair;
         bool gain;
+        bool phase;
         bool lowCut;
         bool compressor;
         bool phantom;
     };
 
     constexpr std::array definitions {
-        Definition {InputId::Input1, InputType::Microphone, "Input 1", false, true, true, true, true},
-        Definition {InputId::Input2, InputType::Microphone, "Input 2", false, true, true, true, true},
-        Definition {InputId::Input3, InputType::MicrophoneLine, "Input 3", false, true, true, true, false},
-        Definition {InputId::Input4, InputType::MicrophoneLine, "Input 4", false, true, true, true, false},
-        Definition {InputId::Input56, InputType::StereoLinePair, "Input 5/6", true, true, true, true, false},
-        Definition {InputId::Input78, InputType::StereoLinePair, "Input 7/8", true, true, true, true, false},
-        Definition {InputId::UsbBluetooth, InputType::UsbBluetooth, "USB/BT", true, false, false, false, false},
+        Definition {InputId::Input1, InputType::Microphone, "Input 1", false, true, true, true, true, true},
+        Definition {InputId::Input2, InputType::Microphone, "Input 2", false, true, true, true, true, true},
+        Definition {InputId::Input3, InputType::MicrophoneLine, "Input 3", false, true, true, true, true, false},
+        Definition {InputId::Input4, InputType::MicrophoneLine, "Input 4", false, true, true, true, true, false},
+        Definition {InputId::Input56, InputType::StereoLinePair, "Input 5/6", true, true, true, true, true, false},
+        Definition {InputId::Input78, InputType::StereoLinePair, "Input 7/8", true, true, true, true, true, false},
+        Definition {InputId::UsbBluetooth, InputType::UsbBluetooth, "USB/BT", true, false, false, false, false, false},
     };
 
     QVector<ChannelState> channels;
@@ -55,6 +56,7 @@ QVector<ChannelState> createOfficialInputProfile()
             ? SpatialControl::Balance : SpatialControl::Pan;
         channel.capabilities = {
             .gain = definition.gain,
+            .phase = definition.phase,
             .lowCut = definition.lowCut,
             .phantom48V = definition.phantom,
             .equalizer = true,
@@ -78,6 +80,9 @@ QVector<ChannelState> createOfficialInputProfile()
         if (definition.lowCut) {
             channel.lowCut.emplace();
             channel.lowCutHz.emplace();
+        }
+        if (definition.phase) {
+            channel.phaseInverted.emplace();
         }
         if (definition.phantom) {
             channel.phantom48V.emplace();
@@ -174,8 +179,17 @@ RoutingState createRoutingProfile()
         RoutingDestination::Fx2,
     };
     routing.routes.reserve(inputStripCount * static_cast<int>(destinations.size()));
+    routing.routeLevels.cells.reserve(
+        inputStripCount * static_cast<int>(destinations.size()));
     for (int input = 0; input < inputStripCount; ++input) {
         for (const auto destination : destinations) {
+            routing.routeLevels.cells.append(RouteLevelState {
+                .sourceEndpoint = *inputEndpointForIndex(input),
+                .destinationEndpoint = endpointForDestination(destination),
+                .confirmed = {},
+                .pending = std::nullopt,
+                .error = {},
+            });
             routing.routes.append(RouteState {
                 .inputIndex = input,
                 .destination = destination,

@@ -18,6 +18,7 @@ public:
     enum class Control {
         ChannelFader,
         ChannelGain,
+        ChannelPhase,
         ChannelMute,
         ChannelSolo,
         ChannelPan,
@@ -29,6 +30,7 @@ public:
         ChannelEq,
         ChannelCompressor,
         ChannelSend,
+        RouteLevel,
         BusFader,
         BusMute,
         BusBalance,
@@ -62,6 +64,7 @@ public:
     [[nodiscard]] bool isControlAvailable(Control control) const noexcept;
     [[nodiscard]] bool setChannelFader(int index, double normalized);
     [[nodiscard]] bool setChannelGain(int index, double normalized);
+    [[nodiscard]] bool setChannelPhaseInverted(int index, bool inverted);
     [[nodiscard]] bool setChannelMuted(int index, bool muted);
     [[nodiscard]] bool setChannelSoloed(int index, bool soloed);
     [[nodiscard]] bool setChannelPan(int index, double pan);
@@ -75,6 +78,11 @@ public:
     [[nodiscard]] bool setChannelEqGain(int index, int band, double gainDb);
     [[nodiscard]] bool setChannelCompressorAmount(int index, double amount);
     [[nodiscard]] bool setChannelSendLevel(int index, int send, double normalized);
+    [[nodiscard]] bool setRouteLevel(int sourceIndex,
+                                     model::RoutingDestination destination,
+                                     double normalized);
+    [[nodiscard]] bool setDestinationMaster(
+        model::RoutingDestination destination, double normalized);
     [[nodiscard]] bool setBusFader(int index, double normalized);
     [[nodiscard]] bool setBusMuted(int index, bool muted);
     [[nodiscard]] bool setBusBalance(int index, double balance);

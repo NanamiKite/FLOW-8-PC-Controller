@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/routing.h"
+
 #include <QWidget>
 
 class QLabel;
@@ -23,8 +25,11 @@ public:
     ChannelStrip(Flow8Device& device, int channelIndex, QWidget* parent = nullptr);
 
     [[nodiscard]] int channelIndex() const noexcept;
+    void setDestination(model::RoutingDestination destination);
+    [[nodiscard]] model::RoutingDestination destination() const noexcept;
     void setSelected(bool selected);
     void refresh();
+    void refreshMeter();
     void retranslateUi();
 
 signals:
@@ -40,12 +45,14 @@ private:
 
     Flow8Device& device_;
     int channelIndex_ {};
+    model::RoutingDestination destination_ {model::RoutingDestination::Main};
     QLabel* nameLabel_ {};
     QLabel* iconLabel_ {};
     QLabel* typeLabel_ {};
     QLabel* eqIndicator_ {};
     QLabel* compressorIndicator_ {};
     QLabel* sendIndicator_ {};
+    QLabel* routeStatus_ {};
     QLabel* panLabel_ {};
     FaderWidget* fader_ {};
     MeterWidget* meter_ {};

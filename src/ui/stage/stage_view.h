@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/routing.h"
+
 #include <QWidget>
 
 #include <QVector>
@@ -28,6 +30,8 @@ public:
 
     void refresh();
     void retranslateUi();
+    void setDestination(model::RoutingDestination destination);
+    [[nodiscard]] model::RoutingDestination destination() const noexcept;
 
 private:
     struct Card {
@@ -42,6 +46,7 @@ private:
     };
 
     void rebuild();
+    void refreshMeter(int index);
 
     Flow8Device& device_;
     QWidget* cardsContainer_ {};
@@ -51,6 +56,7 @@ private:
     QLabel* tempo_ {};
     QPushButton* tapTempo_ {};
     QVector<Card> cards_;
+    model::RoutingDestination destination_ {model::RoutingDestination::Main};
 };
 
 } // namespace flow8::ui

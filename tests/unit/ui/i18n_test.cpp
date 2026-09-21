@@ -35,7 +35,7 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
         flow8::ui::UiLanguage::English,
         flow8::ui::UiLanguage::SimplifiedChinese,
     };
-    const std::array<const char*, 34> critical {
+    const std::array critical {
         "Connection", "Disconnected", "Mixer", "Channel", "Main", "Monitor 1",
         "Compressor", "Snapshot", "Routing", "Settings", "Unknown",
         "Needs Hardware Verification", "Stage View", "Preferences", "Assisted Setup",
@@ -43,7 +43,8 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
         "Main Out", "Setup", "Configure Inputs", "Snapshot Library",
         "Mixer Snapshots", "Preamp", "Hardware Required", "Edit Channel",
         "Main Mix", "Master", "Monitor 1 Send", "Monitor 2 Send",
-        "FX 1 Send", "FX 2 Send",
+        "FX 1 Send", "FX 2 Send", "Source → Destination",
+        "Destination Master", "Route Level", "Pending", "Confirmed",
     };
     for (const auto language : languages) {
         QVERIFY2(manager.setLanguage(language, false), "compiled translator did not load");
@@ -65,7 +66,7 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
                 rejection = reason;
             });
     QVERIFY(!device.setChannelFader(0, 0.5));
-    QCOMPARE(rejection, QString::fromUtf8("通道推子不可用。"));
+    QCOMPARE(rejection, QString::fromUtf8("路由电平不可用。"));
 }
 
 void I18nTest::settingsDialogSwitchesLanguage()

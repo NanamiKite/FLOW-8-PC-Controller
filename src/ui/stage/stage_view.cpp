@@ -31,6 +31,18 @@ QStyle::StandardPixmap iconFor(const model::ChannelIcon icon)
     return QStyle::SP_FileIcon;
 }
 
+QString destinationName(const model::RoutingDestination destination)
+{
+    switch (destination) {
+    case model::RoutingDestination::Main: return uiText("Main");
+    case model::RoutingDestination::Monitor1: return uiText("Monitor 1");
+    case model::RoutingDestination::Monitor2: return uiText("Monitor 2");
+    case model::RoutingDestination::Fx1: return uiText("FX 1");
+    case model::RoutingDestination::Fx2: return uiText("FX 2");
+    }
+    return uiText("Unknown");
+}
+
 } // namespace
 
 StageView::StageView(Flow8Device& device, QWidget* parent)
@@ -74,8 +86,11 @@ StageView::StageView(Flow8Device& device, QWidget* parent)
     connect(&device_.state(), &Flow8State::stateReset, this, &StageView::rebuild);
     connect(&device_.state(), &Flow8State::channelChanged, this,
             [this](int) { refresh(); });
+    connect(&device_.state(), &Flow8State::inputMeterChanged,
+            this, &StageView::refreshMeter);
     connect(&device_.state(), &Flow8State::globalTempoChanged, this, &StageView::refresh);
     connect(&device_.state(), &Flow8State::preferencesChanged, this, &StageView::refresh);
+    connect(&device_.state(), &Flow8State::routingChanged, this, &StageView::refresh);
     rebuild();
     retranslateUi();
 }
@@ -133,7 +148,7 @@ void StageView::rebuild()
 
         connect(card.fader, &FaderWidget::valueChanged, this,
                 [this, index](const double value) {
-                    (void)device_.setChannelFader(index, value);
+                    (void)device_.setRouteLevel(index, destination_, value);
                 });
         connect(card.mute, &QToolButton::toggled, this,
                 [this, index](const bool muted) {
@@ -172,10 +187,9 @@ void StageView::refresh()
         const QSignalBlocker faderBlocker(card.fader);
         const QSignalBlocker muteBlocker(card.mute);
         const QSignalBlocker soloBlocker(card.solo);
-        card.fader->setValue(channel->fader.value.value_or(0.0));
-        card.meter->setLevel(channel->meterLevel.value.value_or(0.0));
-        card.meter->setPeak(channel->meterPeak.value.value_or(0.0));
-        card.meter->setClipping(channel->clipping.value.value_or(false));
+        const auto* route = device_.state().routeLevel(index, destination_);
+        card.fader->setValue(route == nullptr ? 0.0 : route->effectiveValue());
+        refreshMeter(index);
         card.mute->setChecked(channel->muted.value.value_or(false));
         card.solo->setChecked(channel->soloed.value.value_or(false));
     }
@@ -184,10 +198,25 @@ void StageView::refresh()
              uiText("SYNTHETIC")));
 }
 
+void StageView::refreshMeter(const int index)
+{
+    if (index < 0 || index >= cards_.size()) {
+        return;
+    }
+    const auto* meter = device_.state().inputMeter(index);
+    cards_[index].meter->setLevel(
+        meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
+    cards_[index].meter->setPeak(
+        meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
+    cards_[index].meter->setClipping(
+        meter != nullptr && meter->clipping.value.value_or(false));
+}
+
 void StageView::retranslateUi()
 {
     title_->setText(uiText("Stage View"));
-    description_->setText(uiText("Large controls for fast live operation"));
+    description_->setText(uiText("Live control · %1 destination")
+        .arg(destinationName(destination_)));
     tapTempo_->setText(uiText("Tap Tempo"));
     for (auto& card : cards_) {
         card.mute->setText(uiText("Mute"));
@@ -195,6 +224,20 @@ void StageView::retranslateUi()
         card.fader->retranslateUi();
     }
     refresh();
+}
+
+void StageView::setDestination(const model::RoutingDestination destination)
+{
+    if (destination_ == destination) {
+        return;
+    }
+    destination_ = destination;
+    retranslateUi();
+}
+
+model::RoutingDestination StageView::destination() const noexcept
+{
+    return destination_;
 }
 
 } // namespace flow8::ui

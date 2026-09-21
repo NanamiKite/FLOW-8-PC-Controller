@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/routing.h"
+
 #include <QWidget>
 
 #include <QVector>
@@ -27,23 +29,34 @@ public:
     explicit InspectorWidget(Flow8Device& device, QWidget* parent = nullptr);
 
     void setSelectedChannel(int index);
+    void setSelectedDestination(model::RoutingDestination destination);
     [[nodiscard]] int selectedChannel() const noexcept;
+    [[nodiscard]] model::RoutingDestination selectedDestination() const noexcept;
     void refresh();
     void retranslateUi();
 
 private:
     Flow8Device& device_;
     int selectedChannel_ {};
+    model::RoutingDestination selectedDestination_ {model::RoutingDestination::Main};
     QLabel* title_ {};
     QLabel* metadata_ {};
     QLabel* inputCapabilities_ {};
     QLabel* evidenceNote_ {};
     QLabel* syntheticBadge_ {};
+    QLabel* currentRouteLabel_ {};
+    QSlider* currentRoute_ {};
     QLineEdit* channelName_ {};
     QComboBox* channelIcon_ {};
     QCheckBox* channelVisible_ {};
+    QSlider* gain_ {};
+    QCheckBox* phantom_ {};
+    QCheckBox* phase_ {};
     QCheckBox* lowCutEnabled_ {};
     QSlider* lowCutFrequency_ {};
+    QSlider* pan_ {};
+    QCheckBox* mute_ {};
+    QCheckBox* solo_ {};
     QVector<QLabel*> channelFormLabels_;
     QPushButton* ezGainSelected_ {};
     QPushButton* ezGainAll_ {};

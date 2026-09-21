@@ -10,6 +10,7 @@ namespace flow8::model {
 // BLE address, packet layout, or successful hardware operation.
 enum class CapabilitySource {
     OfficialManual,
+    OfficialApk,
     ReferenceProject,
     ProjectDesign,
     Unknown,
@@ -20,6 +21,7 @@ enum class CapabilitySource {
 {
     switch (source) {
     case CapabilitySource::OfficialManual: return u"OfficialManual";
+    case CapabilitySource::OfficialApk: return u"OfficialApk";
     case CapabilitySource::ReferenceProject: return u"ReferenceProject";
     case CapabilitySource::ProjectDesign: return u"ProjectDesign";
     case CapabilitySource::Unknown: return u"Unknown";

@@ -2,6 +2,9 @@
 #include "model/flow8_capabilities.h"
 
 #include <QTest>
+#include <QSignalSpy>
+
+#include <array>
 
 class Flow8StateTest final : public QObject {
     Q_OBJECT
@@ -12,6 +15,8 @@ private slots:
     void rejectsInvalidChannelValues();
     void preservesStrongerEvidence();
     void keepsMixBusesAndFxRoutesIndependent();
+    void routeMatrixKeepsDestinationsIndependent();
+    void meterUpdatesStayOutsideControlSignals();
 };
 
 void Flow8StateTest::startsDisconnected()
@@ -101,6 +106,57 @@ void Flow8StateTest::keepsMixBusesAndFxRoutesIndependent()
     QCOMPARE(state.routing().monitorLink.stereoLinked.value, std::optional(true));
     QCOMPARE(state.bus(1)->fader.value, std::optional(0.40));
     QCOMPARE(state.bus(2)->fader.value, std::optional(0.20));
+}
+
+void Flow8StateTest::routeMatrixKeepsDestinationsIndependent()
+{
+    flow8::Flow8State state;
+    state.replaceChannels(flow8::model::createOfficialInputProfile());
+    state.replaceRouting(flow8::model::createRoutingProfile());
+    const QString source = QStringLiteral("SYNTHETIC route matrix test");
+    constexpr std::array destinations {
+        flow8::model::RoutingDestination::Main,
+        flow8::model::RoutingDestination::Monitor1,
+        flow8::model::RoutingDestination::Monitor2,
+        flow8::model::RoutingDestination::Fx1,
+        flow8::model::RoutingDestination::Fx2,
+    };
+    constexpr std::array values {0.91, 0.72, 0.53, 0.34, 0.15};
+    for (std::size_t index = 0; index < destinations.size(); ++index) {
+        QVERIFY(state.setRouteLevel(0, destinations[index], values[index],
+                                    flow8::model::EvidenceStatus::Synthetic, source));
+    }
+    for (std::size_t index = 0; index < destinations.size(); ++index) {
+        const auto* route = state.routeLevel(0, destinations[index]);
+        QVERIFY(route != nullptr);
+        QCOMPARE(route->confirmed.value, std::optional(values[index]));
+        QCOMPARE(route->confirmed.evidence, flow8::model::EvidenceStatus::Synthetic);
+    }
+    QVERIFY(state.setRouteLevelPending(
+        0, flow8::model::RoutingDestination::Monitor1, 0.44));
+    QCOMPARE(state.routeLevel(0, flow8::model::RoutingDestination::Monitor1)
+                 ->effectiveValue(), 0.44);
+    QCOMPARE(state.routeLevel(0, flow8::model::RoutingDestination::Main)
+                 ->effectiveValue(), 0.91);
+    QVERIFY(state.failRouteLevel(
+        0, flow8::model::RoutingDestination::Monitor1,
+        QStringLiteral("synthetic rejection")));
+    QCOMPARE(state.routeLevel(0, flow8::model::RoutingDestination::Monitor1)
+                 ->effectiveValue(), 0.72);
+}
+
+void Flow8StateTest::meterUpdatesStayOutsideControlSignals()
+{
+    flow8::Flow8State state;
+    state.replaceChannels(flow8::model::createOfficialInputProfile());
+    QSignalSpy channelSpy(&state, &flow8::Flow8State::channelChanged);
+    QSignalSpy meterSpy(&state, &flow8::Flow8State::inputMeterChanged);
+    QVERIFY(state.setChannelMeter(
+        0, 0.4, 0.5, false, flow8::model::EvidenceStatus::Synthetic,
+        QStringLiteral("SYNTHETIC meter test")));
+    QCOMPARE(channelSpy.size(), 0);
+    QCOMPARE(meterSpy.size(), 1);
+    QCOMPARE(state.inputMeter(0)->level.value, std::optional(0.4));
 }
 
 QTEST_GUILESS_MAIN(Flow8StateTest)

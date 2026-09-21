@@ -2,9 +2,12 @@
 #include "simulator/fake_transport.h"
 #include "ui/language_manager.h"
 #include "ui/channel/channel_edit_view.h"
+#include "ui/inspector/detail_panel.h"
+#include "ui/inspector/inspector_widget.h"
 #include "ui/layers/layer_views.h"
 #include "ui/main_window.h"
 #include "ui/mixer/channel_strip.h"
+#include "ui/mixer/mixer_widget.h"
 #include "ui/setup/assisted_setup_wizard.h"
 #include "ui/setup/setup_window.h"
 #include "ui/settings/settings_dialog.h"
@@ -73,20 +76,21 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     auto* firstStrip = window.findChild<flow8::ui::ChannelStrip*>(
         QStringLiteral("channelStrip0"));
     QVERIFY(firstStrip != nullptr);
-    QTest::mouseDClick(firstStrip, Qt::LeftButton);
-    auto* channelEdit = window.findChild<flow8::ui::ChannelEditView*>(
-        QStringLiteral("channelEditView"));
-    QVERIFY(channelEdit != nullptr);
-    QTRY_VERIFY(channelEdit->isVisible());
-    QCOMPARE(channelEdit->channel(), 0);
-    QVERIFY(channelEdit->findChild<flow8::ui::EqGraphWidget*>() != nullptr);
-    auto* phantom = channelEdit->findChild<QCheckBox*>(QStringLiteral("channelEditPhantom"));
-    QVERIFY(phantom != nullptr);
-    phantom->setChecked(true);
-    QCOMPARE(device.state().channel(0)->phantom48V->value, std::optional(true));
-    auto* channelBack = channelEdit->findChild<QPushButton*>(QStringLiteral("channelEditBack"));
-    QVERIFY(channelBack != nullptr);
-    QTest::mouseClick(channelBack, Qt::LeftButton);
+    QTest::mouseClick(firstStrip, Qt::LeftButton);
+    auto* inspector = window.findChild<flow8::ui::InspectorWidget*>(
+        QStringLiteral("mixerInputInspector"));
+    QVERIFY(inspector != nullptr);
+    QTRY_VERIFY(inspector->isVisible());
+    QCOMPARE(inspector->selectedChannel(), 0);
+    QCOMPARE(inspector->selectedDestination(), flow8::model::RoutingDestination::Main);
+    auto* currentSend = inspector->findChild<QSlider*>(
+        QStringLiteral("currentDestinationSend"));
+    QVERIFY(currentSend != nullptr);
+    currentSend->setValue(310);
+    QCOMPARE(device.state().routeLevel(
+                 0, flow8::model::RoutingDestination::Main)->effectiveValue(), 0.31);
+    const auto originalPan = device.state().channel(0)->pan.value;
+    const auto originalMute = device.state().channel(0)->muted.value;
 
     auto* stageNavigation = window.findChild<QToolButton*>(QStringLiteral("layerStage"));
     QVERIFY(stageNavigation != nullptr);
@@ -94,39 +98,44 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     auto* stage = window.findChild<flow8::ui::StageView*>();
     QVERIFY(stage != nullptr);
     QVERIFY(stage->isVisible());
+    QCOMPARE(stage->destination(), flow8::model::RoutingDestination::Main);
     QVERIFY(window.findChild<flow8::ui::FaderWidget*>(QStringLiteral("stageFader0")) != nullptr);
 
     auto* monitorNavigation = window.findChild<QToolButton*>(QStringLiteral("layerMonitor1"));
     QVERIFY(monitorNavigation != nullptr);
     QTest::mouseClick(monitorNavigation, Qt::LeftButton);
-    auto* monitor = window.findChild<flow8::ui::MonitorView*>(QStringLiteral("monitor1View"));
-    QVERIFY(monitor != nullptr);
-    QTRY_VERIFY(monitor->isVisible());
-    QVERIFY(monitor->findChild<flow8::ui::FaderWidget*>(
-        QStringLiteral("monitor1Send0")) != nullptr);
-    auto* sendMode = monitor->findChild<QComboBox*>(QStringLiteral("monitor1Mode0"));
-    QVERIFY(sendMode != nullptr);
-    sendMode->setCurrentIndex(sendMode->findData(
-        static_cast<int>(flow8::model::MonitorSendMode::PreFader)));
-    QCOMPARE(device.state().channel(0)->monitorSends[0].mode.value,
-             std::optional(flow8::model::MonitorSendMode::PreFader));
+    auto* mixer = window.findChild<flow8::ui::MixerWidget*>();
+    QVERIFY(mixer != nullptr);
+    auto* showMaster = mixer->findChild<QPushButton*>(
+        QStringLiteral("showDestinationMaster"));
+    QVERIFY(showMaster != nullptr);
+    QTRY_VERIFY(mixer->isVisible());
+    QCOMPARE(mixer->destination(), flow8::model::RoutingDestination::Monitor1);
+    QCOMPARE(firstStrip->destination(), flow8::model::RoutingDestination::Monitor1);
+    QCOMPARE(inspector->selectedDestination(), flow8::model::RoutingDestination::Monitor1);
+    currentSend->setValue(410);
+    QCOMPARE(device.state().routeLevel(
+                 0, flow8::model::RoutingDestination::Monitor1)->effectiveValue(), 0.41);
+    QCOMPARE(device.state().routeLevel(
+                 0, flow8::model::RoutingDestination::Main)->effectiveValue(), 0.31);
+    QCOMPARE(device.state().channel(0)->pan.value, originalPan);
+    QCOMPARE(device.state().channel(0)->muted.value, originalMute);
     auto* monitor2Navigation = window.findChild<QToolButton*>(QStringLiteral("layerMonitor2"));
     QVERIFY(monitor2Navigation != nullptr);
     QTest::mouseClick(monitor2Navigation, Qt::LeftButton);
-    auto* monitor2 = window.findChild<flow8::ui::MonitorView*>(QStringLiteral("monitor2View"));
-    QVERIFY(monitor2 != nullptr);
-    QTRY_VERIFY(monitor2->isVisible());
-    QVERIFY(monitor2->findChild<flow8::ui::FaderWidget*>(
-        QStringLiteral("monitor2Send0")) != nullptr);
+    QCOMPARE(mixer->destination(), flow8::model::RoutingDestination::Monitor2);
+    QTest::mouseClick(showMaster, Qt::LeftButton);
+    auto* master = mixer->findChild<flow8::ui::DetailPanel*>(
+        QStringLiteral("destinationMasterPanel"));
+    QVERIFY(master != nullptr);
+    QTRY_VERIFY(master->isVisible());
+    QVERIFY(master->findChild<QSlider*>(QStringLiteral("busLevel")) != nullptr);
 
     auto* mainNavigation = window.findChild<QToolButton*>(QStringLiteral("layerMain"));
     QVERIFY(mainNavigation != nullptr);
     QTest::mouseClick(mainNavigation, Qt::LeftButton);
-    auto* mainView = window.findChild<flow8::ui::MainView*>(QStringLiteral("mainView"));
-    QVERIFY(mainView != nullptr);
-    QTRY_VERIFY(mainView->isVisible());
-    QVERIFY(mainView->findChild<flow8::ui::FaderWidget*>(
-        QStringLiteral("mainSend0")) != nullptr);
+    QCOMPARE(mixer->destination(), flow8::model::RoutingDestination::Main);
+    QTRY_VERIFY(mixer->isVisible());
 
     auto* mainOutNavigation = window.findChild<QToolButton*>(QStringLiteral("layerMainOut"));
     QVERIFY(mainOutNavigation != nullptr);
@@ -139,16 +148,15 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     auto* fxNavigation = window.findChild<QToolButton*>(QStringLiteral("layerFx1"));
     QVERIFY(fxNavigation != nullptr);
     QTest::mouseClick(fxNavigation, Qt::LeftButton);
-    auto* fxView = window.findChild<flow8::ui::FxView*>(QStringLiteral("fx1View"));
-    QVERIFY(fxView != nullptr);
-    QTRY_VERIFY(fxView->isVisible());
-    auto* tapTempo = fxView->findChild<QPushButton*>(QStringLiteral("fxTapTempo"));
+    QCOMPARE(mixer->destination(), flow8::model::RoutingDestination::Fx1);
+    QTest::mouseClick(showMaster, Qt::LeftButton);
+    QTRY_VERIFY(master->isVisible());
+    auto* tapTempo = master->findChild<QPushButton*>(QStringLiteral("fxTapTempo"));
     QVERIFY(tapTempo != nullptr);
     QTest::mouseClick(tapTempo, Qt::LeftButton);
     QVERIFY(device.state().effects().at(0).tapTempoBpm.value.has_value());
-    QVERIFY(fxView->findChild<flow8::ui::FaderWidget*>(
-        QStringLiteral("fx1Send0")) != nullptr);
-    auto* fx1MainRoute = fxView->findChild<QCheckBox*>(QStringLiteral("fx1Output0"));
+    auto* fx1MainRoute = master->findChild<QCheckBox*>(
+        QStringLiteral("fxInspectorOutput0"));
     QVERIFY(fx1MainRoute != nullptr);
     fx1MainRoute->setChecked(false);
     QCOMPARE(device.state().routing().fxOutputRoute(
@@ -157,11 +165,12 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     auto* fx2Navigation = window.findChild<QToolButton*>(QStringLiteral("layerFx2"));
     QVERIFY(fx2Navigation != nullptr);
     QTest::mouseClick(fx2Navigation, Qt::LeftButton);
-    auto* fx2View = window.findChild<flow8::ui::FxView*>(QStringLiteral("fx2View"));
-    QVERIFY(fx2View != nullptr);
-    QTRY_VERIFY(fx2View->isVisible());
-    QVERIFY(fx2View->findChild<flow8::ui::FaderWidget*>(
-        QStringLiteral("fx2Send0")) != nullptr);
+    QCOMPARE(mixer->destination(), flow8::model::RoutingDestination::Fx2);
+    QTRY_VERIFY(master->isVisible());
+
+    QTest::mouseClick(stageNavigation, Qt::LeftButton);
+    QTRY_VERIFY(stage->isVisible());
+    QCOMPARE(stage->destination(), flow8::model::RoutingDestination::Fx2);
 
     auto* setupButton = window.findChild<QPushButton*>(QStringLiteral("setupButton"));
     QVERIFY(setupButton != nullptr);
@@ -179,6 +188,12 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QCoreApplication::processEvents();
     QVERIFY(setup->findChild<QCheckBox*>(QStringLiteral("usbRoute7")) != nullptr);
     QVERIFY(setup->findChild<QCheckBox*>(QStringLiteral("fxOutputRoute0")) != nullptr);
+    auto* stereoLink = setup->findChild<QCheckBox*>(
+        QStringLiteral("monitorStereoLink"));
+    QVERIFY(stereoLink != nullptr);
+    stereoLink->setChecked(true);
+    QCOMPARE(device.state().routing().monitorLink.stereoLinked.value,
+             std::optional(true));
     setupNavigation->setCurrentRow(3);
     QCoreApplication::processEvents();
     QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("setupLanguage")) != nullptr);

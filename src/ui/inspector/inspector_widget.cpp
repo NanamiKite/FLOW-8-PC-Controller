@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QLocale>
 #include <QSignalBlocker>
@@ -31,6 +32,18 @@ QWidget* createPage(QWidget* parent)
     return page;
 }
 
+QString destinationName(const model::RoutingDestination destination)
+{
+    switch (destination) {
+    case model::RoutingDestination::Main: return uiText("Main");
+    case model::RoutingDestination::Monitor1: return uiText("Monitor 1");
+    case model::RoutingDestination::Monitor2: return uiText("Monitor 2");
+    case model::RoutingDestination::Fx1: return uiText("FX 1");
+    case model::RoutingDestination::Fx2: return uiText("FX 2");
+    }
+    return uiText("Unknown");
+}
+
 } // namespace
 
 InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
@@ -41,11 +54,19 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     , inputCapabilities_(new QLabel(this))
     , evidenceNote_(new QLabel(this))
     , syntheticBadge_(new QLabel(this))
+    , currentRouteLabel_(new QLabel(this))
+    , currentRoute_(new QSlider(Qt::Horizontal, this))
     , channelName_(new QLineEdit(this))
     , channelIcon_(new QComboBox(this))
     , channelVisible_(new QCheckBox(this))
+    , gain_(new QSlider(Qt::Horizontal, this))
+    , phantom_(new QCheckBox(this))
+    , phase_(new QCheckBox(this))
     , lowCutEnabled_(new QCheckBox(this))
     , lowCutFrequency_(new QSlider(Qt::Horizontal, this))
+    , pan_(new QSlider(Qt::Horizontal, this))
+    , mute_(new QCheckBox(this))
+    , solo_(new QCheckBox(this))
     , ezGainSelected_(new QPushButton(this))
     , ezGainAll_(new QPushButton(this))
     , ezGainCancel_(new QPushButton(this))
@@ -66,20 +87,34 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     auto* channelLayout = new QVBoxLayout(channelPage);
     channelLayout->setContentsMargins(14, 12, 14, 12);
     auto* channelForm = new QFormLayout;
-    for (int row = 0; row < 5; ++row) {
+    for (int row = 0; row < 11; ++row) {
         channelFormLabels_.append(new QLabel(channelPage));
     }
     channelName_->setObjectName(QStringLiteral("channelCustomName"));
     channelIcon_->setObjectName(QStringLiteral("channelIcon"));
     channelVisible_->setObjectName(QStringLiteral("channelVisible"));
+    gain_->setObjectName(QStringLiteral("inspectorGain"));
+    gain_->setRange(0, 1000);
+    phantom_->setObjectName(QStringLiteral("inspectorPhantom"));
+    phase_->setObjectName(QStringLiteral("inspectorPhase"));
     lowCutEnabled_->setObjectName(QStringLiteral("lowCutEnabled"));
     lowCutFrequency_->setObjectName(QStringLiteral("lowCutFrequency"));
     lowCutFrequency_->setRange(20, 600);
+    pan_->setObjectName(QStringLiteral("inspectorPan"));
+    pan_->setRange(-100, 100);
+    mute_->setObjectName(QStringLiteral("inspectorMute"));
+    solo_->setObjectName(QStringLiteral("inspectorSolo"));
     channelForm->addRow(channelFormLabels_[0], channelName_);
     channelForm->addRow(channelFormLabels_[1], channelIcon_);
     channelForm->addRow(channelFormLabels_[2], channelVisible_);
-    channelForm->addRow(channelFormLabels_[3], lowCutEnabled_);
-    channelForm->addRow(channelFormLabels_[4], lowCutFrequency_);
+    channelForm->addRow(channelFormLabels_[3], gain_);
+    channelForm->addRow(channelFormLabels_[4], phantom_);
+    channelForm->addRow(channelFormLabels_[5], phase_);
+    channelForm->addRow(channelFormLabels_[6], lowCutEnabled_);
+    channelForm->addRow(channelFormLabels_[7], lowCutFrequency_);
+    channelForm->addRow(channelFormLabels_[8], pan_);
+    channelForm->addRow(channelFormLabels_[9], mute_);
+    channelForm->addRow(channelFormLabels_[10], solo_);
     channelLayout->addLayout(channelForm);
     channelLayout->addWidget(inputCapabilities_);
     auto* ezGainRow = new QHBoxLayout;
@@ -111,6 +146,33 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     });
     connect(channelVisible_, &QCheckBox::toggled, this, [this](const bool visible) {
         (void)device_.setChannelVisible(selectedChannel_, visible);
+    });
+    connect(gain_, &QSlider::valueChanged, this, [this](const int value) {
+        (void)device_.setChannelGain(selectedChannel_, value / 1000.0);
+    });
+    connect(phantom_, &QCheckBox::clicked, this, [this](const bool enabled) {
+        if (enabled && QMessageBox::warning(
+                this, uiText("Enable Phantom Power?"),
+                uiText("Confirm that the connected source supports 48 V phantom power."),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)
+                != QMessageBox::Yes) {
+            const QSignalBlocker blocker(phantom_);
+            phantom_->setChecked(false);
+            return;
+        }
+        (void)device_.setChannelPhantom(selectedChannel_, enabled);
+    });
+    connect(phase_, &QCheckBox::toggled, this, [this](const bool inverted) {
+        (void)device_.setChannelPhaseInverted(selectedChannel_, inverted);
+    });
+    connect(pan_, &QSlider::valueChanged, this, [this](const int value) {
+        (void)device_.setChannelPan(selectedChannel_, value / 100.0);
+    });
+    connect(mute_, &QCheckBox::toggled, this, [this](const bool enabled) {
+        (void)device_.setChannelMuted(selectedChannel_, enabled);
+    });
+    connect(solo_, &QCheckBox::toggled, this, [this](const bool enabled) {
+        (void)device_.setChannelSoloed(selectedChannel_, enabled);
     });
     const auto updateLowCut = [this] {
         (void)device_.setChannelLowCut(selectedChannel_, lowCutEnabled_->isChecked(),
@@ -258,7 +320,19 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     layout->setContentsMargins(14, 10, 14, 12);
     layout->setSpacing(7);
     layout->addLayout(header);
+    auto* routeRow = new QHBoxLayout;
+    currentRoute_->setRange(0, 1000);
+    currentRoute_->setObjectName(QStringLiteral("currentDestinationSend"));
+    currentRouteLabel_->setProperty("class", QStringLiteral("sectionLabel"));
+    routeRow->addWidget(currentRouteLabel_);
+    routeRow->addWidget(currentRoute_, 1);
+    layout->addLayout(routeRow);
     layout->addWidget(tabs_, 1);
+
+    connect(currentRoute_, &QSlider::valueChanged, this, [this](const int value) {
+        (void)device_.setRouteLevel(
+            selectedChannel_, selectedDestination_, value / 1000.0);
+    });
 
     connect(&device_.state(), &Flow8State::stateReset, this, &InspectorWidget::refresh);
     connect(&device_.state(), &Flow8State::channelChanged, this, [this](const int index) {
@@ -281,9 +355,24 @@ void InspectorWidget::setSelectedChannel(const int index)
     refresh();
 }
 
+void InspectorWidget::setSelectedDestination(
+    const model::RoutingDestination destination)
+{
+    if (selectedDestination_ == destination) {
+        return;
+    }
+    selectedDestination_ = destination;
+    refresh();
+}
+
 int InspectorWidget::selectedChannel() const noexcept
 {
     return selectedChannel_;
+}
+
+model::RoutingDestination InspectorWidget::selectedDestination() const noexcept
+{
+    return selectedDestination_;
 }
 
 void InspectorWidget::refresh()
@@ -295,6 +384,10 @@ void InspectorWidget::refresh()
         return;
     }
     tabs_->setEnabled(device_.state().connectionState() == ConnectionState::Ready);
+    tabs_->setTabVisible(1, channel->capabilities.equalizer);
+    tabs_->setTabVisible(2, channel->capabilities.compressor);
+    tabs_->setTabVisible(3, channel->capabilities.monitorSends
+        || channel->capabilities.fxSends);
     title_->setText(channel->name.value.has_value() && !channel->name.value->isEmpty()
         ? *channel->name.value : inputDisplayName(channel->inputId));
     metadata_->setText(QStringLiteral("%1 · %2")
@@ -302,12 +395,22 @@ void InspectorWidget::refresh()
              channel->spatialControl == model::SpatialControl::Balance
                  ? uiText("Balance") : uiText("Pan")));
     inputCapabilities_->setText(uiText(
-        "Gain: %1   48 V: %2   Low Cut: %3   EQ: 4-band parametric   "
-        "Compressor: %4   Sends: MON1 / MON2 / FX1 / FX2")
+        "Gain: %1   48 V: %2   Phase: %3   Low Cut: %4   EQ: 4-band parametric   "
+        "Compressor: %5   Sends: MON1 / MON2 / FX1 / FX2")
         .arg(channel->capabilities.gain ? uiText("Available") : uiText("Unavailable"),
              channel->capabilities.phantom48V ? uiText("Available") : uiText("Not supported"),
+             channel->capabilities.phase ? uiText("Available") : uiText("Unavailable"),
              channel->capabilities.lowCut ? uiText("Available") : uiText("Unavailable"),
              channel->capabilities.compressor ? uiText("Available") : uiText("Unavailable")));
+    currentRouteLabel_->setText(uiText("%1 → %2 Send")
+        .arg(inputDisplayName(channel->inputId), destinationName(selectedDestination_)));
+    {
+        const auto* route = device_.state().routeLevel(
+            selectedChannel_, selectedDestination_);
+        const QSignalBlocker blocker(currentRoute_);
+        currentRoute_->setValue(static_cast<int>(std::lround(
+            (route == nullptr ? 0.0 : route->effectiveValue()) * 1000.0)));
+    }
     const auto& ezGain = device_.state().ezGainSession();
     ezGainCancel_->setVisible(ezGain.running);
     if (ezGain.running) {
@@ -325,19 +428,45 @@ void InspectorWidget::refresh()
         const QSignalBlocker nameBlocker(channelName_);
         const QSignalBlocker iconBlocker(channelIcon_);
         const QSignalBlocker visibleBlocker(channelVisible_);
+        const QSignalBlocker gainBlocker(gain_);
+        const QSignalBlocker phantomBlocker(phantom_);
+        const QSignalBlocker phaseBlocker(phase_);
         const QSignalBlocker lowCutEnabledBlocker(lowCutEnabled_);
         const QSignalBlocker lowCutFrequencyBlocker(lowCutFrequency_);
+        const QSignalBlocker panBlocker(pan_);
+        const QSignalBlocker muteBlocker(mute_);
+        const QSignalBlocker soloBlocker(solo_);
         channelName_->setText(channel->name.value.value_or(inputDisplayName(channel->inputId)));
         channelIcon_->setCurrentIndex(channelIcon_->findData(
             static_cast<int>(channel->icon.value.value_or(model::ChannelIcon::None))));
         channelVisible_->setChecked(channel->visible.value.value_or(true));
+        gain_->setVisible(channel->capabilities.gain);
+        channelFormLabels_[3]->setVisible(channel->capabilities.gain);
+        gain_->setValue(static_cast<int>(std::lround(
+            channel->gain.value.value_or(0.0) * 1000.0)));
+        phantom_->setVisible(channel->capabilities.phantom48V);
+        channelFormLabels_[4]->setVisible(channel->capabilities.phantom48V);
+        phantom_->setChecked(channel->phantom48V.has_value()
+            && channel->phantom48V->value.value_or(false));
+        phase_->setVisible(channel->capabilities.phase);
+        channelFormLabels_[5]->setVisible(channel->capabilities.phase);
+        phase_->setChecked(channel->phaseInverted.has_value()
+            && channel->phaseInverted->value.value_or(false));
         lowCutEnabled_->setEnabled(channel->lowCut.has_value());
         lowCutFrequency_->setEnabled(channel->lowCut.has_value());
+        lowCutEnabled_->setVisible(channel->capabilities.lowCut);
+        lowCutFrequency_->setVisible(channel->capabilities.lowCut);
+        channelFormLabels_[6]->setVisible(channel->capabilities.lowCut);
+        channelFormLabels_[7]->setVisible(channel->capabilities.lowCut);
         lowCutEnabled_->setChecked(channel->lowCut.has_value()
             && channel->lowCut->enabled.value.value_or(false));
         lowCutFrequency_->setValue(static_cast<int>(std::lround(
             channel->lowCut.has_value()
                 ? channel->lowCut->frequencyHz.value.value_or(20.0) : 20.0)));
+        pan_->setValue(static_cast<int>(std::lround(
+            channel->pan.value.value_or(0.0) * 100.0)));
+        mute_->setChecked(channel->muted.value.value_or(false));
+        solo_->setChecked(channel->soloed.value.value_or(false));
     }
 
     QVector<EqGraphBand> graphBands;
@@ -415,6 +544,7 @@ void InspectorWidget::retranslateUi()
     evidenceNote_->setText(uiText(
         "Hardware control for advanced parameters is unavailable in this build."));
     syntheticBadge_->setText(uiText("SYNTHETIC"));
+    currentRouteLabel_->setText(uiText("Current Destination Send"));
 
     const int selectedIcon = channelIcon_->currentData().toInt();
     {
@@ -431,8 +561,10 @@ void InspectorWidget::retranslateUi()
                               static_cast<int>(model::ChannelIcon::Playback));
         channelIcon_->setCurrentIndex(qMax(0, channelIcon_->findData(selectedIcon)));
     }
-    const std::array<const char*, 5> channelLabels {
-        "Channel Name", "Channel Icon", "Channel Visibility", "Low Cut", "Frequency",
+    const std::array<const char*, 11> channelLabels {
+        "Channel Name", "Channel Icon", "Channel Visibility", "Gain",
+        "Phantom Power", "Polarity", "Low Cut", "Frequency", "Pan / Balance",
+        "Mute", "Solo",
     };
     for (int index = 0; index < channelFormLabels_.size(); ++index) {
         channelFormLabels_[index]->setText(

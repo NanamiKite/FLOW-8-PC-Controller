@@ -4,24 +4,26 @@
 
 namespace flow8::protocol {
 
-QByteArray encodeParameterChange(const quint8 channel, const quint8 parameter, const quint8 value)
+QByteArray encodeLegacyReferenceParameterChange(
+    const quint8 channel, const quint8 parameter, const quint8 value)
 {
     const char payload[] = {
         static_cast<char>(channel),
         static_cast<char>(parameter),
         static_cast<char>(value),
     };
-    return framePacket(static_cast<quint8>(PacketType::ParameterChange), 0x01,
-                       QByteArrayView(payload, 3));
+    return frameSingleFragment(static_cast<quint8>(PacketType::RouteLevel),
+                               QByteArrayView(payload, 3));
 }
 
-std::optional<ParameterChange> decodeParameterChange(const Packet& packet) noexcept
+std::optional<LegacyReferenceParameterChange>
+decodeLegacyReferenceParameterChange(const Packet& packet) noexcept
 {
-    if (packet.type != static_cast<quint8>(PacketType::ParameterChange)
-        || packet.discriminator != 0x01 || packet.payload.size() != 3) {
+    if (packet.type != static_cast<quint8>(PacketType::RouteLevel)
+        || packet.fragmentCount != 1 || packet.payload.size() != 3) {
         return std::nullopt;
     }
-    return ParameterChange {
+    return LegacyReferenceParameterChange {
         .channel = static_cast<quint8>(packet.payload[0]),
         .parameter = static_cast<quint8>(packet.payload[1]),
         .value = static_cast<quint8>(packet.payload[2]),
@@ -29,14 +31,15 @@ std::optional<ParameterChange> decodeParameterChange(const Packet& packet) noexc
     };
 }
 
-std::optional<QByteArray> encodeFaderLevel(const quint8 oneBasedChannel,
-                                           const double normalized) noexcept
+std::optional<QByteArray> encodeLegacyReferenceFaderLevel(
+    const quint8 oneBasedChannel, const double normalized) noexcept
 {
     const auto encoded = encodeUnitInterval(normalized);
     if (!encoded.has_value() || oneBasedChannel == 0) {
         return std::nullopt;
     }
-    return encodeParameterChange(oneBasedChannel, faderLevelParameter, *encoded);
+    return encodeLegacyReferenceParameterChange(
+        oneBasedChannel, legacyReferenceFaderLevelParameter, *encoded);
 }
 
 QByteArray referenceAuthenticationPacket()
@@ -44,19 +47,19 @@ QByteArray referenceAuthenticationPacket()
     return QByteArray::fromHex("3901fd062b0639f17fe7b7278b8f355a495c2a");
 }
 
-QByteArray sessionStartPacket()
+QByteArray referenceSessionStartPacket()
 {
-    return framePacket(static_cast<quint8>(PacketType::SessionStart), 0x01);
+    return frameSingleFragment(static_cast<quint8>(PacketType::GetMixerState));
 }
 
-QByteArray configRequestPacket()
+QByteArray referenceConfigRequestPacket()
 {
-    return framePacket(static_cast<quint8>(PacketType::ConfigRequest), 0x01);
+    return frameSingleFragment(static_cast<quint8>(PacketType::GetSnapshotNames));
 }
 
-QByteArray dumpTriggerPacket()
+QByteArray referenceDumpTriggerPacket()
 {
-    return framePacket(static_cast<quint8>(PacketType::DumpTrigger), 0x01);
+    return frameSingleFragment(static_cast<quint8>(PacketType::DumpTrigger));
 }
 
 } // namespace flow8::protocol

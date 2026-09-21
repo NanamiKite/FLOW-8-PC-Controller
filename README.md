@@ -65,14 +65,20 @@ buses, two FX engines, 15 hardware snapshot slots, routing, animated meters, cha
 bus EQ, compressor amount, and send controls. Simulator values are functional test data,
 not FLOW 8 captures or protocol evidence.
 
-The fixed desktop Layer Bar follows the FLOW Mix operating model: Mixer, Stage, FX1,
-FX2, MON1, MON2, MAIN, and MAIN OUT switch the entire workspace. Mixer remains a dense
-console surface; double-clicking an input opens a separate Channel Edit page rather than
-keeping a permanent inspector beside the faders. Setup is a distinct sidebar workspace
-for Configure Inputs, the app Snapshot Library, 15 Mixer Snapshot hardware slots,
-Preferences, Routing, and Info.
+The Mixer follows the APK-derived source-to-destination model. One shared set of seven
+channel strips is controlled by a MAIN/MON1/MON2/FX1/FX2 destination selector. Switching
+the destination changes only the route faders; input Gain/Pan/Mute/Solo/EQ/Compressor
+state stays global. The right side shows either the selected destination Master/FX detail
+or an in-context Input Inspector. Stage reads the same matrix rather than maintaining a
+second mixer state. Setup remains a distinct sidebar workspace for Configure Inputs, the
+local Snapshot Library, 15 device Snapshot slots, Preferences, Routing, and Info.
 
-The simulator models channel names/icons/hide-show, Low Cut, phantom power where
+The canonical mixer state includes a 7×5 route matrix with confirmed/pending/error
+values, independent destination masters, MON stereo link, and independent FX input
+sends versus FX output returns. Meter state is high-rate transient data kept outside
+ordinary control state. Simulator data uses explicit `SYNTHETIC` evidence.
+
+The simulator models channel names/icons/hide-show, Gain/Phase/Low Cut, phantom power where
 applicable, MON pre/post sends, expanded USB/FX/headphone routing, MON stereo link,
 app-snapshot store/load/rename/delete, Assisted Setup, EZ-GAIN, global Tap Tempo, and
 output preferences. Hardware commands for these additions remain
@@ -146,6 +152,7 @@ The state-dump decoder reports input SHA-256 and keeps all extracted offsets mar
 - [State model](docs/state-model.md)
 - [FLOW Mix feature matrix](docs/flow-mix-feature-matrix.md)
 - [Reverse-engineering record](docs/reverse-engineering.md)
+- [FLOW Mix APK semantic record](docs/reverse-engineering-apk.md)
 
 `reference/flow-8-midi/` is research evidence, not an authority or a substitute for this
 project's hardware validation.

@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -107,7 +108,16 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
     connect(gain_, &QSlider::valueChanged, this, [this](const int value) {
         (void)device_.setChannelGain(channelIndex_, value / 1000.0);
     });
-    connect(phantom_, &QCheckBox::toggled, this, [this](const bool enabled) {
+    connect(phantom_, &QCheckBox::clicked, this, [this](const bool enabled) {
+        if (enabled && QMessageBox::warning(
+                this, uiText("Enable Phantom Power?"),
+                uiText("Confirm that the connected source supports 48 V phantom power."),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)
+                != QMessageBox::Yes) {
+            const QSignalBlocker blocker(phantom_);
+            phantom_->setChecked(false);
+            return;
+        }
         (void)device_.setChannelPhantom(channelIndex_, enabled);
     });
     connect(fader_, &FaderWidget::valueChanged, this, [this](const double value) {

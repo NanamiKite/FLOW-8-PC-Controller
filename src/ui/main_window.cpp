@@ -58,6 +58,14 @@ QString applicationStyle()
         QToolButton[class="layerButton"][layerRole="fx"]:checked { color: #c9a3ff; border-bottom-color: #9b6ad6; background: #241d2d; }
         QToolButton[class="layerButton"][layerRole="monitor"]:checked { color: #83d9a0; border-bottom-color: #55b979; background: #19271f; }
         QToolButton[class="layerButton"][layerRole="main"]:checked { color: #f1f3f6; border-bottom-color: #d7dce3; background: #25282d; }
+        QToolButton[class="destinationButton"] {
+            border: 1px solid #30353d; border-radius: 6px; min-width: 64px;
+            padding: 7px 12px; color: #9aa2ad; background: #1a1d22; font-weight: 650;
+        }
+        QToolButton[class="destinationButton"]:hover { border-color: #59616d; color: #eef1f5; }
+        QToolButton[class="destinationButton"]:checked {
+            color: #18191b; background: #e1b941; border-color: #f2cd5c;
+        }
         #stripsContainer { background: #101216; }
         QWidget[class="channelStrip"], QWidget[class="mainStrip"] {
             background: #181b20; border: 1px solid #2a2e34; border-radius: 3px;
@@ -111,11 +119,6 @@ MainWindow::MainWindow(Flow8Device& device, LanguageManager& languageManager, QW
     , layerBar_(new FlowLayerBar(this))
     , mixer_(new MixerWidget(device_, this))
     , stage_(new StageView(device_, this))
-    , fx1_(new FxView(device_, 0, this))
-    , fx2_(new FxView(device_, 1, this))
-    , monitor1_(new MonitorView(device_, 0, this))
-    , monitor2_(new MonitorView(device_, 1, this))
-    , mainView_(new MainView(device_, this))
     , mainOut_(new MainOutView(device_, this))
     , channelEdit_(new ChannelEditView(device_, this))
     , setup_(new SetupWindow(device_, languageManager_, this))
@@ -134,8 +137,7 @@ MainWindow::MainWindow(Flow8Device& device, LanguageManager& languageManager, QW
     layout->addWidget(connectionBar_);
     layout->addWidget(layerBar_);
     const QList<QWidget*> pages {
-        sessionStart_, mixer_, stage_, fx1_, fx2_, monitor1_, monitor2_,
-        mainView_, mainOut_, channelEdit_, setup_,
+        sessionStart_, mixer_, stage_, mainOut_, channelEdit_, setup_,
     };
     for (auto* page : pages) {
         workspace_->addWidget(page);
@@ -158,6 +160,8 @@ MainWindow::MainWindow(Flow8Device& device, LanguageManager& languageManager, QW
             this, &MainWindow::showChannelEdit);
     connect(mixer_, &MixerWidget::mainOutRequested,
             this, [this] { showLayer(FlowLayer::MainOut); });
+    connect(mixer_, &MixerWidget::destinationChanged,
+            stage_, &StageView::setDestination);
     connect(channelEdit_, &ChannelEditView::backRequested,
             this, [this] { showLayer(FlowLayer::Mixer); });
     connect(setup_, &SetupWindow::backRequested,
@@ -234,6 +238,7 @@ void MainWindow::showLayer(const FlowLayer layer)
     layerBar_->setCurrentLayer(layer);
     switch (layer) {
     case FlowLayer::Mixer:
+        mixer_->setDestination(model::RoutingDestination::Main);
         mixer_->refreshAll();
         workspace_->setCurrentWidget(mixer_);
         break;
@@ -242,24 +247,29 @@ void MainWindow::showLayer(const FlowLayer layer)
         workspace_->setCurrentWidget(stage_);
         break;
     case FlowLayer::Fx1:
-        fx1_->refresh();
-        workspace_->setCurrentWidget(fx1_);
+        mixer_->setDestination(model::RoutingDestination::Fx1);
+        mixer_->refreshAll();
+        workspace_->setCurrentWidget(mixer_);
         break;
     case FlowLayer::Fx2:
-        fx2_->refresh();
-        workspace_->setCurrentWidget(fx2_);
+        mixer_->setDestination(model::RoutingDestination::Fx2);
+        mixer_->refreshAll();
+        workspace_->setCurrentWidget(mixer_);
         break;
     case FlowLayer::Monitor1:
-        monitor1_->refresh();
-        workspace_->setCurrentWidget(monitor1_);
+        mixer_->setDestination(model::RoutingDestination::Monitor1);
+        mixer_->refreshAll();
+        workspace_->setCurrentWidget(mixer_);
         break;
     case FlowLayer::Monitor2:
-        monitor2_->refresh();
-        workspace_->setCurrentWidget(monitor2_);
+        mixer_->setDestination(model::RoutingDestination::Monitor2);
+        mixer_->refreshAll();
+        workspace_->setCurrentWidget(mixer_);
         break;
     case FlowLayer::Main:
-        mainView_->refresh();
-        workspace_->setCurrentWidget(mainView_);
+        mixer_->setDestination(model::RoutingDestination::Main);
+        mixer_->refreshAll();
+        workspace_->setCurrentWidget(mixer_);
         break;
     case FlowLayer::MainOut:
         mainOut_->refresh();
@@ -322,11 +332,6 @@ void MainWindow::retranslateUi()
     layerBar_->retranslateUi();
     mixer_->retranslateUi();
     stage_->retranslateUi();
-    fx1_->retranslateUi();
-    fx2_->retranslateUi();
-    monitor1_->retranslateUi();
-    monitor2_->retranslateUi();
-    mainView_->retranslateUi();
     mainOut_->retranslateUi();
     channelEdit_->retranslateUi();
     setup_->retranslateUi();

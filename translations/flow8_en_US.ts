@@ -4,144 +4,152 @@
 <context>
     <name>Flow8Device</name>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="167"/>
         <source>Channel fader is unavailable.</source>
-        <translation>Channel fader is unavailable.</translation>
+        <translation type="vanished">Channel fader is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="173"/>
         <source>Failed to encode or send the fader value.</source>
-        <translation>Failed to encode or send the fader value.</translation>
+        <translation type="vanished">Failed to encode or send the fader value.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="185"/>
+        <location filename="../src/core/flow8_device.cpp" line="181"/>
         <source>Gain mapping is not hardware-verified.</source>
         <translation>Gain mapping is not hardware-verified.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="196"/>
+        <location filename="../src/core/flow8_device.cpp" line="194"/>
+        <source>Phase control is unavailable.</source>
+        <translation>Phase control is unavailable.</translation>
+    </message>
+    <message>
+        <location filename="../src/core/flow8_device.cpp" line="206"/>
         <source>Mute mapping is not hardware-verified.</source>
         <translation>Mute mapping is not hardware-verified.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="207"/>
+        <location filename="../src/core/flow8_device.cpp" line="217"/>
         <source>Solo mapping is not hardware-verified.</source>
         <translation>Solo mapping is not hardware-verified.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="218"/>
+        <location filename="../src/core/flow8_device.cpp" line="228"/>
         <source>Pan mapping is not hardware-verified.</source>
         <translation>Pan mapping is not hardware-verified.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="229"/>
-        <location filename="../src/core/flow8_device.cpp" line="240"/>
+        <location filename="../src/core/flow8_device.cpp" line="239"/>
+        <location filename="../src/core/flow8_device.cpp" line="250"/>
         <source>Channel customization is unavailable.</source>
         <translation>Channel customization is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="251"/>
+        <location filename="../src/core/flow8_device.cpp" line="261"/>
         <source>Channel visibility is unavailable.</source>
         <translation>Channel visibility is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="264"/>
+        <location filename="../src/core/flow8_device.cpp" line="274"/>
         <source>Phantom Power is unavailable for this input.</source>
         <translation>Phantom Power is unavailable for this input.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="276"/>
+        <location filename="../src/core/flow8_device.cpp" line="286"/>
         <source>Low Cut is unavailable.</source>
         <translation>Low Cut is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="289"/>
+        <location filename="../src/core/flow8_device.cpp" line="299"/>
         <source>Monitor send mode is unavailable.</source>
         <translation>Monitor send mode is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="303"/>
+        <location filename="../src/core/flow8_device.cpp" line="313"/>
         <source>Channel EQ is unavailable.</source>
         <translation>Channel EQ is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="317"/>
+        <location filename="../src/core/flow8_device.cpp" line="327"/>
         <source>Compressor is unavailable for this input.</source>
         <translation>Compressor is unavailable for this input.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="330"/>
+        <location filename="../src/core/flow8_device.cpp" line="339"/>
         <source>Channel send is unavailable.</source>
         <translation>Channel send is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="342"/>
+        <location filename="../src/core/flow8_device.cpp" line="353"/>
+        <source>Route level is unavailable.</source>
+        <translation>Route level is unavailable.</translation>
+    </message>
+    <message>
+        <location filename="../src/core/flow8_device.cpp" line="379"/>
         <source>Bus level is unavailable.</source>
         <translation>Bus level is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="353"/>
+        <location filename="../src/core/flow8_device.cpp" line="390"/>
         <source>Bus mute is unavailable.</source>
         <translation>Bus mute is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="364"/>
+        <location filename="../src/core/flow8_device.cpp" line="401"/>
         <source>Bus balance is unavailable.</source>
         <translation>Bus balance is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="375"/>
+        <location filename="../src/core/flow8_device.cpp" line="412"/>
         <source>Bus limiter is unavailable.</source>
         <translation>Bus limiter is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="386"/>
+        <location filename="../src/core/flow8_device.cpp" line="423"/>
         <source>Bus EQ is unavailable.</source>
         <translation>Bus EQ is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="397"/>
+        <location filename="../src/core/flow8_device.cpp" line="434"/>
         <source>FX preset is unavailable.</source>
         <translation>FX preset is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="409"/>
+        <location filename="../src/core/flow8_device.cpp" line="446"/>
         <source>FX parameter is unavailable.</source>
         <translation>FX parameter is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="420"/>
+        <location filename="../src/core/flow8_device.cpp" line="457"/>
         <source>FX mute is unavailable.</source>
         <translation>FX mute is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="431"/>
+        <location filename="../src/core/flow8_device.cpp" line="468"/>
         <source>Tap tempo is unavailable.</source>
         <translation>Tap tempo is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="456"/>
+        <location filename="../src/core/flow8_device.cpp" line="493"/>
         <source>Snapshot recall is unavailable.</source>
         <translation>Snapshot recall is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="466"/>
+        <location filename="../src/core/flow8_device.cpp" line="503"/>
         <source>App snapshot storage is unavailable.</source>
         <translation>App snapshot storage is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="823"/>
+        <location filename="../src/core/flow8_device.cpp" line="870"/>
         <source>Routing is unavailable.</source>
         <translation>Routing is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="835"/>
-        <location filename="../src/core/flow8_device.cpp" line="847"/>
+        <location filename="../src/core/flow8_device.cpp" line="882"/>
+        <location filename="../src/core/flow8_device.cpp" line="894"/>
         <source>USB routing is unavailable.</source>
         <translation>USB routing is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="861"/>
+        <location filename="../src/core/flow8_device.cpp" line="908"/>
         <source>FX output routing is unavailable.</source>
         <translation>FX output routing is unavailable.</translation>
     </message>
@@ -150,32 +158,32 @@
         <translation type="vanished">FX monitor routing is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="873"/>
+        <location filename="../src/core/flow8_device.cpp" line="920"/>
         <source>Headphone routing is unavailable.</source>
         <translation>Headphone routing is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="884"/>
+        <location filename="../src/core/flow8_device.cpp" line="931"/>
         <source>Monitor stereo link is unavailable.</source>
         <translation>Monitor stereo link is unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="901"/>
+        <location filename="../src/core/flow8_device.cpp" line="948"/>
         <source>Assisted Setup requires Simulator mode or verified hardware support.</source>
         <translation>Assisted Setup requires Simulator mode or verified hardware support.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="966"/>
+        <location filename="../src/core/flow8_device.cpp" line="1013"/>
         <source>EZ-GAIN requires Simulator mode or verified hardware support.</source>
         <translation>EZ-GAIN requires Simulator mode or verified hardware support.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="1016"/>
+        <location filename="../src/core/flow8_device.cpp" line="1063"/>
         <source>Main fader BLE address is UNKNOWN.</source>
         <translation>Main fader BLE address is UNKNOWN.</translation>
     </message>
     <message>
-        <location filename="../src/core/flow8_device.cpp" line="1027"/>
+        <location filename="../src/core/flow8_device.cpp" line="1074"/>
         <source>Main mute mapping is UNKNOWN.</source>
         <translation>Main mute mapping is UNKNOWN.</translation>
     </message>
@@ -334,921 +342,981 @@
     </message>
     <message>
         <location filename="../src/ui/ui_text.cpp" line="73"/>
+        <source>Confirm that the connected source supports 48 V phantom power.</source>
+        <translation>Confirm that the connected source supports 48 V phantom power.</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="74"/>
         <source>Continue Session</source>
         <translation>Continue Session</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="74"/>
+        <location filename="../src/ui/ui_text.cpp" line="75"/>
         <source>Control</source>
         <translation>Control</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="75"/>
+        <location filename="../src/ui/ui_text.cpp" line="76"/>
+        <source>Confirmed</source>
+        <translation>Confirmed</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="77"/>
+        <source>Current Destination Send</source>
+        <translation>Current Destination Send</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="78"/>
+        <source>Destination Master</source>
+        <translation>Destination Master</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="79"/>
         <source>Control Gesture</source>
         <translation>Control Gesture</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="76"/>
+        <location filename="../src/ui/ui_text.cpp" line="80"/>
         <source>Digital Input</source>
         <translation>Digital Input</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="77"/>
+        <location filename="../src/ui/ui_text.cpp" line="81"/>
         <source>Delay: %1 ms</source>
         <translation>Delay: %1 ms</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="78"/>
+        <location filename="../src/ui/ui_text.cpp" line="82"/>
         <source>Delay: Unknown</source>
         <translation>Delay: Unknown</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="79"/>
+        <location filename="../src/ui/ui_text.cpp" line="83"/>
         <source>Diagnostics</source>
         <translation>Diagnostics</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="80"/>
+        <location filename="../src/ui/ui_text.cpp" line="84"/>
         <source>Dynamic Microphone</source>
         <translation>Dynamic Microphone</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="81"/>
+        <location filename="../src/ui/ui_text.cpp" line="85"/>
         <source>Dynamic microphone starting preset</source>
         <translation>Dynamic microphone starting preset</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="82"/>
+        <location filename="../src/ui/ui_text.cpp" line="86"/>
         <source>Disconnect</source>
         <translation>Disconnect</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="83"/>
+        <location filename="../src/ui/ui_text.cpp" line="87"/>
         <source>Disconnected</source>
         <translation>Disconnected</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="84"/>
+        <location filename="../src/ui/ui_text.cpp" line="88"/>
         <source>Effect Type</source>
         <translation>Effect Type</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="85"/>
+        <location filename="../src/ui/ui_text.cpp" line="89"/>
+        <source>Enable Phantom Power?</source>
+        <translation>Enable Phantom Power?</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="90"/>
         <source>Empty Slot</source>
         <translation>Empty Slot</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="86"/>
+        <location filename="../src/ui/ui_text.cpp" line="91"/>
         <source>Engine</source>
         <translation>Engine</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="87"/>
+        <location filename="../src/ui/ui_text.cpp" line="92"/>
         <source>Equalizer</source>
         <translation>Equalizer</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="88"/>
+        <location filename="../src/ui/ui_text.cpp" line="93"/>
         <source>Error</source>
         <translation>Error</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="89"/>
+        <location filename="../src/ui/ui_text.cpp" line="94"/>
         <source>Fader</source>
         <translation>Fader</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="90"/>
+        <location filename="../src/ui/ui_text.cpp" line="95"/>
         <source>Fader; double-click to reset to 0 dB</source>
         <translation>Fader; double-click to reset to 0 dB</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="91"/>
+        <location filename="../src/ui/ui_text.cpp" line="96"/>
         <source>FLOW 8 PC Controller — Simulator</source>
         <translation>FLOW 8 PC Controller — Simulator</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="92"/>
+        <location filename="../src/ui/ui_text.cpp" line="97"/>
         <source>FLOW 8 Settings</source>
         <translation>FLOW 8 Settings</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="93"/>
+        <location filename="../src/ui/ui_text.cpp" line="98"/>
         <source>FLOW 8 Preferences</source>
         <translation>FLOW 8 Preferences</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="94"/>
+        <location filename="../src/ui/ui_text.cpp" line="99"/>
         <source>FX %1 · Independent Engine</source>
         <translation>FX %1 · Independent Engine</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="95"/>
+        <location filename="../src/ui/ui_text.cpp" line="100"/>
         <source>FX 1</source>
         <translation>FX 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="96"/>
+        <location filename="../src/ui/ui_text.cpp" line="101"/>
         <source>FX 2</source>
         <translation>FX 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="97"/>
+        <location filename="../src/ui/ui_text.cpp" line="102"/>
+        <source>FX Returns</source>
+        <translation>FX Returns</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="103"/>
         <source>FX 1 → Monitor 1</source>
         <translation>FX 1 → Monitor 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="98"/>
+        <location filename="../src/ui/ui_text.cpp" line="104"/>
         <source>FX 1 → Monitor 2</source>
         <translation>FX 1 → Monitor 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="99"/>
+        <location filename="../src/ui/ui_text.cpp" line="105"/>
         <source>FX 2 → Monitor 1</source>
         <translation>FX 2 → Monitor 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="100"/>
+        <location filename="../src/ui/ui_text.cpp" line="106"/>
         <source>FX 2 → Monitor 2</source>
         <translation>FX 2 → Monitor 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="101"/>
+        <location filename="../src/ui/ui_text.cpp" line="107"/>
         <source>FX 1 → Main</source>
         <translation>FX 1 → Main</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="102"/>
+        <location filename="../src/ui/ui_text.cpp" line="108"/>
         <source>FX 2 → Main</source>
         <translation>FX 2 → Main</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="103"/>
+        <location filename="../src/ui/ui_text.cpp" line="109"/>
         <source>FX</source>
         <translation>FX</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="104"/>
+        <location filename="../src/ui/ui_text.cpp" line="110"/>
         <source>Frequency</source>
         <translation>Frequency</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="105"/>
+        <location filename="../src/ui/ui_text.cpp" line="111"/>
         <source>Gain</source>
         <translation>Gain</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="106"/>
+        <location filename="../src/ui/ui_text.cpp" line="112"/>
         <source>Gain Reduction</source>
         <translation>Gain Reduction</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="107"/>
+        <location filename="../src/ui/ui_text.cpp" line="113"/>
         <source>Gain: %1   48 V: %2   Low Cut: %3   EQ: 4-band parametric   Compressor: %4   Sends: MON1 / MON2 / FX1 / FX2</source>
         <translation>Gain: %1   48 V: %2   Low Cut: %3   EQ: 4-band parametric   Compressor: %4   Sends: MON1 / MON2 / FX1 / FX2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="108"/>
+        <location filename="../src/ui/ui_text.cpp" line="114"/>
+        <source>Gain: %1   48 V: %2   Phase: %3   Low Cut: %4   EQ: 4-band parametric   Compressor: %5   Sends: MON1 / MON2 / FX1 / FX2</source>
+        <translation>Gain: %1   48 V: %2   Phase: %3   Low Cut: %4   EQ: 4-band parametric   Compressor: %5   Sends: MON1 / MON2 / FX1 / FX2</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="115"/>
         <source>Guitar / Bass</source>
         <translation>Guitar / Bass</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="109"/>
+        <location filename="../src/ui/ui_text.cpp" line="116"/>
         <source>Guitar / Bass starting preset</source>
         <translation>Guitar / Bass starting preset</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="110"/>
+        <location filename="../src/ui/ui_text.cpp" line="117"/>
         <source>Hardware BLE and MIDI controls are not available in this build.</source>
         <translation>Hardware BLE and MIDI controls are not available in this build.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="111"/>
+        <location filename="../src/ui/ui_text.cpp" line="118"/>
         <source>Hardware control for advanced parameters is unavailable in this build.</source>
         <translation>Hardware control for advanced parameters is unavailable in this build.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="112"/>
+        <location filename="../src/ui/ui_text.cpp" line="119"/>
         <source>Hardware Slots · 15</source>
         <translation>Hardware Slots · 15</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="113"/>
+        <location filename="../src/ui/ui_text.cpp" line="120"/>
         <source>Hardware</source>
         <translation>Hardware</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="114"/>
+        <location filename="../src/ui/ui_text.cpp" line="121"/>
         <source>Headphone Source</source>
         <translation>Headphone Source</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="115"/>
+        <location filename="../src/ui/ui_text.cpp" line="122"/>
         <source>High</source>
         <translation>High</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="116"/>
+        <location filename="../src/ui/ui_text.cpp" line="123"/>
         <source>High Mid</source>
         <translation>High Mid</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="117"/>
+        <location filename="../src/ui/ui_text.cpp" line="124"/>
         <source>Inferred</source>
         <translation>Inferred</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="118"/>
+        <location filename="../src/ui/ui_text.cpp" line="125"/>
         <source>Input</source>
         <translation>Input</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="119"/>
+        <location filename="../src/ui/ui_text.cpp" line="126"/>
         <source>Input %1</source>
         <translation>Input %1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="120"/>
+        <location filename="../src/ui/ui_text.cpp" line="127"/>
         <source>Input 1</source>
         <translation>Input 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="121"/>
+        <location filename="../src/ui/ui_text.cpp" line="128"/>
         <source>Input 2</source>
         <translation>Input 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="122"/>
+        <location filename="../src/ui/ui_text.cpp" line="129"/>
         <source>Input 3</source>
         <translation>Input 3</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="123"/>
+        <location filename="../src/ui/ui_text.cpp" line="130"/>
         <source>Input 4</source>
         <translation>Input 4</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="124"/>
+        <location filename="../src/ui/ui_text.cpp" line="131"/>
         <source>Input 5/6</source>
         <translation>Input 5/6</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="125"/>
+        <location filename="../src/ui/ui_text.cpp" line="132"/>
         <source>Input 7/8</source>
         <translation>Input 7/8</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="126"/>
+        <location filename="../src/ui/ui_text.cpp" line="133"/>
         <source>Input gain (simulator model)</source>
         <translation>Input gain (simulator model)</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="127"/>
+        <location filename="../src/ui/ui_text.cpp" line="134"/>
         <source>Instrument</source>
         <translation>Instrument</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="128"/>
+        <location filename="../src/ui/ui_text.cpp" line="135"/>
         <source>Large controls for fast live operation</source>
         <translation>Large controls for fast live operation</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="129"/>
+        <location filename="../src/ui/ui_text.cpp" line="136"/>
         <source>Language</source>
         <translation>Language</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="130"/>
+        <location filename="../src/ui/ui_text.cpp" line="137"/>
         <source>Level</source>
         <translation>Level</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="131"/>
+        <location filename="../src/ui/ui_text.cpp" line="138"/>
         <source>Limiter</source>
         <translation>Limiter</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="132"/>
+        <location filename="../src/ui/ui_text.cpp" line="139"/>
         <source>Linear</source>
         <translation>Linear</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="133"/>
+        <location filename="../src/ui/ui_text.cpp" line="140"/>
         <source>Line Instrument</source>
         <translation>Line Instrument</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="134"/>
+        <location filename="../src/ui/ui_text.cpp" line="141"/>
         <source>Line instrument starting preset</source>
         <translation>Line instrument starting preset</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="135"/>
+        <location filename="../src/ui/ui_text.cpp" line="142"/>
         <source>Load Snapshot</source>
         <translation>Load Snapshot</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="136"/>
+        <location filename="../src/ui/ui_text.cpp" line="143"/>
         <source>Load in Simulator</source>
         <translation>Load in Simulator</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="137"/>
+        <location filename="../src/ui/ui_text.cpp" line="144"/>
         <source>Low</source>
         <translation>Low</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="138"/>
+        <location filename="../src/ui/ui_text.cpp" line="145"/>
         <source>Low Cut</source>
         <translation>Low Cut</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="139"/>
+        <location filename="../src/ui/ui_text.cpp" line="146"/>
         <source>Low Mid</source>
         <translation>Low Mid</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="140"/>
+        <location filename="../src/ui/ui_text.cpp" line="147"/>
         <source>Main</source>
         <translation>Main</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="141"/>
+        <location filename="../src/ui/ui_text.cpp" line="148"/>
         <source>Main Mix</source>
         <translation>Main Mix</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="142"/>
+        <location filename="../src/ui/ui_text.cpp" line="149"/>
         <source>Main mix sends · Master · Balance · 9-band EQ · Limiter</source>
         <translation>Main mix sends · Master · Balance · 9-band EQ · Limiter</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="143"/>
+        <location filename="../src/ui/ui_text.cpp" line="150"/>
         <source>Master</source>
         <translation>Master</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="144"/>
+        <location filename="../src/ui/ui_text.cpp" line="151"/>
         <source>Makeup Gain</source>
         <translation>Makeup Gain</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="145"/>
+        <location filename="../src/ui/ui_text.cpp" line="152"/>
         <source>Microphone</source>
         <translation>Microphone</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="146"/>
+        <location filename="../src/ui/ui_text.cpp" line="153"/>
         <source>Microphone / Line</source>
         <translation>Microphone / Line</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="147"/>
+        <location filename="../src/ui/ui_text.cpp" line="154"/>
         <source>Mixer</source>
         <translation>Mixer</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="148"/>
+        <location filename="../src/ui/ui_text.cpp" line="155"/>
         <source>Mono</source>
         <translation>Mono</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="149"/>
+        <location filename="../src/ui/ui_text.cpp" line="156"/>
         <source>Monitor 1</source>
         <translation>Monitor 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="150"/>
+        <location filename="../src/ui/ui_text.cpp" line="157"/>
         <source>Monitor 2</source>
         <translation>Monitor 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="151"/>
+        <location filename="../src/ui/ui_text.cpp" line="158"/>
         <source>Monitor 1 Send</source>
         <translation>Monitor 1 Send</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="152"/>
+        <location filename="../src/ui/ui_text.cpp" line="159"/>
         <source>Monitor 2 Send</source>
         <translation>Monitor 2 Send</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="153"/>
+        <location filename="../src/ui/ui_text.cpp" line="160"/>
+        <source>Monitor / Headphones</source>
+        <translation>Monitor / Headphones</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="161"/>
         <source>MON1/2 Linked</source>
         <translation>MON1/2 Linked</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="154"/>
+        <location filename="../src/ui/ui_text.cpp" line="162"/>
         <source>MON1/2 LINKED</source>
         <translation>MON1/2 LINKED</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="155"/>
+        <location filename="../src/ui/ui_text.cpp" line="163"/>
         <source>Mute</source>
         <translation>Mute</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="156"/>
+        <location filename="../src/ui/ui_text.cpp" line="164"/>
         <source>Needs Hardware Verification</source>
         <translation>Needs Hardware Verification</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="157"/>
+        <location filename="../src/ui/ui_text.cpp" line="165"/>
         <source>No app-library snapshots yet.
 This is separate from the 15 hardware slots.</source>
         <translation>No app-library snapshots yet.
 This is separate from the 15 hardware slots.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="158"/>
+        <location filename="../src/ui/ui_text.cpp" line="166"/>
         <source>No Input Selected</source>
         <translation>No Input Selected</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="159"/>
+        <location filename="../src/ui/ui_text.cpp" line="167"/>
         <source>No Icon</source>
         <translation>No Icon</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="160"/>
+        <location filename="../src/ui/ui_text.cpp" line="168"/>
         <source>Next</source>
         <translation>Next</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="161"/>
+        <location filename="../src/ui/ui_text.cpp" line="169"/>
         <source>Not supported</source>
         <translation>Not supported</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="162"/>
+        <location filename="../src/ui/ui_text.cpp" line="170"/>
         <source>Official mapping model ready; transport not implemented</source>
         <translation>Official mapping model ready; transport not implemented</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="163"/>
+        <location filename="../src/ui/ui_text.cpp" line="171"/>
         <source>Official capability · Simulator only · BLE routing protocol UNKNOWN</source>
         <translation>Official capability · Simulator only · BLE routing protocol UNKNOWN</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="164"/>
+        <location filename="../src/ui/ui_text.cpp" line="172"/>
         <source>Output</source>
         <translation>Output</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="165"/>
+        <location filename="../src/ui/ui_text.cpp" line="173"/>
+        <source>Output Routing</source>
+        <translation>Output Routing</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="174"/>
         <source>Output hardware values are unknown until a FLOW 8 is connected and verified.</source>
         <translation>Output hardware values are unknown until a FLOW 8 is connected and verified.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="166"/>
+        <location filename="../src/ui/ui_text.cpp" line="175"/>
         <source>Pan</source>
         <translation>Pan</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="167"/>
+        <location filename="../src/ui/ui_text.cpp" line="176"/>
         <source>Pan / Balance</source>
         <translation>Pan / Balance</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="168"/>
+        <location filename="../src/ui/ui_text.cpp" line="177"/>
+        <source>Pending</source>
+        <translation>Pending</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="178"/>
         <source>Parameter %1 (UNKNOWN)</source>
         <translation>Parameter %1 (UNKNOWN)</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="169"/>
+        <location filename="../src/ui/ui_text.cpp" line="179"/>
         <source>Parametric</source>
         <translation>Parametric</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="170"/>
+        <location filename="../src/ui/ui_text.cpp" line="180"/>
         <source>Playback</source>
         <translation>Playback</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="171"/>
+        <location filename="../src/ui/ui_text.cpp" line="181"/>
         <source>Post-Fader</source>
         <translation>Post-Fader</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="172"/>
+        <location filename="../src/ui/ui_text.cpp" line="182"/>
         <source>Pre-Fader</source>
         <translation>Pre-Fader</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="173"/>
+        <location filename="../src/ui/ui_text.cpp" line="183"/>
         <source>Preferences</source>
         <translation>Preferences</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="174"/>
+        <location filename="../src/ui/ui_text.cpp" line="184"/>
         <source>Phantom Power</source>
         <translation>Phantom Power</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="175"/>
+        <location filename="../src/ui/ui_text.cpp" line="185"/>
         <source>Polarity</source>
         <translation>Polarity</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="176"/>
+        <location filename="../src/ui/ui_text.cpp" line="186"/>
         <source>PC Controller</source>
         <translation>PC Controller</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="177"/>
+        <location filename="../src/ui/ui_text.cpp" line="187"/>
         <source>Preset</source>
         <translation>Preset</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="178"/>
+        <location filename="../src/ui/ui_text.cpp" line="188"/>
         <source>Preset %1</source>
         <translation>Preset %1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="179"/>
+        <location filename="../src/ui/ui_text.cpp" line="189"/>
         <source>Preset-specific type (unavailable)</source>
         <translation>Preset-specific type (unavailable)</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="180"/>
+        <location filename="../src/ui/ui_text.cpp" line="190"/>
         <source>Q</source>
         <translation>Q</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="181"/>
+        <location filename="../src/ui/ui_text.cpp" line="191"/>
         <source>Ratio</source>
         <translation>Ratio</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="182"/>
+        <location filename="../src/ui/ui_text.cpp" line="192"/>
         <source>Ready (Simulator)</source>
         <translation>Ready (Simulator)</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="183"/>
+        <location filename="../src/ui/ui_text.cpp" line="193"/>
         <source>Recall in Simulator</source>
         <translation>Recall in Simulator</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="184"/>
+        <location filename="../src/ui/ui_text.cpp" line="194"/>
         <source>Request / Save MIDI SysEx Dump</source>
         <translation>Request / Save MIDI SysEx Dump</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="185"/>
+        <location filename="../src/ui/ui_text.cpp" line="195"/>
         <source>Rename</source>
         <translation>Rename</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="186"/>
+        <location filename="../src/ui/ui_text.cpp" line="196"/>
         <source>Release</source>
         <translation>Release</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="187"/>
+        <location filename="../src/ui/ui_text.cpp" line="197"/>
         <source>Routing</source>
         <translation>Routing</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="188"/>
+        <location filename="../src/ui/ui_text.cpp" line="198"/>
         <source>Routing · Source → Destination</source>
         <translation>Routing · Source → Destination</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="189"/>
+        <location filename="../src/ui/ui_text.cpp" line="199"/>
+        <source>Route Level</source>
+        <translation>Route Level</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="200"/>
         <source>Rotary</source>
         <translation>Rotary</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="190"/>
+        <location filename="../src/ui/ui_text.cpp" line="201"/>
         <source>Scanning</source>
         <translation>Scanning</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="191"/>
+        <location filename="../src/ui/ui_text.cpp" line="202"/>
         <source>Send</source>
         <translation>Send</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="192"/>
+        <location filename="../src/ui/ui_text.cpp" line="203"/>
         <source>Sends</source>
         <translation>Sends</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="193"/>
+        <location filename="../src/ui/ui_text.cpp" line="204"/>
         <source>Settings</source>
         <translation>Settings</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="194"/>
+        <location filename="../src/ui/ui_text.cpp" line="205"/>
         <source>Share / Export</source>
         <translation>Share / Export</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="195"/>
+        <location filename="../src/ui/ui_text.cpp" line="206"/>
         <source>Show %1</source>
         <translation>Show %1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="196"/>
+        <location filename="../src/ui/ui_text.cpp" line="207"/>
         <source>Show Channel Icons</source>
         <translation>Show Channel Icons</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="197"/>
+        <location filename="../src/ui/ui_text.cpp" line="208"/>
         <source>Show Mute Buttons</source>
         <translation>Show Mute Buttons</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="198"/>
+        <location filename="../src/ui/ui_text.cpp" line="209"/>
         <source>Show Output Delay Indicator</source>
         <translation>Show Output Delay Indicator</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="199"/>
+        <location filename="../src/ui/ui_text.cpp" line="210"/>
         <source>Simulator</source>
         <translation>Simulator</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="200"/>
+        <location filename="../src/ui/ui_text.cpp" line="211"/>
         <source>Simulator (SYNTHETIC)</source>
         <translation>Simulator (SYNTHETIC)</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="201"/>
+        <location filename="../src/ui/ui_text.cpp" line="212"/>
         <source>Simulator / BLE when available</source>
         <translation>Simulator / BLE when available</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="202"/>
+        <location filename="../src/ui/ui_text.cpp" line="213"/>
         <source>Simulator connected locally</source>
         <translation>Simulator connected locally</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="203"/>
+        <location filename="../src/ui/ui_text.cpp" line="214"/>
         <source>Simulator mode · Synthetic mixer data · No FLOW 8 hardware connected</source>
         <translation>Simulator mode · Synthetic mixer data · No FLOW 8 hardware connected</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="204"/>
+        <location filename="../src/ui/ui_text.cpp" line="215"/>
         <source>Simulator · SYNTHETIC</source>
         <translation>Simulator · SYNTHETIC</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="205"/>
+        <location filename="../src/ui/ui_text.cpp" line="216"/>
         <source>Simulator applies a SYNTHETIC starting point. Hardware commands remain unavailable.</source>
         <translation>Simulator applies a SYNTHETIC starting point. Hardware commands remain unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="206"/>
+        <location filename="../src/ui/ui_text.cpp" line="217"/>
         <source>Solo</source>
         <translation>Solo</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="207"/>
+        <location filename="../src/ui/ui_text.cpp" line="218"/>
         <source>Snapshot</source>
         <translation>Snapshot</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="208"/>
+        <location filename="../src/ui/ui_text.cpp" line="219"/>
         <source>Snapshot export is not implemented yet.</source>
         <translation>Snapshot export is not implemented yet.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="209"/>
+        <location filename="../src/ui/ui_text.cpp" line="220"/>
         <source>Snapshot Name</source>
         <translation>Snapshot Name</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="210"/>
+        <location filename="../src/ui/ui_text.cpp" line="221"/>
         <source>Stage</source>
         <translation>Stage</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="211"/>
+        <location filename="../src/ui/ui_text.cpp" line="222"/>
         <source>Stage View</source>
         <translation>Stage View</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="212"/>
+        <location filename="../src/ui/ui_text.cpp" line="223"/>
+        <source>Source → Destination</source>
+        <translation>Source → Destination</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="224"/>
         <source>Standard</source>
         <translation>Standard</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="213"/>
+        <location filename="../src/ui/ui_text.cpp" line="225"/>
         <source>Standard / Parametric is a PC interaction preference, not a protocol claim.</source>
         <translation>Standard / Parametric is a PC interaction preference, not a protocol claim.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="214"/>
+        <location filename="../src/ui/ui_text.cpp" line="226"/>
         <source>Start a FLOW 8 Session</source>
         <translation>Start a FLOW 8 Session</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="215"/>
+        <location filename="../src/ui/ui_text.cpp" line="227"/>
         <source>Start New</source>
         <translation>Start New</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="216"/>
+        <location filename="../src/ui/ui_text.cpp" line="228"/>
         <source>Step 1 · Select Input</source>
         <translation>Step 1 · Select Input</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="217"/>
+        <location filename="../src/ui/ui_text.cpp" line="229"/>
         <source>Step 2 · Select Source Type</source>
         <translation>Step 2 · Select Source Type</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="218"/>
+        <location filename="../src/ui/ui_text.cpp" line="230"/>
         <source>Step 3 · Recommended Preset</source>
         <translation>Step 3 · Recommended Preset</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="219"/>
+        <location filename="../src/ui/ui_text.cpp" line="231"/>
         <source>Step 4 · Connection and Apply</source>
         <translation>Step 4 · Connection and Apply</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="220"/>
+        <location filename="../src/ui/ui_text.cpp" line="232"/>
         <source>Store in App Library</source>
         <translation>Store in App Library</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="221"/>
+        <location filename="../src/ui/ui_text.cpp" line="233"/>
         <source>Stereo Bus</source>
         <translation>Stereo Bus</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="222"/>
+        <location filename="../src/ui/ui_text.cpp" line="234"/>
         <source>Stereo Pair</source>
         <translation>Stereo Pair</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="223"/>
+        <location filename="../src/ui/ui_text.cpp" line="235"/>
         <source>SYNTHETIC</source>
         <translation>SYNTHETIC</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="224"/>
+        <location filename="../src/ui/ui_text.cpp" line="236"/>
         <source>Input sends · Independent engine · Output routing · SYNTHETIC</source>
         <translation>Input sends · Independent engine · Output routing · SYNTHETIC</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="225"/>
+        <location filename="../src/ui/ui_text.cpp" line="237"/>
         <source>Stereo link relates MON1 and MON2 while preserving two independent bus states.</source>
         <translation>Stereo link relates MON1 and MON2 while preserving two independent bus states.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="226"/>
+        <location filename="../src/ui/ui_text.cpp" line="238"/>
         <source>FX 1 Send</source>
         <translation>FX 1 Send</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="227"/>
+        <location filename="../src/ui/ui_text.cpp" line="239"/>
         <source>FX 2 Send</source>
         <translation>FX 2 Send</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="228"/>
+        <location filename="../src/ui/ui_text.cpp" line="240"/>
         <source>SYNTHETIC data, deterministic state</source>
         <translation>SYNTHETIC data, deterministic state</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="229"/>
+        <location filename="../src/ui/ui_text.cpp" line="241"/>
         <source>Synchronizing</source>
         <translation>Synchronizing</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="230"/>
+        <location filename="../src/ui/ui_text.cpp" line="242"/>
         <source>Tap Tempo</source>
         <translation>Tap Tempo</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="231"/>
+        <location filename="../src/ui/ui_text.cpp" line="243"/>
         <source>Tap tempo is global in the official MIDI chart and applies only to compatible effects.
 Effect-specific parameter names remain unavailable.</source>
         <translation>Tap tempo is global in the official MIDI chart and applies only to compatible effects.
 Effect-specific parameter names remain unavailable.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="232"/>
+        <location filename="../src/ui/ui_text.cpp" line="244"/>
         <source>The simulator is deterministic test data and is not a FLOW 8 hardware claim.</source>
         <translation>The simulator is deterministic test data and is not a FLOW 8 hardware claim.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="233"/>
+        <location filename="../src/ui/ui_text.cpp" line="245"/>
         <source>Threshold</source>
         <translation>Threshold</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="234"/>
+        <location filename="../src/ui/ui_text.cpp" line="246"/>
         <source>Transport</source>
         <translation>Transport</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="235"/>
+        <location filename="../src/ui/ui_text.cpp" line="247"/>
         <source>Type</source>
         <translation>Type</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="236"/>
+        <location filename="../src/ui/ui_text.cpp" line="248"/>
         <source>Unavailable</source>
         <translation>Unavailable</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="237"/>
+        <location filename="../src/ui/ui_text.cpp" line="249"/>
         <source>Unavailable for hardware control</source>
         <translation>Unavailable for hardware control</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="238"/>
+        <location filename="../src/ui/ui_text.cpp" line="250"/>
         <source>Unknown</source>
         <translation>Unknown</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="239"/>
+        <location filename="../src/ui/ui_text.cpp" line="251"/>
         <source>Untitled Snapshot</source>
         <translation>Untitled Snapshot</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="240"/>
+        <location filename="../src/ui/ui_text.cpp" line="252"/>
         <source>USB Mode</source>
         <translation>USB Mode</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="241"/>
+        <location filename="../src/ui/ui_text.cpp" line="253"/>
         <source>USB Streaming</source>
         <translation>USB Streaming</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="242"/>
+        <location filename="../src/ui/ui_text.cpp" line="254"/>
         <source>USB Recording</source>
         <translation>USB Recording</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="243"/>
+        <location filename="../src/ui/ui_text.cpp" line="255"/>
         <source>USB, FX and Headphone Routing</source>
         <translation>USB, FX and Headphone Routing</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="244"/>
+        <location filename="../src/ui/ui_text.cpp" line="256"/>
         <source>USB → Input 1</source>
         <translation>USB → Input 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="245"/>
+        <location filename="../src/ui/ui_text.cpp" line="257"/>
         <source>USB → Input 2</source>
         <translation>USB → Input 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="246"/>
+        <location filename="../src/ui/ui_text.cpp" line="258"/>
         <source>USB → Input 3</source>
         <translation>USB → Input 3</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="247"/>
+        <location filename="../src/ui/ui_text.cpp" line="259"/>
         <source>USB → Input 4</source>
         <translation>USB → Input 4</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="248"/>
+        <location filename="../src/ui/ui_text.cpp" line="260"/>
         <source>USB → Input 5/6</source>
         <translation>USB → Input 5/6</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="249"/>
+        <location filename="../src/ui/ui_text.cpp" line="261"/>
         <source>USB → Input 7/8</source>
         <translation>USB → Input 7/8</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="250"/>
+        <location filename="../src/ui/ui_text.cpp" line="262"/>
         <source>USB → USB / Bluetooth</source>
         <translation>USB → USB / Bluetooth</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="251"/>
+        <location filename="../src/ui/ui_text.cpp" line="263"/>
         <source>USB → Monitor 1</source>
         <translation>USB → Monitor 1</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="252"/>
+        <location filename="../src/ui/ui_text.cpp" line="264"/>
         <source>USB → Monitor 2</source>
         <translation>USB → Monitor 2</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="253"/>
+        <location filename="../src/ui/ui_text.cpp" line="265"/>
         <source>USB / Bluetooth</source>
         <translation>USB / Bluetooth</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="254"/>
+        <location filename="../src/ui/ui_text.cpp" line="266"/>
         <source>Verified</source>
         <translation>Verified</translation>
     </message>
     <message>
         <location filename="../src/ui/ui_text.cpp" line="42"/>
-        <location filename="../src/ui/ui_text.cpp" line="255"/>
+        <location filename="../src/ui/ui_text.cpp" line="270"/>
         <source>Visible in Mixer and Stage</source>
         <translation>Visible in Mixer and Stage</translation>
     </message>
@@ -1410,77 +1478,102 @@ Simulator mode uses SYNTHETIC data. BLE, GATT and device commands still need har
         <translation>Two editable parameters · Global Tap Tempo · SYNTHETIC</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="256"/>
+        <location filename="../src/ui/ui_text.cpp" line="267"/>
+        <source>Verified from FLOW Mix APK</source>
+        <translation>Verified from FLOW Mix APK</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="268"/>
+        <source>Verified from FLOW 8 hardware</source>
+        <translation>Verified from FLOW 8 hardware</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="269"/>
+        <source>Verified offline</source>
+        <translation>Verified offline</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="271"/>
+        <source>%1 → %2 Send</source>
+        <translation>%1 → %2 Send</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="272"/>
+        <source>Live control · %1 destination</source>
+        <translation>Live control · %1 destination</translation>
+    </message>
+    <message>
+        <location filename="../src/ui/ui_text.cpp" line="273"/>
         <source>Choose how you want to begin</source>
         <translation>Choose how you want to begin</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="257"/>
+        <location filename="../src/ui/ui_text.cpp" line="274"/>
         <source>Choose the input you want to prepare.</source>
         <translation>Choose the input you want to prepare.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="258"/>
+        <location filename="../src/ui/ui_text.cpp" line="275"/>
         <source>Choose the source connected to this input.</source>
         <translation>Choose the source connected to this input.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="259"/>
+        <location filename="../src/ui/ui_text.cpp" line="276"/>
         <source>Review the synthetic starting point.</source>
         <translation>Review the synthetic starting point.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="260"/>
+        <location filename="../src/ui/ui_text.cpp" line="277"/>
         <source>Check the connection before applying.</source>
         <translation>Check the connection before applying.</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="261"/>
+        <location filename="../src/ui/ui_text.cpp" line="278"/>
         <source>Full</source>
         <translation>Full</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="262"/>
+        <location filename="../src/ui/ui_text.cpp" line="279"/>
         <source>Footswitch Mode</source>
         <translation>Footswitch Mode</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="263"/>
+        <location filename="../src/ui/ui_text.cpp" line="280"/>
         <source>EQ Editing Mode</source>
         <translation>EQ Editing Mode</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="264"/>
+        <location filename="../src/ui/ui_text.cpp" line="281"/>
         <source>EZ-GAIN Selected</source>
         <translation>EZ-GAIN Selected</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="265"/>
+        <location filename="../src/ui/ui_text.cpp" line="282"/>
         <source>EZ-GAIN All Inputs</source>
         <translation>EZ-GAIN All Inputs</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="266"/>
+        <location filename="../src/ui/ui_text.cpp" line="283"/>
         <source>EZ-GAIN running · %1 s · SYNTHETIC</source>
         <translation>EZ-GAIN running · %1 s · SYNTHETIC</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="267"/>
+        <location filename="../src/ui/ui_text.cpp" line="284"/>
         <source>EZ-GAIN cancelled</source>
         <translation>EZ-GAIN cancelled</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="268"/>
+        <location filename="../src/ui/ui_text.cpp" line="285"/>
         <source>EZ-GAIN complete · SYNTHETIC</source>
         <translation>EZ-GAIN complete · SYNTHETIC</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="269"/>
+        <location filename="../src/ui/ui_text.cpp" line="286"/>
         <source>EZ-GAIN ready</source>
         <translation>EZ-GAIN ready</translation>
     </message>
     <message>
-        <location filename="../src/ui/ui_text.cpp" line="270"/>
+        <location filename="../src/ui/ui_text.cpp" line="287"/>
         <source>MIDI SysEx dump is an official capability. Requesting a real dump needs hardware.</source>
         <translation>MIDI SysEx dump is an official capability. Requesting a real dump needs hardware.</translation>
     </message>

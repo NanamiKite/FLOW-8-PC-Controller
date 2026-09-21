@@ -71,8 +71,8 @@ void CaptureReplayTest::replaysReferencePackets()
     const QJsonObject expected = loaded.fixture->expected;
     QCOMPARE(decoded.packet->type,
              static_cast<quint8>(expected.value(QStringLiteral("packet_type")).toInt()));
-    QCOMPARE(decoded.packet->discriminator,
-             static_cast<quint8>(expected.value(QStringLiteral("discriminator")).toInt()));
+    QCOMPARE(decoded.packet->fragmentCount,
+             static_cast<quint8>(expected.value(QStringLiteral("fragmentCount")).toInt()));
     QCOMPARE(decoded.packet->payload.toHex(),
              expected.value(QStringLiteral("payload_hex")).toString().toLatin1());
     QCOMPARE(flow8::protocol::hasValidChecksum(loaded.fixture->raw), true);

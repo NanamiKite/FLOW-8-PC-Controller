@@ -41,6 +41,7 @@ void mergeCounted(model::StateValue<T>& target, T value,
 
 Flow8State::Flow8State(QObject* parent)
     : QObject(parent)
+    , routing_(model::createRoutingProfile())
 {
 }
 
@@ -71,21 +72,25 @@ const model::ChannelState* Flow8State::channel(const int index) const noexcept
 void Flow8State::replaceChannels(QVector<model::ChannelState> channels)
 {
     channels_ = std::move(channels);
+    meters_.inputs.clear();
+    meters_.inputs.reserve(channels_.size());
+    for (int index = 0; index < channels_.size(); ++index) {
+        meters_.inputs.append(model::InputMeterState {
+            .sourceIndex = index,
+            .level = {},
+            .peak = {},
+            .clipping = {},
+            .gainReductionDb = {},
+        });
+    }
     emit stateReset();
 }
 
 bool Flow8State::setChannelFader(const int index, const double normalized,
                                  const model::EvidenceStatus evidence, const QString& source)
 {
-    auto* target = mutableChannel(index);
-    if (target == nullptr || !isUnitInterval(normalized)) {
-        return false;
-    }
-    if (!model::mergeObservedValue(target->fader, normalized, evidence, source)) {
-        return false;
-    }
-    emit channelChanged(index);
-    return true;
+    return setRouteLevel(index, model::RoutingDestination::Main,
+                         normalized, evidence, source);
 }
 
 bool Flow8State::setChannelGain(const int index, const double normalized,
@@ -96,6 +101,21 @@ bool Flow8State::setChannelGain(const int index, const double normalized,
         return false;
     }
     if (!model::mergeObservedValue(target->gain, normalized, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
+bool Flow8State::setChannelPhaseInverted(
+    const int index, const bool inverted, const model::EvidenceStatus evidence,
+    const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || !target->capabilities.phase
+        || !target->phaseInverted.has_value()
+        || !model::mergeObservedValue(
+            *target->phaseInverted, inverted, evidence, source)) {
         return false;
     }
     emit channelChanged(index);
@@ -272,44 +292,81 @@ bool Flow8State::setChannelSendLevelDb(const int index, const int send, const do
                                        const model::EvidenceStatus evidence,
                                        const QString& source)
 {
-    auto* target = mutableChannel(index);
-    if (target == nullptr || send < 0 || send >= static_cast<int>(target->sendLevelDb.size())
-        || !inRange(levelDb, -144.0, 10.0)) {
+    if (send < 0 || send >= 4 || !inRange(levelDb, -144.0, 10.0)) {
         return false;
     }
-    if (!model::mergeObservedValue(target->sendLevelDb[static_cast<std::size_t>(send)], levelDb,
-                                   evidence, source)) {
-        return false;
-    }
-    if (send < 2) {
-        (void)model::mergeObservedValue(
-            target->monitorSends[static_cast<std::size_t>(send)].levelDb,
-            levelDb, evidence, source);
-    } else {
-        (void)model::mergeObservedValue(
-            target->fxSendLevelDb[static_cast<std::size_t>(send - 2)],
-            levelDb, evidence, source);
-    }
-    emit channelChanged(index);
-    return true;
+    const double normalized = levelDb <= -70.0 ? 0.0 : (levelDb + 70.0) / 80.0;
+    return setRouteLevel(
+        index, static_cast<model::RoutingDestination>(send + 1),
+        normalized, evidence, source);
 }
 
 bool Flow8State::setChannelMeter(const int index, const double level, const double peak,
                                  const bool clipping, const model::EvidenceStatus evidence,
                                  const QString& source)
 {
-    auto* target = mutableChannel(index);
-    if (target == nullptr || !isUnitInterval(level) || !isUnitInterval(peak)) {
+    if (index < 0 || index >= meters_.inputs.size()
+        || !isUnitInterval(level) || !isUnitInterval(peak)) {
         return false;
     }
-    const bool levelApplied = model::mergeObservedValue(target->meterLevel, level, evidence, source);
-    const bool peakApplied = model::mergeObservedValue(target->meterPeak, peak, evidence, source);
-    const bool clipApplied = model::mergeObservedValue(target->clipping, clipping, evidence, source);
+    auto& target = meters_.inputs[index];
+    const bool levelApplied = model::mergeObservedValue(target.level, level, evidence, source);
+    const bool peakApplied = model::mergeObservedValue(target.peak, peak, evidence, source);
+    const bool clipApplied = model::mergeObservedValue(target.clipping, clipping, evidence, source);
     if (!levelApplied && !peakApplied && !clipApplied) {
         return false;
     }
-    emit channelChanged(index);
+    emit inputMeterChanged(index);
     return true;
+}
+
+const model::MeterState& Flow8State::meters() const noexcept
+{
+    return meters_;
+}
+
+const model::InputMeterState* Flow8State::inputMeter(const int index) const noexcept
+{
+    return index >= 0 && index < meters_.inputs.size()
+        ? &meters_.inputs.at(index) : nullptr;
+}
+
+const model::OutputMeterState* Flow8State::outputMeter(
+    const model::RoutingDestination destination) const noexcept
+{
+    for (const auto& meter : meters_.outputs) {
+        if (meter.destination == destination) {
+            return &meter;
+        }
+    }
+    return nullptr;
+}
+
+bool Flow8State::setOutputMeter(
+    const model::RoutingDestination destination, const double level,
+    const double peak, const bool clipping, const model::EvidenceStatus evidence,
+    const QString& source)
+{
+    if (!isUnitInterval(level) || !isUnitInterval(peak)) {
+        return false;
+    }
+    for (auto& target : meters_.outputs) {
+        if (target.destination != destination) {
+            continue;
+        }
+        const bool levelApplied = model::mergeObservedValue(
+            target.level, level, evidence, source);
+        const bool peakApplied = model::mergeObservedValue(
+            target.peak, peak, evidence, source);
+        const bool clipApplied = model::mergeObservedValue(
+            target.clipping, clipping, evidence, source);
+        if (!levelApplied && !peakApplied && !clipApplied) {
+            return false;
+        }
+        emit outputMeterChanged(destination);
+        return true;
+    }
+    return false;
 }
 
 const QVector<model::BusState>& Flow8State::buses() const noexcept
@@ -325,6 +382,17 @@ const model::BusState* Flow8State::bus(const int index) const noexcept
 void Flow8State::replaceBuses(QVector<model::BusState> buses)
 {
     buses_ = std::move(buses);
+    meters_.outputs.clear();
+    meters_.outputs.reserve(buses_.size());
+    for (int index = 0; index < buses_.size(); ++index) {
+        meters_.outputs.append(model::OutputMeterState {
+            .destination = static_cast<model::RoutingDestination>(index),
+            .level = {},
+            .peak = {},
+            .clipping = {},
+            .gainReductionDb = {},
+        });
+    }
     emit stateReset();
 }
 
@@ -522,10 +590,83 @@ const model::RoutingState& Flow8State::routing() const noexcept
     return routing_;
 }
 
+const model::RouteLevelState* Flow8State::routeLevel(
+    const int sourceIndex, const model::RoutingDestination destination) const noexcept
+{
+    return routing_.routeLevels.level(sourceIndex, destination);
+}
+
 void Flow8State::replaceRouting(model::RoutingState routing)
 {
     routing_ = std::move(routing);
     emit routingChanged();
+}
+
+bool Flow8State::setRouteLevel(const int sourceIndex,
+                               const model::RoutingDestination destination,
+                               const double normalized,
+                               const model::EvidenceStatus evidence,
+                               const QString& source)
+{
+    auto* cell = mutableRouteLevel(sourceIndex, destination);
+    auto* channel = mutableChannel(sourceIndex);
+    if (cell == nullptr || channel == nullptr || !isUnitInterval(normalized)
+        || !model::mergeObservedValue(
+            cell->confirmed, normalized, evidence, source)) {
+        return false;
+    }
+    cell->pending.reset();
+    cell->error.clear();
+
+    if (destination == model::RoutingDestination::Main) {
+        (void)model::mergeObservedValue(channel->fader, normalized, evidence, source);
+    } else {
+        const int send = static_cast<int>(destination) - 1;
+        const double levelDb = normalized <= 0.0 ? -144.0 : -70.0 + normalized * 80.0;
+        (void)model::mergeObservedValue(
+            channel->sendLevelDb[static_cast<std::size_t>(send)],
+            levelDb, evidence, source);
+        if (send < 2) {
+            (void)model::mergeObservedValue(
+                channel->monitorSends[static_cast<std::size_t>(send)].levelDb,
+                levelDb, evidence, source);
+        } else {
+            (void)model::mergeObservedValue(
+                channel->fxSendLevelDb[static_cast<std::size_t>(send - 2)],
+                levelDb, evidence, source);
+        }
+    }
+    emit channelChanged(sourceIndex);
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::setRouteLevelPending(
+    const int sourceIndex, const model::RoutingDestination destination,
+    const double normalized)
+{
+    auto* cell = mutableRouteLevel(sourceIndex, destination);
+    if (cell == nullptr || !isUnitInterval(normalized)) {
+        return false;
+    }
+    cell->pending = normalized;
+    cell->error.clear();
+    emit routingChanged();
+    return true;
+}
+
+bool Flow8State::failRouteLevel(
+    const int sourceIndex, const model::RoutingDestination destination,
+    const QString& error)
+{
+    auto* cell = mutableRouteLevel(sourceIndex, destination);
+    if (cell == nullptr || error.trimmed().isEmpty()) {
+        return false;
+    }
+    cell->pending.reset();
+    cell->error = error.trimmed();
+    emit routingChanged();
+    return true;
 }
 
 bool Flow8State::setRouteEnabled(const int inputIndex,
@@ -904,6 +1045,11 @@ void Flow8State::ensureReferenceStateShape()
         } else if (!profile.phantom48V.has_value()) {
             channel.phantom48V.reset();
         }
+        if (profile.phaseInverted.has_value() && !channel.phaseInverted.has_value()) {
+            channel.phaseInverted.emplace();
+        } else if (!profile.phaseInverted.has_value()) {
+            channel.phaseInverted.reset();
+        }
     }
 
     const auto busProfile = model::createOfficialBusProfile();
@@ -971,6 +1117,17 @@ model::BusState* Flow8State::mutableBus(const int index) noexcept
 model::FxState* Flow8State::mutableEffect(const int index) noexcept
 {
     return index >= 0 && index < effects_.size() ? &effects_[index] : nullptr;
+}
+
+model::RouteLevelState* Flow8State::mutableRouteLevel(
+    const int sourceIndex, const model::RoutingDestination destination) noexcept
+{
+    for (auto& cell : routing_.routeLevels.cells) {
+        if (cell.sourceIndex == sourceIndex && cell.destination == destination) {
+            return &cell;
+        }
+    }
+    return nullptr;
 }
 
 bool Flow8State::isUnitInterval(const double value) noexcept
