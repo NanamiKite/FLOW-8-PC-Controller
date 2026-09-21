@@ -19,7 +19,7 @@ bool hasValidChecksum(const QByteArrayView packet) noexcept
         && checksum(packet.first(packet.size() - 1)) == static_cast<quint8>(packet.back());
 }
 
-std::optional<quint8> encodeUnitInterval(const double value) noexcept
+std::optional<quint8> encodeLegacyUnitInterval8(const double value) noexcept
 {
     if (!std::isfinite(value) || value < 0.0 || value > 1.0) {
         return std::nullopt;
@@ -27,7 +27,7 @@ std::optional<quint8> encodeUnitInterval(const double value) noexcept
     return static_cast<quint8>(std::lround(value * 255.0));
 }
 
-double decodeUnitInterval(const quint8 value) noexcept
+double decodeLegacyUnitInterval8(const quint8 value) noexcept
 {
     return static_cast<double>(value) / 255.0;
 }

@@ -5,6 +5,20 @@
 
 namespace flow8 {
 
+std::optional<protocol::RouteLevelCommand>
+SemanticCommandQueue::Command::routeLevelCommand() const noexcept
+{
+    if (kind != Kind::RouteLevel) {
+        return std::nullopt;
+    }
+    return protocol::RouteLevelCommand {
+        .sourceEndpoint = sourceEndpoint,
+        .destinationEndpoint = destinationEndpoint,
+        .normalizedValue = normalized,
+        .semanticEvidence = model::EvidenceStatus::VerifiedFromApk,
+    };
+}
+
 bool SemanticCommandQueue::enqueueRouteLevel(
     const int sourceIndex, const model::RoutingDestination destination,
     const double normalized)

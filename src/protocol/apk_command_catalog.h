@@ -64,6 +64,7 @@ struct ApkCommandDescriptor {
     bool commandByteConfirmed {true};
     // Always false until a complete payload is documented independently.
     bool payloadLayoutKnown {};
+    model::EvidenceStatus payloadEvidence {model::EvidenceStatus::Unknown};
 };
 
 [[nodiscard]] std::optional<ApkCommandDescriptor> apkCommandDescriptor(quint8 id) noexcept;

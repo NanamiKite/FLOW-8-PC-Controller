@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/routing.h"
+#include "protocol/route_level_codec.h"
 
 #include <QString>
 #include <QVector>
@@ -31,6 +32,12 @@ public:
             return sourceEndpoint == destinationEndpoint
                 && model::isDestinationEndpoint(destinationEndpoint);
         }
+
+        // Converts only the transport-neutral route semantic into the input
+        // type accepted by the protocol codec. It exposes no command byte or
+        // raw payload to the caller.
+        [[nodiscard]] std::optional<protocol::RouteLevelCommand>
+        routeLevelCommand() const noexcept;
     };
 
     [[nodiscard]] bool enqueueRouteLevel(

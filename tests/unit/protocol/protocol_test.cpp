@@ -2,10 +2,13 @@
 #include "protocol/codec.h"
 #include "protocol/flow8_protocol.h"
 #include "protocol/packet.h"
+#include "protocol/route_level_codec.h"
 
 #include <QTest>
 
+#include <array>
 #include <cmath>
+#include <limits>
 
 class ProtocolTest final : public QObject {
     Q_OBJECT
@@ -18,10 +21,13 @@ private slots:
     void preservesUnknownStatePayload();
     void preservesMultiFragmentHeadersWithoutGuessingMeaning();
     void rejectsBadChecksum();
-    void unitIntervalRoundTrip_data();
-    void unitIntervalRoundTrip();
+    void legacyReferenceUnitIntervalRoundTrip_data();
+    void legacyReferenceUnitIntervalRoundTrip();
     void packetSemanticRoundTrip();
     void recordsApkSemanticsWithoutInventingPayloads();
+    void routeLevelSchemaRecordsOnlyApkConfirmedFacts();
+    void routeLevelAcceptsConfirmedSemanticRelationships();
+    void routeLevelRejectsInvalidSemanticsBeforePayloadEncoding();
 };
 
 void ProtocolTest::checksumWrapsModulo256()
@@ -121,7 +127,7 @@ void ProtocolTest::rejectsBadChecksum()
     QCOMPARE(result.error, std::optional(flow8::protocol::PacketError::ChecksumMismatch));
 }
 
-void ProtocolTest::unitIntervalRoundTrip_data()
+void ProtocolTest::legacyReferenceUnitIntervalRoundTrip_data()
 {
     QTest::addColumn<double>("value");
     QTest::newRow("minimum") << 0.0;
@@ -130,15 +136,15 @@ void ProtocolTest::unitIntervalRoundTrip_data()
     QTest::newRow("maximum") << 1.0;
 }
 
-void ProtocolTest::unitIntervalRoundTrip()
+void ProtocolTest::legacyReferenceUnitIntervalRoundTrip()
 {
     QFETCH(double, value);
-    const auto encoded = flow8::protocol::encodeUnitInterval(value);
+    const auto encoded = flow8::protocol::encodeLegacyUnitInterval8(value);
     QVERIFY(encoded.has_value());
-    const double decoded = flow8::protocol::decodeUnitInterval(*encoded);
+    const double decoded = flow8::protocol::decodeLegacyUnitInterval8(*encoded);
     QVERIFY(std::abs(decoded - value) <= (0.5 / 255.0) + 1.0e-12);
-    QVERIFY(!flow8::protocol::encodeUnitInterval(-0.01).has_value());
-    QVERIFY(!flow8::protocol::encodeUnitInterval(1.01).has_value());
+    QVERIFY(!flow8::protocol::encodeLegacyUnitInterval8(-0.01).has_value());
+    QVERIFY(!flow8::protocol::encodeLegacyUnitInterval8(1.01).has_value());
 }
 
 void ProtocolTest::packetSemanticRoundTrip()
@@ -167,6 +173,7 @@ void ProtocolTest::recordsApkSemanticsWithoutInventingPayloads()
                  flow8::model::EvidenceStatus::VerifiedFromApk);
         QVERIFY(descriptor->commandByteConfirmed);
         QVERIFY(!descriptor->payloadLayoutKnown);
+        QCOMPARE(descriptor->payloadEvidence, flow8::model::EvidenceStatus::Unknown);
     }
     const auto route = flow8::protocol::apkCommandDescriptor(0x06);
     QVERIFY(route.has_value());
@@ -187,6 +194,111 @@ void ProtocolTest::recordsApkSemanticsWithoutInventingPayloads()
     QCOMPARE(flow8::protocol::apkEndpointId(13),
              std::optional(flow8::protocol::ApkEndpointId::Fx2));
     QVERIFY(!flow8::protocol::apkEndpointId(14).has_value());
+}
+
+void ProtocolTest::routeLevelSchemaRecordsOnlyApkConfirmedFacts()
+{
+    const auto schema = flow8::protocol::routeLevelPayloadSchema();
+    QCOMPARE(schema.command, flow8::protocol::ApkCommandId::RouteLevel);
+    QCOMPARE(static_cast<quint8>(schema.command), quint8(0x06));
+    QCOMPARE(schema.commandEvidence, flow8::model::EvidenceStatus::VerifiedFromApk);
+    QCOMPARE(schema.semanticEvidence, flow8::model::EvidenceStatus::VerifiedFromApk);
+    QCOMPARE(schema.payloadEvidence, flow8::model::EvidenceStatus::Unknown);
+    QVERIFY(schema.sourceEndpointSemanticKnown);
+    QVERIFY(schema.destinationEndpointSemanticKnown);
+    QVERIFY(schema.normalizedInputDomainKnown);
+    QVERIFY(schema.normalizedToDbBeforeSerializationObserved);
+    QVERIFY(!schema.wireFieldOrderKnown);
+    QVERIFY(!schema.wireFieldWidthsKnown);
+    QVERIFY(!schema.wireValueEncodingKnown);
+    QVERIFY(!schema.wireByteOrderKnown);
+    QVERIFY(!schema.commandFragmentationKnown);
+}
+
+void ProtocolTest::routeLevelAcceptsConfirmedSemanticRelationships()
+{
+    using flow8::model::EndpointId;
+    using flow8::protocol::RouteLevelCodecError;
+    using flow8::protocol::RouteLevelCommand;
+
+    constexpr std::array destinations {
+        EndpointId::Monitor1, EndpointId::Monitor2, EndpointId::Fx1,
+        EndpointId::Fx2, EndpointId::MainLr,
+    };
+    constexpr std::array values {0.0, 0.5, 1.0};
+
+    for (const auto destination : destinations) {
+        for (const double value : values) {
+            const RouteLevelCommand route {
+                .sourceEndpoint = EndpointId::Input1,
+                .destinationEndpoint = destination,
+                .normalizedValue = value,
+            };
+            QVERIFY(!flow8::protocol::validateRouteLevelCommand(route).has_value());
+            const auto encodedRoute = flow8::protocol::encodeRouteLevel(route);
+            QVERIFY(!encodedRoute.ok());
+            QVERIFY(!encodedRoute.packet.has_value());
+            QCOMPARE(encodedRoute.error, RouteLevelCodecError::UnknownPayloadLayout);
+
+            const RouteLevelCommand master {
+                .sourceEndpoint = destination,
+                .destinationEndpoint = destination,
+                .normalizedValue = value,
+            };
+            QVERIFY(master.isDestinationMaster());
+            QVERIFY(!flow8::protocol::validateRouteLevelCommand(master).has_value());
+            const auto encodedMaster = flow8::protocol::encodeRouteLevel(master);
+            QVERIFY(!encodedMaster.ok());
+            QVERIFY(!encodedMaster.packet.has_value());
+            QCOMPARE(encodedMaster.error, RouteLevelCodecError::UnknownPayloadLayout);
+        }
+    }
+
+    QCOMPARE(static_cast<quint8>(EndpointId::Input1), quint8(0));
+    QCOMPARE(static_cast<quint8>(EndpointId::Monitor1), quint8(10));
+    QCOMPARE(static_cast<quint8>(EndpointId::Monitor2), quint8(11));
+    QCOMPARE(static_cast<quint8>(EndpointId::Fx1), quint8(12));
+    QCOMPARE(static_cast<quint8>(EndpointId::Fx2), quint8(13));
+    QCOMPARE(static_cast<quint8>(EndpointId::MainLr), quint8(15));
+}
+
+void ProtocolTest::routeLevelRejectsInvalidSemanticsBeforePayloadEncoding()
+{
+    using flow8::model::EndpointId;
+    using flow8::protocol::RouteLevelCodecError;
+    using flow8::protocol::RouteLevelCommand;
+
+    const auto invalidDestination = flow8::protocol::encodeRouteLevel({
+        .sourceEndpoint = EndpointId::Input1,
+        .destinationEndpoint = EndpointId::Input2,
+        .normalizedValue = 0.5,
+    });
+    QCOMPARE(invalidDestination.error, RouteLevelCodecError::InvalidDestinationEndpoint);
+    QVERIFY(!invalidDestination.packet.has_value());
+
+    const auto invalidRelationship = flow8::protocol::encodeRouteLevel({
+        .sourceEndpoint = EndpointId::Monitor1,
+        .destinationEndpoint = EndpointId::Monitor2,
+        .normalizedValue = 0.5,
+    });
+    QCOMPARE(invalidRelationship.error, RouteLevelCodecError::InvalidRouteRelationship);
+    QVERIFY(!invalidRelationship.packet.has_value());
+
+    const auto invalidValue = flow8::protocol::encodeRouteLevel({
+        .sourceEndpoint = EndpointId::Input1,
+        .destinationEndpoint = EndpointId::MainLr,
+        .normalizedValue = 1.01,
+    });
+    QCOMPARE(invalidValue.error, RouteLevelCodecError::InvalidNormalizedValue);
+    QVERIFY(!invalidValue.packet.has_value());
+
+    const auto nonFiniteValue = flow8::protocol::encodeRouteLevel({
+        .sourceEndpoint = EndpointId::Input1,
+        .destinationEndpoint = EndpointId::MainLr,
+        .normalizedValue = std::numeric_limits<double>::quiet_NaN(),
+    });
+    QCOMPARE(nonFiniteValue.error, RouteLevelCodecError::InvalidNormalizedValue);
+    QVERIFY(!nonFiniteValue.packet.has_value());
 }
 
 QTEST_GUILESS_MAIN(ProtocolTest)

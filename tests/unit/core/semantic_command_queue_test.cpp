@@ -1,4 +1,5 @@
 #include "core/semantic_command_queue.h"
+#include "protocol/route_level_codec.h"
 
 #include <QTest>
 
@@ -27,6 +28,14 @@ void SemanticCommandQueueTest::coalescesOnlyMatchingRouteFaders()
     QCOMPARE(first->sourceEndpoint, flow8::model::EndpointId::Input1);
     QCOMPARE(first->destinationEndpoint, flow8::model::EndpointId::MainLr);
     QCOMPARE(first->normalized, 0.9);
+    const auto codecCommand = first->routeLevelCommand();
+    QVERIFY(codecCommand.has_value());
+    QCOMPARE(codecCommand->semanticEvidence,
+             flow8::model::EvidenceStatus::VerifiedFromApk);
+    const auto encoded = flow8::protocol::encodeRouteLevel(*codecCommand);
+    QCOMPARE(encoded.error,
+             flow8::protocol::RouteLevelCodecError::UnknownPayloadLayout);
+    QVERIFY(!encoded.packet.has_value());
     QVERIFY(!queue.beginNext().has_value());
     QVERIFY(queue.completeInFlight());
 }
@@ -41,6 +50,11 @@ void SemanticCommandQueueTest::representsDestinationMasterWithEqualEndpoints()
     QCOMPARE(command->sourceEndpoint, flow8::model::EndpointId::Monitor1);
     QCOMPARE(command->destinationEndpoint, flow8::model::EndpointId::Monitor1);
     QVERIFY(command->isDestinationMaster());
+    const auto codecCommand = command->routeLevelCommand();
+    QVERIFY(codecCommand.has_value());
+    QVERIFY(codecCommand->isDestinationMaster());
+    QCOMPARE(flow8::protocol::encodeRouteLevel(*codecCommand).error,
+             flow8::protocol::RouteLevelCodecError::UnknownPayloadLayout);
 }
 
 void SemanticCommandQueueTest::preservesDiscreteActionsAndOneInFlightRule()
@@ -56,6 +70,7 @@ void SemanticCommandQueueTest::preservesDiscreteActionsAndOneInFlightRule()
     QCOMPARE(queue.beginNext()->action, QStringLiteral("mute:0:off"));
     QVERIFY(queue.completeInFlight());
     QCOMPARE(queue.beginNext()->action, QStringLiteral("snapshot:load:3"));
+    QVERIFY(!queue.inFlight()->routeLevelCommand().has_value());
     QVERIFY(queue.completeInFlight());
     QVERIFY(!queue.completeInFlight());
 }

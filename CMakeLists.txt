@@ -105,6 +105,8 @@ add_library(flow8_protocol STATIC
     src/protocol/flow8_protocol.h
     src/protocol/packet.cpp
     src/protocol/packet.h
+    src/protocol/route_level_codec.cpp
+    src/protocol/route_level_codec.h
     src/protocol/sysex.cpp
     src/protocol/sysex.h
 )

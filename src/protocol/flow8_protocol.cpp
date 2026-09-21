@@ -34,7 +34,7 @@ decodeLegacyReferenceParameterChange(const Packet& packet) noexcept
 std::optional<QByteArray> encodeLegacyReferenceFaderLevel(
     const quint8 oneBasedChannel, const double normalized) noexcept
 {
-    const auto encoded = encodeUnitInterval(normalized);
+    const auto encoded = encodeLegacyUnitInterval8(normalized);
     if (!encoded.has_value() || oneBasedChannel == 0) {
         return std::nullopt;
     }
