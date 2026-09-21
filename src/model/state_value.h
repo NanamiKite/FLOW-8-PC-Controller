@@ -9,6 +9,17 @@
 
 namespace flow8::model {
 
+[[nodiscard]] constexpr int evidencePriority(const EvidenceStatus status) noexcept
+{
+    switch (status) {
+    case EvidenceStatus::Verified: return 3;
+    case EvidenceStatus::Inferred: return 2;
+    case EvidenceStatus::Unknown: return 1;
+    case EvidenceStatus::Blocked: return 0;
+    }
+    return 0;
+}
+
 template<typename T>
 struct StateValue {
     std::optional<T> value;
@@ -26,5 +37,20 @@ struct StateValue {
         };
     }
 };
+
+template<typename T>
+[[nodiscard]] bool mergeObservedValue(StateValue<T>& target, T newValue,
+                                      const EvidenceStatus evidence, QString source)
+{
+    if (evidence == EvidenceStatus::Blocked) {
+        return false;
+    }
+    if (target.value.has_value()
+        && evidencePriority(evidence) < evidencePriority(target.evidence)) {
+        return false;
+    }
+    target = StateValue<T>::known(std::move(newValue), evidence, std::move(source));
+    return true;
+}
 
 } // namespace flow8::model

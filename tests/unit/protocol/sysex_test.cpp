@@ -3,6 +3,7 @@
 #include <QTest>
 
 #include <bit>
+#include <cmath>
 
 namespace {
 
@@ -51,6 +52,8 @@ class SysExTest final : public QObject {
 private slots:
     void validatesFramingAndIdentity();
     void decodesSyntheticPackedFloat();
+    void packedFloatRoundTrip_data();
+    void packedFloatRoundTrip();
     void rejectsInvalidPackedFloatLayout();
     void parsesSyntheticReferenceLayout();
     void extractsDocumentedReferenceOffsets();
@@ -66,6 +69,11 @@ void SysExTest::validatesFramingAndIdentity()
     const auto invalid = flow8::protocol::validateSysEx(QByteArray::fromHex("f00020322200f7"));
     QVERIFY(invalid.valid);
     QVERIFY(!invalid.isFlow8);
+
+    const auto unsafeData =
+        flow8::protocol::validateSysEx(QByteArray::fromHex("f00020322180f7"));
+    QVERIFY(!unsafeData.valid);
+    QVERIFY(!unsafeData.isFlow8);
 }
 
 void SysExTest::decodesSyntheticPackedFloat()
@@ -77,6 +85,27 @@ void SysExTest::decodesSyntheticPackedFloat()
     const auto decoded = flow8::protocol::decodePackedFloat(bytes, layout);
     QVERIFY(decoded.has_value());
     QCOMPARE(*decoded, -12.5F);
+}
+
+void SysExTest::packedFloatRoundTrip_data()
+{
+    QTest::addColumn<float>("value");
+    QTest::newRow("internal silence") << -144.0F;
+    QTest::newRow("negative fractional") << -12.5F;
+    QTest::newRow("zero") << 0.0F;
+    QTest::newRow("positive") << 10.0F;
+    QTest::newRow("low-cut candidate") << 600.0F;
+}
+
+void SysExTest::packedFloatRoundTrip()
+{
+    QFETCH(float, value);
+    QByteArray bytes(16, '\0');
+    const flow8::protocol::PackedFloatLayout layout {4, {1, 2, 5, 6}, {3, 2, 0, 1}};
+    encodeSyntheticFloat(bytes, layout, value);
+    const auto decoded = flow8::protocol::decodePackedFloat(bytes, layout);
+    QVERIFY(decoded.has_value());
+    QCOMPARE(*decoded, value);
 }
 
 void SysExTest::rejectsInvalidPackedFloatLayout()
@@ -107,6 +136,7 @@ void SysExTest::parsesSyntheticReferenceLayout()
     const auto parsed = flow8::protocol::parseReferenceStateDump(dump);
     QVERIFY(parsed.validation.valid);
     QVERIFY(parsed.validation.isFlow8);
+    QCOMPARE(parsed.completeness, flow8::protocol::DumpCompleteness::Partial);
     QVERIFY(!parsed.parameters.isEmpty());
     QCOMPARE(parsed.parameters.first().path, QStringLiteral("channel.0.level_db"));
     QCOMPARE(parsed.parameters.first().value, -20.0);
@@ -116,7 +146,7 @@ void SysExTest::parsesSyntheticReferenceLayout()
 void SysExTest::extractsDocumentedReferenceOffsets()
 {
     // SYNTHETIC: values exercise reference-derived offsets; this is not a device dump.
-    QByteArray dump(0x0C00, '\0');
+    QByteArray dump(flow8::protocol::referenceStateDumpByteCount, '\0');
     dump[0] = static_cast<char>(0xF0);
     dump[1] = 0x00;
     dump[2] = 0x20;
@@ -133,14 +163,20 @@ void SysExTest::extractsDocumentedReferenceOffsets()
     dump[0x04CC] = 0x01;
     dump[0x04DF] = 0x01;
     dump[0x0737] = 0x01;
+    dump[0x0742] = 120;
+    dump[0x0743] = 0;
     dump[0x0BC5] = 75;
     dump[0x0BC6] = 25;
     dump[0x0BC9] = 3;
 
     const auto parsed = flow8::protocol::parseReferenceStateDump(dump);
+    QCOMPARE(parsed.completeness,
+             flow8::protocol::DumpCompleteness::CompleteReferenceLayout);
     QCOMPARE(parameterValue(parsed, QStringLiteral("channel.0.gain_db")), std::optional(18.0));
     QCOMPARE(parameterValue(parsed, QStringLiteral("bus.0.level_db")), std::optional(-6.0));
     QCOMPARE(parameterValue(parsed, QStringLiteral("bus.0.balance")), std::optional(0.25));
+    QCOMPARE(parameterValue(parsed, QStringLiteral("channel.0.low_cut_hz")),
+             std::optional(120.0));
     QCOMPARE(parameterValue(parsed, QStringLiteral("fx.0.parameter1_percent")),
              std::optional(75.0));
     QCOMPARE(parameterValue(parsed, QStringLiteral("fx.0.preset_reference_index")),
@@ -148,6 +184,12 @@ void SysExTest::extractsDocumentedReferenceOffsets()
     QCOMPARE(flagValue(parsed, QStringLiteral("channel.0.muted")), std::optional(true));
     QCOMPARE(flagValue(parsed, QStringLiteral("channel.0.soloed")), std::optional(true));
     QCOMPARE(flagValue(parsed, QStringLiteral("channel.0.phantom_48v")), std::optional(true));
+
+    const auto& first = parsed.parameters.constFirst();
+    QCOMPARE(first.encodedWidth, qsizetype(5));
+    QCOMPARE(first.decodedType, QStringLiteral("float32"));
+    QCOMPARE(first.evidence, flow8::model::EvidenceStatus::Inferred);
+    QVERIFY(first.source.contains(QStringLiteral("reference/flow-8-midi")));
 }
 
 QTEST_GUILESS_MAIN(SysExTest)

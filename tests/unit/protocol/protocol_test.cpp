@@ -4,16 +4,28 @@
 
 #include <QTest>
 
+#include <cmath>
+
 class ProtocolTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void checksumWrapsModulo256();
     void validatesReferenceChecksums();
     void recognizesOnlyDocumentedPacketTypes();
     void decodesCapturedFaderPacket();
     void preservesUnknownStatePayload();
     void rejectsBadChecksum();
+    void unitIntervalRoundTrip_data();
+    void unitIntervalRoundTrip();
+    void packetSemanticRoundTrip();
 };
+
+void ProtocolTest::checksumWrapsModulo256()
+{
+    QCOMPARE(flow8::protocol::checksum(QByteArray::fromHex("ffff02")), quint8(0x00));
+    QVERIFY(!flow8::protocol::hasValidChecksum(QByteArray::fromHex("01")));
+}
 
 void ProtocolTest::validatesReferenceChecksums()
 {
@@ -78,6 +90,37 @@ void ProtocolTest::rejectsBadChecksum()
     const auto result = flow8::protocol::parsePacket(raw);
     QVERIFY(!result.ok());
     QCOMPARE(result.error, std::optional(flow8::protocol::PacketError::ChecksumMismatch));
+}
+
+void ProtocolTest::unitIntervalRoundTrip_data()
+{
+    QTest::addColumn<double>("value");
+    QTest::newRow("minimum") << 0.0;
+    QTest::newRow("one-third") << (1.0 / 3.0);
+    QTest::newRow("half") << 0.5;
+    QTest::newRow("maximum") << 1.0;
+}
+
+void ProtocolTest::unitIntervalRoundTrip()
+{
+    QFETCH(double, value);
+    const auto encoded = flow8::protocol::encodeUnitInterval(value);
+    QVERIFY(encoded.has_value());
+    const double decoded = flow8::protocol::decodeUnitInterval(*encoded);
+    QVERIFY(std::abs(decoded - value) <= (0.5 / 255.0) + 1.0e-12);
+    QVERIFY(!flow8::protocol::encodeUnitInterval(-0.01).has_value());
+    QVERIFY(!flow8::protocol::encodeUnitInterval(1.01).has_value());
+}
+
+void ProtocolTest::packetSemanticRoundTrip()
+{
+    const QByteArray captured = QByteArray::fromHex("0601010fff16");
+    const auto decoded = flow8::protocol::parsePacket(captured);
+    QVERIFY(decoded.ok());
+    const QByteArray encoded = flow8::protocol::framePacket(
+        decoded.packet->type, decoded.packet->discriminator, decoded.packet->payload);
+    QCOMPARE(encoded, captured);
+    QCOMPARE(flow8::protocol::parsePacket(encoded).packet->payload, decoded.packet->payload);
 }
 
 QTEST_GUILESS_MAIN(ProtocolTest)

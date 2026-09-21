@@ -51,28 +51,42 @@ int main(int argc, char* argv[])
     }
     QJsonArray parameters;
     for (const auto& parameter : parsed.parameters) {
+        QJsonArray offsets;
+        for (const qsizetype offset : parameter.offsets) offsets.append(offset);
         parameters.append(QJsonObject {
             {QStringLiteral("path"), parameter.path},
             {QStringLiteral("value"), parameter.value},
             {QStringLiteral("evidence"),
              flow8::model::evidenceStatusName(parameter.evidence).toString()},
             {QStringLiteral("source"), parameter.source},
+            {QStringLiteral("offsets"), offsets},
+            {QStringLiteral("encodedWidth"), parameter.encodedWidth},
+            {QStringLiteral("encoding"), parameter.encoding},
+            {QStringLiteral("decodedType"), parameter.decodedType},
         });
     }
     QJsonArray flags;
     for (const auto& flag : parsed.flags) {
+        QJsonArray offsets;
+        for (const qsizetype offset : flag.offsets) offsets.append(offset);
         flags.append(QJsonObject {
             {QStringLiteral("path"), flag.path},
             {QStringLiteral("value"), flag.value},
             {QStringLiteral("evidence"),
              flow8::model::evidenceStatusName(flag.evidence).toString()},
             {QStringLiteral("source"), flag.source},
+            {QStringLiteral("offsets"), offsets},
+            {QStringLiteral("encodedWidth"), flag.encodedWidth},
+            {QStringLiteral("encoding"), flag.encoding},
+            {QStringLiteral("decodedType"), flag.decodedType},
         });
     }
     const QJsonObject object {
         {QStringLiteral("validSysEx"), parsed.validation.valid},
         {QStringLiteral("flow8Header"), parsed.validation.isFlow8},
         {QStringLiteral("message"), parsed.validation.message},
+        {QStringLiteral("completeness"),
+         flow8::protocol::dumpCompletenessName(parsed.completeness).toString()},
         {QStringLiteral("rawByteCount"), bytes.size()},
         {QStringLiteral("sha256"),
          QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())},
@@ -87,6 +101,7 @@ int main(int argc, char* argv[])
     } else {
         out << "valid=" << (parsed.validation.valid ? "yes" : "no")
             << " flow8Header=" << (parsed.validation.isFlow8 ? "yes" : "no")
+            << " completeness=" << flow8::protocol::dumpCompletenessName(parsed.completeness)
             << " bytes=" << bytes.size() << " sha256="
             << object.value(QStringLiteral("sha256")).toString() << '\n'
             << parsed.validation.message << '\n';

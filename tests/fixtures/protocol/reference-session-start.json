@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "reference-session-start",
+  "source": "reference/flow-8-midi/docs/flow8-midi-implementation.md",
+  "description": "Exact 0x37 session-start packet listed by the bundled reference project.",
+  "capture_kind": "reference_capture",
+  "evidence_status": "INFERRED",
+  "raw_file": "reference-session-start.hex",
+  "raw_encoding": "hex",
+  "sha256": "fe78f9f4e7395c338927cb0f627bb4144a0f736d1fa13f0e17c14cab4fac556f",
+  "expected": {
+    "packet_type": 55,
+    "discriminator": 1,
+    "payload_hex": "",
+    "checksum_valid": true
+  }
+}

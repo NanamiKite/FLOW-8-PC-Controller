@@ -12,6 +12,14 @@
 
 namespace flow8::protocol {
 
+inline constexpr qsizetype referenceStateDumpByteCount = 3068;
+
+enum class DumpCompleteness {
+    Invalid,
+    Partial,
+    CompleteReferenceLayout,
+};
+
 struct SysExValidationResult {
     bool valid {};
     bool isFlow8 {};
@@ -29,6 +37,10 @@ struct ExtractedParameter {
     double value {};
     model::EvidenceStatus evidence {model::EvidenceStatus::Inferred};
     QString source;
+    QVector<qsizetype> offsets;
+    qsizetype encodedWidth {};
+    QString encoding;
+    QString decodedType;
 };
 
 struct ExtractedFlag {
@@ -36,15 +48,22 @@ struct ExtractedFlag {
     bool value {};
     model::EvidenceStatus evidence {model::EvidenceStatus::Inferred};
     QString source;
+    QVector<qsizetype> offsets;
+    qsizetype encodedWidth {};
+    QString encoding;
+    QString decodedType;
 };
 
 struct ParsedSysExState {
     SysExValidationResult validation;
+    DumpCompleteness completeness {DumpCompleteness::Invalid};
     QByteArray raw;
     QVector<std::optional<QString>> channelNames;
     QVector<ExtractedParameter> parameters;
     QVector<ExtractedFlag> flags;
 };
+
+[[nodiscard]] QStringView dumpCompletenessName(DumpCompleteness completeness) noexcept;
 
 [[nodiscard]] SysExValidationResult validateSysEx(QByteArrayView bytes) noexcept;
 [[nodiscard]] std::optional<float> decodePackedFloat(QByteArrayView bytes,

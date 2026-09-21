@@ -9,6 +9,7 @@ private slots:
     void startsDisconnected();
     void storesConnectionState();
     void rejectsInvalidChannelValues();
+    void preservesStrongerEvidence();
 };
 
 void Flow8StateTest::startsDisconnected()
@@ -41,6 +42,27 @@ void Flow8StateTest::rejectsInvalidChannelValues()
     QVERIFY(state.setChannelPan(0, -1.0, flow8::model::EvidenceStatus::Inferred,
                                 QStringLiteral("SYNTHETIC test")));
     QVERIFY(!state.setChannelPan(0, 1.1, flow8::model::EvidenceStatus::Unknown, {}));
+}
+
+void Flow8StateTest::preservesStrongerEvidence()
+{
+    flow8::Flow8State state;
+    flow8::model::ChannelState channel;
+    channel.index = 0;
+    state.replaceChannels({channel});
+
+    QVERIFY(state.setChannelPan(0, 0.4, flow8::model::EvidenceStatus::Verified,
+                                QStringLiteral("verified test observation")));
+    QVERIFY(!state.setChannelPan(0, -0.4, flow8::model::EvidenceStatus::Inferred,
+                                 QStringLiteral("reference candidate")));
+    QCOMPARE(state.channel(0)->pan.value, std::optional(0.4));
+    QCOMPARE(state.channel(0)->pan.evidence, flow8::model::EvidenceStatus::Verified);
+
+    flow8::model::StateValue<int> empty;
+    QVERIFY(!flow8::model::mergeObservedValue(empty, 1,
+                                               flow8::model::EvidenceStatus::Blocked,
+                                               QStringLiteral("NEED_HARDWARE")));
+    QVERIFY(!empty.value.has_value());
 }
 
 QTEST_GUILESS_MAIN(Flow8StateTest)

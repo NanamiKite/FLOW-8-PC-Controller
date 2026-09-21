@@ -92,6 +92,7 @@ The state-dump decoder reports input SHA-256 and keeps all extracted offsets mar
 - [Architecture](docs/architecture.md)
 - [BLE](docs/ble.md)
 - [Protocol](docs/protocol.md)
+- [Conservative SysEx offset catalog](docs/sysex-offsets.md)
 - [USB MIDI and SysEx](docs/midi.md)
 - [State model](docs/state-model.md)
 - [Reverse-engineering record](docs/reverse-engineering.md)

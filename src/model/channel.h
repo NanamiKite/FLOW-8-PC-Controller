@@ -16,6 +16,13 @@ struct ChannelState {
     StateValue<bool> muted;
     StateValue<bool> soloed;
     StateValue<double> pan;
+    // Explicit engineering-unit observations from state dumps. These do not
+    // overwrite the normalized live-control values above.
+    StateValue<double> levelDb;
+    StateValue<double> gainDb;
+    StateValue<quint16> lowCutHz;
+    StateValue<bool> phantom48V;
+    std::array<StateValue<double>, 4> sendLevelDb;
     EqState eq;
     CompressorState compressor;
 };

@@ -13,6 +13,9 @@ struct BusState {
     StateValue<double> fader;
     StateValue<double> pan;
     StateValue<double> limiter;
+    StateValue<double> levelDb;
+    StateValue<double> balance;
+    StateValue<double> limiterDb;
     GraphicEqState eq;
 };
 

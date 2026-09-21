@@ -1,0 +1,21 @@
+{
+  "fixture": "synthetic-reference-layout",
+  "status": "SYNTHETIC",
+  "evidence_status": "INFERRED",
+  "expected_state": {
+    "channel.0.level_db": -12.0,
+    "channel.0.pan": 0.25,
+    "channel.0.compressor": 0.75,
+    "channel.0.low_cut_hz": 120,
+    "channel.0.eq.low_mid_gain_db": -3.5,
+    "channel.0.send.monitor1_level_db": -18.0,
+    "channel.0.muted": true,
+    "channel.0.soloed": true,
+    "channel.0.phantom_48v": true,
+    "bus.0.level_db": -6.0,
+    "bus.0.graphic_eq.62hz_gain_db": 4.5,
+    "fx.0.parameter1_percent": 75.0,
+    "fx.0.parameter2_percent": 25.0,
+    "fx.0.preset_reference_index": 2
+  }
+}

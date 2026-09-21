@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "synthetic-reference-layout",
+  "source": "SYNTHETIC fixture generated for this project from reference/flow-8-midi offset constants",
+  "description": "A deterministic 3068-byte synthetic SysEx image for replay plumbing and conservative offset decoding. It is not a FLOW 8 capture.",
+  "capture_kind": "synthetic",
+  "evidence_status": "INFERRED",
+  "raw_file": "synthetic-reference-layout.hex",
+  "raw_encoding": "hex",
+  "sha256": "04d652ea1f3155ea475140086df25c02b3368e2b9f36934e686c78bee4acd431",
+  "expected": {
+    "byte_count": 3068,
+    "completeness": "COMPLETE_REFERENCE_LAYOUT",
+    "parameters": {
+      "channel.0.level_db": -12.0,
+      "channel.0.pan": 0.25,
+      "channel.0.compressor": 0.75,
+      "channel.0.low_cut_hz": 120.0,
+      "channel.0.eq.low_mid_gain_db": -3.5,
+      "channel.0.send.monitor1_level_db": -18.0,
+      "bus.0.level_db": -6.0,
+      "bus.0.graphic_eq.62hz_gain_db": 4.5,
+      "fx.0.parameter1_percent": 75.0,
+      "fx.0.parameter2_percent": 25.0,
+      "fx.0.preset_reference_index": 2.0
+    },
+    "flags": {
+      "channel.0.muted": true,
+      "channel.0.soloed": true,
+      "channel.0.phantom_48v": true
+    },
+    "state_file": "../state/synthetic-reference-layout.expected.json"
+  }
+}

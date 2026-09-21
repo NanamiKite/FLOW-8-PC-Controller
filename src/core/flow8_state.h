@@ -10,6 +10,17 @@
 
 namespace flow8 {
 
+namespace protocol {
+struct ParsedSysExState;
+}
+
+struct SysExApplyResult {
+    bool applied {};
+    int fieldsApplied {};
+    int fieldsRejected {};
+    QString reason;
+};
+
 enum class ConnectionState {
     Disconnected,
     Scanning,
@@ -63,6 +74,10 @@ public:
     [[nodiscard]] const QVector<model::SnapshotState>& snapshots() const noexcept;
     void replaceSnapshots(QVector<model::SnapshotState> snapshots);
 
+    // Applies only a complete dump matching the reference layout. Extracted
+    // values retain their evidence/source and cannot downgrade stronger state.
+    [[nodiscard]] SysExApplyResult applySysExState(const protocol::ParsedSysExState& parsed);
+
 signals:
     void connectionStateChanged(flow8::ConnectionState state);
     void stateReset();
@@ -71,6 +86,7 @@ signals:
 
 private:
     [[nodiscard]] model::ChannelState* mutableChannel(int index) noexcept;
+    void ensureReferenceStateShape();
     [[nodiscard]] static bool isUnitInterval(double value) noexcept;
 
     ConnectionState connectionState_ {ConnectionState::Disconnected};
