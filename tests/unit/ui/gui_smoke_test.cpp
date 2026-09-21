@@ -76,17 +76,23 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QVERIFY(firstMeter != nullptr);
     QCOMPARE(flow8::ui::meterDbFromNormalized(0.0), -60.0);
     QCOMPARE(flow8::ui::meterDbFromNormalized(1.0), 10.0);
+    QCOMPARE(flow8::ui::postFaderMeterNormalized(0.8, 0.0), 0.0);
+    QVERIFY(flow8::ui::postFaderMeterNormalized(0.8, 1.0)
+        > flow8::ui::postFaderMeterNormalized(0.8, 0.5));
     QCOMPARE(firstMeter->height(), fader->height());
     auto* routeStatus = window.findChild<QLabel*>(QStringLiteral("routeStatus0"));
     QVERIFY(routeStatus != nullptr);
     QVERIFY(routeStatus->isHidden());
     fader->setFocus();
+    QTest::keyClick(fader, Qt::Key_End);
+    QTRY_COMPARE(firstMeter->targetLevelDb(), -60.0);
     QTest::keyClick(fader, Qt::Key_Home);
     for (int step = 0; step < 17; ++step) {
         QTest::keyClick(fader, Qt::Key_Down);
     }
     QTRY_VERIFY(device.state().channel(0)->fader.value.has_value());
     QTRY_VERIFY(std::abs(*device.state().channel(0)->fader.value - 0.83) <= (1.0 / 255.0));
+    QTRY_VERIFY(firstMeter->targetLevelDb() > -60.0);
 
     auto* firstStrip = window.findChild<flow8::ui::ChannelStrip*>(
         QStringLiteral("channelStrip0"));

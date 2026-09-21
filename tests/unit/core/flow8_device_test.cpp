@@ -37,6 +37,7 @@ class Flow8DeviceTest final : public QObject {
 private slots:
     void simulatorConnectsAndCreatesProfile();
     void controlsFlowThroughDeviceApi();
+    void simulatorMetersFollowRouteAndMaster();
     void mixBusesAndFxRoutingRemainIndependent();
     void monitorStereoLinkMirrorsSimulatorFaders();
     void usbAndPhysicalOutputRoutingRemainIndependent();
@@ -106,6 +107,39 @@ void Flow8DeviceTest::simulatorConnectsAndCreatesProfile()
     QCOMPARE(device.state().channel(0)->inputId, flow8::model::InputId::Input1);
     QCOMPARE(device.state().channel(0)->defaultLabel, QStringLiteral("Input 1"));
     QVERIFY(!device.state().channel(0)->name.value.has_value());
+}
+
+void Flow8DeviceTest::simulatorMetersFollowRouteAndMaster()
+{
+    using flow8::model::RoutingDestination;
+
+    flow8::Flow8Device device;
+    device.setTransport(std::make_unique<flow8::simulator::FakeTransport>());
+    device.connectDevice();
+    QTRY_COMPARE(device.state().connectionState(), flow8::ConnectionState::Ready);
+
+    for (int source = 0; source < device.state().channels().size(); ++source) {
+        QVERIFY(device.setRouteLevel(source, RoutingDestination::Main, 0.0));
+    }
+    QTRY_COMPARE(device.state().outputMeter(RoutingDestination::Main)
+                     ->level.value.value_or(-1.0),
+                 0.0);
+
+    QVERIFY(device.setDestinationMaster(RoutingDestination::Main, 1.0));
+    QVERIFY(device.setRouteLevel(0, RoutingDestination::Main, 1.0));
+    QTRY_VERIFY(device.state().outputMeter(RoutingDestination::Main)
+                    ->level.value.value_or(0.0) > 0.35);
+
+    QVERIFY(device.setDestinationMaster(RoutingDestination::Main, 0.0));
+    QTRY_VERIFY(device.state().outputMeter(RoutingDestination::Main)
+                    ->level.value.value_or(1.0) < 0.25);
+
+    QVERIFY(device.setRouteLevel(0, RoutingDestination::Main, 0.0));
+    QTRY_COMPARE(device.state().outputMeter(RoutingDestination::Main)
+                     ->level.value.value_or(-1.0),
+                 0.0);
+    QCOMPARE(device.state().outputMeter(RoutingDestination::Main)->level.evidence,
+             flow8::model::EvidenceStatus::Synthetic);
 }
 
 void Flow8DeviceTest::controlsFlowThroughDeviceApi()
