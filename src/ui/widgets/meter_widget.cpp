@@ -11,6 +11,22 @@
 
 namespace flow8::ui {
 
+double postFaderMeterNormalized(
+    const double sourceLevel, const double faderValue,
+    const double faderMinimumDb, const double faderMaximumDb) noexcept
+{
+    const double boundedSource = std::clamp(sourceLevel, 0.0, 1.0);
+    const double boundedFader = std::clamp(faderValue, 0.0, 1.0);
+    if (boundedSource <= 0.0 || boundedFader <= 0.0
+        || !std::isfinite(faderMinimumDb) || !std::isfinite(faderMaximumDb)
+        || faderMinimumDb >= faderMaximumDb) {
+        return 0.0;
+    }
+    const double faderDb = faderMinimumDb
+        + boundedFader * (faderMaximumDb - faderMinimumDb);
+    return normalizedMeterFromDb(meterDbFromNormalized(boundedSource) + faderDb);
+}
+
 MeterWidget::MeterWidget(QWidget* parent)
     : QWidget(parent)
 {

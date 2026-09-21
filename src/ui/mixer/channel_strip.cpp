@@ -227,9 +227,19 @@ void ChannelStrip::refresh()
 void ChannelStrip::refreshMeter()
 {
     const auto* meter = device_.state().inputMeter(channelIndex_);
-    meter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
-    meter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
-    meter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
+    const auto* route = device_.state().routeLevel(channelIndex_, destination_);
+    const auto* channel = device_.state().channel(channelIndex_);
+    const bool muted = channel != nullptr && channel->muted.value.value_or(false);
+    const double faderValue = route == nullptr ? 0.0 : route->effectiveValue();
+    const double level = muted || meter == nullptr ? 0.0 : postFaderMeterNormalized(
+        meter->level.value.value_or(0.0), faderValue,
+        fader_->minimumDb(), fader_->maximumDb());
+    const double peak = muted || meter == nullptr ? 0.0 : postFaderMeterNormalized(
+        meter->peak.value.value_or(0.0), faderValue,
+        fader_->minimumDb(), fader_->maximumDb());
+    meter_->setLevel(level);
+    meter_->setPeak(peak);
+    meter_->setClipping(peak >= 0.999);
 }
 
 void ChannelStrip::retranslateUi()

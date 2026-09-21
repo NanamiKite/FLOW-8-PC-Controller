@@ -204,12 +204,19 @@ void StageView::refreshMeter(const int index)
         return;
     }
     const auto* meter = device_.state().inputMeter(index);
-    cards_[index].meter->setLevel(
-        meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
-    cards_[index].meter->setPeak(
-        meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
-    cards_[index].meter->setClipping(
-        meter != nullptr && meter->clipping.value.value_or(false));
+    const auto* route = device_.state().routeLevel(index, destination_);
+    const auto* channel = device_.state().channel(index);
+    const bool muted = channel != nullptr && channel->muted.value.value_or(false);
+    const double faderValue = route == nullptr ? 0.0 : route->effectiveValue();
+    const double level = muted || meter == nullptr ? 0.0 : postFaderMeterNormalized(
+        meter->level.value.value_or(0.0), faderValue,
+        cards_[index].fader->minimumDb(), cards_[index].fader->maximumDb());
+    const double peak = muted || meter == nullptr ? 0.0 : postFaderMeterNormalized(
+        meter->peak.value.value_or(0.0), faderValue,
+        cards_[index].fader->minimumDb(), cards_[index].fader->maximumDb());
+    cards_[index].meter->setLevel(level);
+    cards_[index].meter->setPeak(peak);
+    cards_[index].meter->setClipping(peak >= 0.999);
 }
 
 void StageView::retranslateUi()

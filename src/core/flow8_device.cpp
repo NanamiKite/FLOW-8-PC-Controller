@@ -43,6 +43,50 @@ double dbToNormalized(const double db) noexcept
     return db <= -70.0 ? 0.0 : std::clamp((db + 70.0) / 80.0, 0.0, 1.0);
 }
 
+constexpr double simulatorMeterMinimumDb = -60.0;
+constexpr double simulatorMeterMaximumDb = 10.0;
+
+double amplitudeFromDb(const double db) noexcept
+{
+    return std::pow(10.0, db / 20.0);
+}
+
+double amplitudeFromMeter(const double normalized) noexcept
+{
+    if (normalized <= 0.0) {
+        return 0.0;
+    }
+    const double bounded = std::clamp(normalized, 0.0, 1.0);
+    return amplitudeFromDb(simulatorMeterMinimumDb
+        + bounded * (simulatorMeterMaximumDb - simulatorMeterMinimumDb));
+}
+
+double normalizedMeterFromAmplitude(const double amplitude) noexcept
+{
+    if (!std::isfinite(amplitude) || amplitude <= 0.0) {
+        return 0.0;
+    }
+    const double db = 20.0 * std::log10(amplitude);
+    return std::clamp(
+        (db - simulatorMeterMinimumDb)
+            / (simulatorMeterMaximumDb - simulatorMeterMinimumDb),
+        0.0, 1.0);
+}
+
+double routeGain(const double normalized) noexcept
+{
+    if (normalized <= 0.0) {
+        return 0.0;
+    }
+    return amplitudeFromDb(-70.0 + std::clamp(normalized, 0.0, 1.0) * 80.0);
+}
+
+double busMasterGain(const double normalized) noexcept
+{
+    return amplitudeFromDb(
+        -60.0 + std::clamp(normalized, 0.0, 1.0) * 70.0);
+}
+
 std::optional<model::RoutingDestination> linkedMonitorDestination(
     const model::RoutingDestination destination) noexcept
 {
@@ -1570,22 +1614,50 @@ void Flow8Device::updateSimulatorMeters()
                                      QString::fromLatin1(simulatorSource));
     }
     for (int destination = 0; destination < model::mixerDestinationCount; ++destination) {
-        double master = 0.0;
+        const auto target = static_cast<model::RoutingDestination>(destination);
+        double levelPower = 0.0;
+        double peakPower = 0.0;
+        for (int source = 0; source < state_.channels().size(); ++source) {
+            const auto* channel = state_.channel(source);
+            const auto* inputMeter = state_.inputMeter(source);
+            const auto* route = state_.routeLevel(source, target);
+            if (channel == nullptr || inputMeter == nullptr || route == nullptr
+                || channel->muted.value.value_or(false)) {
+                continue;
+            }
+            const double gain = routeGain(route->effectiveValue());
+            const double sourceLevel = amplitudeFromMeter(
+                inputMeter->level.value.value_or(0.0)) * gain;
+            const double sourcePeak = amplitudeFromMeter(
+                inputMeter->peak.value.value_or(0.0)) * gain;
+            levelPower += sourceLevel * sourceLevel;
+            peakPower += sourcePeak * sourcePeak;
+        }
+
+        double masterGain = 0.0;
+        bool muted = false;
         if (destination < model::mixBusCount) {
             const auto* bus = state_.bus(destination);
-            master = bus == nullptr ? 0.0 : bus->fader.value.value_or(0.0);
+            if (bus != nullptr) {
+                masterGain = busMasterGain(bus->fader.value.value_or(0.0));
+                muted = bus->muted.has_value()
+                    && bus->muted->value.value_or(false);
+            }
         } else {
             const int effectIndex = destination - model::mixBusCount;
             if (effectIndex >= 0 && effectIndex < state_.effects().size()) {
-                master = state_.effects().at(effectIndex).master.value.value_or(0.0);
+                const auto& effect = state_.effects().at(effectIndex);
+                masterGain = std::clamp(
+                    effect.master.value.value_or(0.0), 0.0, 1.0);
+                muted = effect.muted.value.value_or(false);
             }
         }
-        const double motion = 0.70 + 0.22 * std::abs(std::sin(
-            time * (0.48 + destination * 0.04) + destination));
-        const double level = std::clamp(master * motion, 0.0, 1.0);
-        const double peak = std::min(1.0, level + 0.06);
+        const double levelAmplitude = muted ? 0.0 : std::sqrt(levelPower) * masterGain;
+        const double peakAmplitude = muted ? 0.0 : std::sqrt(peakPower) * masterGain;
+        const double level = normalizedMeterFromAmplitude(levelAmplitude);
+        const double peak = normalizedMeterFromAmplitude(peakAmplitude);
         (void)state_.setOutputMeter(
-            static_cast<model::RoutingDestination>(destination), level, peak,
+            target, level, peak,
             level > 0.985, model::EvidenceStatus::Synthetic,
             QString::fromLatin1(simulatorSource));
     }

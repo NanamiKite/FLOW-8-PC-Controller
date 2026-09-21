@@ -107,6 +107,10 @@ MixSendStrip::MixSendStrip(Flow8Device& device, const int inputIndex,
             [this](const int index) {
                 if (index == inputIndex_) refresh();
             });
+    connect(&device_.state(), &Flow8State::inputMeterChanged, this,
+            [this](const int index) {
+                if (index == inputIndex_) refresh();
+            });
     connect(&device_.state(), &Flow8State::preferencesChanged,
             this, &MixSendStrip::refresh);
     retranslateUi();
@@ -128,9 +132,17 @@ void MixSendStrip::refresh()
     const QSignalBlocker faderBlocker(fader_);
     fader_->setValue(normalizedLevel());
     const auto* meter = device_.state().inputMeter(inputIndex_);
-    meter_->setLevel(meter == nullptr ? 0.0 : meter->level.value.value_or(0.0));
-    meter_->setPeak(meter == nullptr ? 0.0 : meter->peak.value.value_or(0.0));
-    meter_->setClipping(meter != nullptr && meter->clipping.value.value_or(false));
+    const bool muted = channel->muted.value.value_or(false);
+    const double faderValue = normalizedLevel();
+    const double level = muted || meter == nullptr ? 0.0 : postFaderMeterNormalized(
+        meter->level.value.value_or(0.0), faderValue,
+        fader_->minimumDb(), fader_->maximumDb());
+    const double peak = muted || meter == nullptr ? 0.0 : postFaderMeterNormalized(
+        meter->peak.value.value_or(0.0), faderValue,
+        fader_->minimumDb(), fader_->maximumDb());
+    meter_->setLevel(level);
+    meter_->setPeak(peak);
+    meter_->setClipping(peak >= 0.999);
     if (monitorMode_ != nullptr) {
         const QSignalBlocker blocker(monitorMode_);
         monitorMode_->setCurrentIndex(monitorMode_->findData(static_cast<int>(

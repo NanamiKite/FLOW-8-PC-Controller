@@ -16,6 +16,19 @@ inline constexpr double meterMaximumDb = 10.0;
     return meterMinimumDb + bounded * (meterMaximumDb - meterMinimumDb);
 }
 
+[[nodiscard]] constexpr double normalizedMeterFromDb(const double db) noexcept
+{
+    return std::clamp(
+        (db - meterMinimumDb) / (meterMaximumDb - meterMinimumDb), 0.0, 1.0);
+}
+
+// Mixer meters beside a route fader show the signal after that route level.
+// The raw, pre-fader observation remains in Flow8State::MeterState; this helper
+// derives only the presentation value and does not mutate control state.
+[[nodiscard]] double postFaderMeterNormalized(
+    double sourceLevel, double faderValue,
+    double faderMinimumDb = -70.0, double faderMaximumDb = 10.0) noexcept;
+
 class MeterWidget final : public QWidget {
     Q_OBJECT
 
