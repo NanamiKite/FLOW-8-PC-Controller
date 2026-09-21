@@ -10,9 +10,8 @@
 
 namespace flow8::model {
 
-// This catalogue is intentionally broader than the seven conventional Mixer
-// strips. USB return pairs are routing sources, not aliases for the BT/USB
-// Mixer channel.
+// These are the seven conventional signal sources shown by the Mixer. USB
+// audio loopback endpoints are modelled independently in usb_audio.h.
 enum class SignalSourceId {
     Input1,
     Input2,
@@ -21,15 +20,12 @@ enum class SignalSourceId {
     Input56,
     Input78,
     BluetoothUsbMixer,
-    UsbReturn12,
-    UsbReturn34,
 };
 
 enum class SignalSourceType {
     PhysicalInput,
     StereoPhysicalInput,
     BluetoothUsbMixer,
-    UsbReturn,
 };
 
 struct SignalSourceState {

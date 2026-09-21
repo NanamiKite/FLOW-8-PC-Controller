@@ -10,7 +10,8 @@ class MixerModelTest final : public QObject {
 
 private slots:
     void officialInputTopologyIsExplicit();
-    void signalSourcesExtendBeyondMixerStrips();
+    void inputGainUsesFlowMixEngineeringRange();
+    void mixerSignalSourcesAndUsbAudioEndpointsAreDistinct();
     void mixBusesAndPhysicalOutputsAreDistinct();
     void snapshotAndRoutingShapesAreDistinct();
     void flowMixFunctionalExtensionsRemainExplicit();
@@ -48,22 +49,39 @@ void MixerModelTest::officialInputTopologyIsExplicit()
              flow8::model::CapabilitySource::OfficialManual);
 }
 
-void MixerModelTest::signalSourcesExtendBeyondMixerStrips()
+void MixerModelTest::inputGainUsesFlowMixEngineeringRange()
+{
+    using namespace flow8::model;
+
+    QCOMPARE(inputGainDbFromNormalized(0.0), -20.0);
+    QCOMPARE(inputGainDbFromNormalized(0.5), 20.0);
+    QCOMPARE(inputGainDbFromNormalized(1.0), 60.0);
+    QCOMPARE(inputGainDbFromNormalized(-1.0), -20.0);
+    QCOMPARE(inputGainDbFromNormalized(2.0), 60.0);
+
+    QCOMPARE(normalizedInputGainFromDb(-20.0), 0.0);
+    QCOMPARE(normalizedInputGainFromDb(20.0), 0.5);
+    QCOMPARE(normalizedInputGainFromDb(60.0), 1.0);
+    QCOMPARE(normalizedInputGainFromDb(-40.0), 0.0);
+    QCOMPARE(normalizedInputGainFromDb(80.0), 1.0);
+}
+
+void MixerModelTest::mixerSignalSourcesAndUsbAudioEndpointsAreDistinct()
 {
     const auto sources = flow8::model::createSignalSourceProfile();
-    QCOMPARE(sources.size(), 9);
+    QCOMPARE(sources.size(), 7);
     for (int index = 0; index < 7; ++index) {
         QCOMPARE(sources[index].mixerInputIndex, std::optional(index));
         QVERIFY(sources[index].mixerEndpoint.has_value());
     }
     QCOMPARE(sources[6].id, flow8::model::SignalSourceId::BluetoothUsbMixer);
-    QCOMPARE(sources[7].id, flow8::model::SignalSourceId::UsbReturn12);
-    QCOMPARE(sources[8].id, flow8::model::SignalSourceId::UsbReturn34);
-    QVERIFY(!sources[7].mixerInputIndex.has_value());
-    QVERIFY(!sources[7].mixerEndpoint.has_value());
-    QVERIFY(!sources[8].mixerInputIndex.has_value());
-    QVERIFY(!sources[8].mixerEndpoint.has_value());
-    QCOMPARE(sources[7].evidence.source,
+
+    const auto usbEndpoints = flow8::model::createUsbAudioEndpointProfile();
+    QCOMPARE(usbEndpoints.size(), 2);
+    QCOMPARE(usbEndpoints[0].id, flow8::model::UsbAudioEndpointId::Usb12);
+    QCOMPARE(usbEndpoints[1].id, flow8::model::UsbAudioEndpointId::Usb34);
+    QCOMPARE(usbEndpoints[0].defaultLabel, QStringLiteral("USB 1/2"));
+    QCOMPARE(usbEndpoints[0].evidence.source,
              flow8::model::CapabilitySource::OfficialApk);
 }
 
@@ -90,6 +108,10 @@ void MixerModelTest::mixBusesAndPhysicalOutputsAreDistinct()
     QCOMPARE(outputs[3].id, flow8::model::PhysicalOutputId::Headphones);
     QCOMPARE(outputs[0].nominalSource,
              std::optional(flow8::model::PhysicalOutputSource::Main));
+    QCOMPARE(outputs[1].nominalSource,
+             std::optional(flow8::model::PhysicalOutputSource::Monitor1));
+    QCOMPARE(outputs[2].nominalSource,
+             std::optional(flow8::model::PhysicalOutputSource::Monitor2));
     QVERIFY(!outputs[3].nominalSource.has_value());
     QVERIFY(!outputs[3].padMinus10Dbv.has_value());
 }
@@ -119,12 +141,16 @@ void MixerModelTest::flowMixFunctionalExtensionsRemainExplicit()
 {
     const auto routing = flow8::model::createRoutingProfile();
     QVERIFY(routing.fxOutputRoute(1, flow8::model::FxOutputDestination::Monitor2) != nullptr);
-    QVERIFY(!routing.usb.mode.value.has_value());
-    QVERIFY(!routing.usb.input56Source.value.has_value());
-    QVERIFY(!routing.usb.input78Source.value.has_value());
+    QVERIFY(!routing.usbAudio.mode.value.has_value());
+    QVERIFY(!routing.usbAudio.input56Assignment.value.has_value());
+    QVERIFY(!routing.usbAudio.input78Assignment.value.has_value());
+    QVERIFY(!routing.usbAudio.monitorOutputFeeds[0].value.has_value());
     QVERIFY(!routing.headphones.source.value.has_value());
     QVERIFY(!routing.headphones.tapPoint.value.has_value());
-    QVERIFY(!routing.monitor.stereoLinked.value.has_value());
+    const auto monitorLink = flow8::model::createMonitorLinkProfile();
+    QVERIFY(!monitorLink.stereoLinked.value.has_value());
+    QCOMPARE(monitorLink.propagationEvidence,
+             flow8::model::EvidenceStatus::Unknown);
 
     const flow8::model::AppPreferences preferences;
     QVERIFY(preferences.showMuteButtons);

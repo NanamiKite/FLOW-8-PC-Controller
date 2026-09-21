@@ -3,6 +3,7 @@
 #include "model/endpoint.h"
 #include "model/signal_path.h"
 #include "model/state_value.h"
+#include "model/usb_audio.h"
 
 #include <array>
 #include <QVector>
@@ -17,22 +18,6 @@ enum class RoutingDestination {
     Monitor2,
     Fx1,
     Fx2,
-};
-
-enum class UsbMode {
-    Streaming,
-    Recording,
-};
-
-enum class UsbPlaybackAssignment {
-    AnalogInput,
-    UsbReturn,
-};
-
-enum class MonitorRouteSource {
-    MonitorMix,
-    UsbReturn12,
-    UsbReturn34,
 };
 
 // FX input sends live on ChannelState. These destinations describe only the
@@ -107,17 +92,6 @@ struct RouteLevelMatrix {
     }
 }
 
-struct UsbRoutingState {
-    StateValue<UsbMode> mode;
-    StateValue<UsbPlaybackAssignment> input56Source;
-    StateValue<UsbPlaybackAssignment> input78Source;
-};
-
-struct MonitorRoutingState {
-    std::array<StateValue<MonitorRouteSource>, 2> outputSources;
-    StateValue<bool> stereoLinked;
-};
-
 struct HeadphoneRoutingState {
     StateValue<HeadphoneSource> source;
     StateValue<RoutingTapPoint> tapPoint;
@@ -132,8 +106,7 @@ struct FxOutputRouteState {
 
 struct RoutingState {
     RouteLevelMatrix routeLevels;
-    UsbRoutingState usb;
-    MonitorRoutingState monitor;
+    UsbAudioRoutingState usbAudio;
     HeadphoneRoutingState headphones;
     QVector<FxOutputRouteState> fxOutputRoutes;
 

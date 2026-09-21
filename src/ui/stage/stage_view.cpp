@@ -133,7 +133,7 @@ void StageView::rebuild()
         auto* meterFader = new QHBoxLayout;
         meterFader->setSpacing(12);
         meterFader->addWidget(card.meter);
-        meterFader->addWidget(card.fader, 1, Qt::AlignHCenter);
+        meterFader->addWidget(card.fader);
         auto* actions = new QHBoxLayout;
         actions->addWidget(card.mute);
         actions->addWidget(card.solo);

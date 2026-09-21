@@ -5,6 +5,7 @@
 #include "model/routing.h"
 #include "model/signal_path.h"
 #include "model/snapshot.h"
+#include "model/usb_audio.h"
 
 #include <QVector>
 
@@ -21,6 +22,8 @@ inline constexpr int hardwareSnapshotSlotCount = 15;
 [[nodiscard]] QVector<ChannelState> createOfficialInputProfile();
 [[nodiscard]] QVector<BusState> createOfficialBusProfile();
 [[nodiscard]] QVector<SignalSourceState> createSignalSourceProfile();
+[[nodiscard]] QVector<UsbAudioEndpointState> createUsbAudioEndpointProfile();
+[[nodiscard]] MonitorLinkState createMonitorLinkProfile();
 [[nodiscard]] QVector<PhysicalOutputState> createPhysicalOutputProfile();
 [[nodiscard]] QVector<SnapshotState> createHardwareSnapshotProfile();
 [[nodiscard]] RoutingState createRoutingProfile();

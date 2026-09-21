@@ -44,7 +44,7 @@ MainStrip::MainStrip(Flow8Device& device, QWidget* parent)
     faderRow->setContentsMargins(8, 0, 8, 0);
     faderRow->setSpacing(8);
     faderRow->addWidget(meter_);
-    faderRow->addWidget(fader_, 1, Qt::AlignHCenter);
+    faderRow->addWidget(fader_);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(10, 12, 10, 10);

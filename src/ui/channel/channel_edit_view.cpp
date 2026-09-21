@@ -29,7 +29,9 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
     , preampTitle_(new QLabel(this))
     , mixTitle_(new QLabel(this))
     , gainLabel_(new QLabel(this))
+    , gainValue_(new QLabel(this))
     , panLabel_(new QLabel(this))
+    , panValue_(new QLabel(this))
     , gain_(new QSlider(Qt::Horizontal, this))
     , phantom_(new QCheckBox(this))
     , fader_(new FaderWidget(this))
@@ -47,11 +49,26 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
     mixTitle_->setProperty("class", QStringLiteral("sectionLabel"));
 
     gain_->setObjectName(QStringLiteral("channelEditGain"));
-    gain_->setRange(0, 1000);
+    gain_->setRange(
+        static_cast<int>(model::inputGainMinimumDb * 10.0),
+        static_cast<int>(model::inputGainMaximumDb * 10.0));
+    gain_->setSingleStep(1);
+    gain_->setPageStep(10);
+    gainValue_->setObjectName(QStringLiteral("channelEditGainValue"));
+    gainValue_->setProperty("class", QStringLiteral("parameterValue"));
+    gainValue_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gainValue_->setMinimumWidth(72);
     phantom_->setObjectName(QStringLiteral("channelEditPhantom"));
+    phantom_->setProperty("class", QStringLiteral("phantomControl"));
     fader_->setObjectName(QStringLiteral("channelEditFader"));
     pan_->setObjectName(QStringLiteral("channelEditPan"));
     pan_->setRange(-100, 100);
+    pan_->setTickPosition(QSlider::TicksBelow);
+    pan_->setTickInterval(100);
+    panValue_->setObjectName(QStringLiteral("channelEditPanValue"));
+    panValue_->setProperty("class", QStringLiteral("parameterValue"));
+    panValue_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    panValue_->setMinimumWidth(72);
     mute_->setObjectName(QStringLiteral("channelEditMute"));
     mute_->setProperty("class", QStringLiteral("muteButton"));
     mute_->setCheckable(true);
@@ -77,7 +94,11 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
     controlsLayout->setSpacing(10);
     controlsLayout->addWidget(preampTitle_);
     controlsLayout->addWidget(gainLabel_);
-    controlsLayout->addWidget(gain_);
+    auto* gainRow = new QHBoxLayout;
+    gainRow->setContentsMargins(0, 0, 0, 0);
+    gainRow->addWidget(gain_, 1);
+    gainRow->addWidget(gainValue_);
+    controlsLayout->addLayout(gainRow);
     controlsLayout->addWidget(phantom_);
     controlsLayout->addSpacing(12);
     controlsLayout->addWidget(mixTitle_);
@@ -87,7 +108,11 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
     faderRow->addStretch();
     controlsLayout->addLayout(faderRow, 1);
     controlsLayout->addWidget(panLabel_);
-    controlsLayout->addWidget(pan_);
+    auto* panRow = new QHBoxLayout;
+    panRow->setContentsMargins(0, 0, 0, 0);
+    panRow->addWidget(pan_, 1);
+    panRow->addWidget(panValue_);
+    controlsLayout->addLayout(panRow);
     auto* buttons = new QHBoxLayout;
     buttons->addWidget(mute_);
     buttons->addWidget(solo_);
@@ -106,7 +131,10 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
 
     connect(back_, &QPushButton::clicked, this, &ChannelEditView::backRequested);
     connect(gain_, &QSlider::valueChanged, this, [this](const int value) {
-        (void)device_.setChannelGain(channelIndex_, value / 1000.0);
+        const double gainDb = value / 10.0;
+        gainValue_->setText(decibelValueText(gainDb));
+        (void)device_.setChannelGain(
+            channelIndex_, model::normalizedInputGainFromDb(gainDb));
     });
     connect(phantom_, &QCheckBox::clicked, this, [this](const bool enabled) {
         if (enabled && QMessageBox::warning(
@@ -124,6 +152,7 @@ ChannelEditView::ChannelEditView(Flow8Device& device, QWidget* parent)
         (void)device_.setChannelFader(channelIndex_, value);
     });
     connect(pan_, &QSlider::valueChanged, this, [this](const int value) {
+        panValue_->setText(panBalanceValueText(value));
         (void)device_.setChannelPan(channelIndex_, value / 100.0);
     });
     connect(mute_, &QToolButton::toggled, this, [this](const bool muted) {
@@ -170,6 +199,7 @@ void ChannelEditView::refresh()
         .arg(inputDisplayName(channelState->inputId), inputTypeDisplayName(channelState->inputType)));
     gain_->setVisible(channelState->capabilities.gain);
     gainLabel_->setVisible(channelState->capabilities.gain);
+    gainValue_->setVisible(channelState->capabilities.gain);
     phantom_->setVisible(channelState->capabilities.phantom48V);
     const QSignalBlocker gainBlocker(gain_);
     const QSignalBlocker phantomBlocker(phantom_);
@@ -178,12 +208,14 @@ void ChannelEditView::refresh()
     const QSignalBlocker muteBlocker(mute_);
     const QSignalBlocker soloBlocker(solo_);
     gain_->setValue(static_cast<int>(std::lround(
-        channelState->gain.value.value_or(0.0) * 1000.0)));
+        model::inputGainDbFromNormalized(channelState->gain.value.value_or(0.0)) * 10.0)));
+    gainValue_->setText(decibelValueText(gain_->value() / 10.0));
     phantom_->setChecked(channelState->phantom48V.has_value()
         && channelState->phantom48V->value.value_or(false));
     fader_->setValue(channelState->fader.value.value_or(0.0));
     pan_->setValue(static_cast<int>(std::lround(
         channelState->pan.value.value_or(0.0) * 100.0)));
+    panValue_->setText(panBalanceValueText(pan_->value()));
     mute_->setChecked(channelState->muted.value.value_or(false));
     solo_->setChecked(channelState->soloed.value.value_or(false));
     inspector_->refresh();

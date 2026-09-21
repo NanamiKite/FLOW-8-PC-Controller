@@ -136,6 +136,7 @@ add_library(flow8_core STATIC
     src/model/routing.h
     src/model/session.h
     src/model/signal_path.h
+    src/model/usb_audio.h
 )
 add_library(flow8::core ALIAS flow8_core)
 

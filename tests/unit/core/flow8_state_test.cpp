@@ -16,6 +16,7 @@ private slots:
     void preservesStrongerEvidence();
     void keepsMixBusesAndFxRoutesIndependent();
     void routeMatrixKeepsDestinationsIndependent();
+    void usbAudioRoutingDoesNotMutateMonitorMixes();
     void headphoneRoutingDoesNotMutateMixerState();
     void meterUpdatesStayOutsideControlSignals();
 };
@@ -104,9 +105,35 @@ void Flow8StateTest::keepsMixBusesAndFxRoutesIndependent()
 
     QVERIFY(state.setMonitorStereoLink(
         true, flow8::model::EvidenceStatus::Unknown, source));
-    QCOMPARE(state.routing().monitor.stereoLinked.value, std::optional(true));
+    QCOMPARE(state.monitorLink().stereoLinked.value, std::optional(true));
+    QCOMPARE(state.monitorLink().propagationEvidence,
+             flow8::model::EvidenceStatus::Unknown);
     QCOMPARE(state.bus(1)->fader.value, std::optional(0.40));
     QCOMPARE(state.bus(2)->fader.value, std::optional(0.20));
+}
+
+void Flow8StateTest::usbAudioRoutingDoesNotMutateMonitorMixes()
+{
+    flow8::Flow8State state;
+    state.replaceBuses(flow8::model::createOfficialBusProfile());
+    state.replaceRouting(flow8::model::createRoutingProfile());
+    const QString source = QStringLiteral("SYNTHETIC USB audio test");
+    QVERIFY(state.setBusFader(1, 0.61, flow8::model::EvidenceStatus::Synthetic, source));
+    QVERIFY(state.setBusFader(2, 0.27, flow8::model::EvidenceStatus::Synthetic, source));
+
+    QVERIFY(state.setUsbInputAssignment(
+        0, flow8::model::UsbPlaybackAssignment::UsbAudioLoopback,
+        flow8::model::EvidenceStatus::Synthetic, source));
+    QVERIFY(state.setPhysicalMonitorOutputFeed(
+        1, flow8::model::PhysicalMonitorOutputFeed::Usb34,
+        flow8::model::EvidenceStatus::Synthetic, source));
+
+    QCOMPARE(state.routing().usbAudio.input56Assignment.value,
+             std::optional(flow8::model::UsbPlaybackAssignment::UsbAudioLoopback));
+    QCOMPARE(state.routing().usbAudio.monitorOutputFeeds[1].value,
+             std::optional(flow8::model::PhysicalMonitorOutputFeed::Usb34));
+    QCOMPARE(state.bus(1)->fader.value, std::optional(0.61));
+    QCOMPARE(state.bus(2)->fader.value, std::optional(0.27));
 }
 
 void Flow8StateTest::headphoneRoutingDoesNotMutateMixerState()

@@ -215,7 +215,7 @@ void MonitorView::refresh()
     for (auto* send : sends_) send->refresh();
     const QSignalBlocker blocker(stereoLink_);
     stereoLink_->setChecked(
-        device_.state().routing().monitor.stereoLinked.value.value_or(false));
+        device_.state().monitorLink().stereoLinked.value.value_or(false));
     details_->showBus(monitorIndex_ + 1);
     details_->refresh();
 }
@@ -224,9 +224,9 @@ void MonitorView::retranslateUi()
 {
     title_->setText(uiText("Monitor %1").arg(monitorIndex_ + 1));
     note_->setText(uiText("Channel sends · Pre/Post-Fader · 9-band EQ · Limiter"));
-    stereoLink_->setText(uiText("MON1/2 Linked"));
+    stereoLink_->setText(uiText("Stereo Link: MON1 ↔ MON2"));
     stereoLink_->setToolTip(uiText(
-        "Stereo link relates MON1 and MON2 while preserving two independent bus states."));
+        "Simulator links MON1/MON2 send and master faders; hardware propagation remains UNKNOWN."));
     for (auto* send : sends_) send->retranslateUi();
     details_->retranslateUi();
     refresh();

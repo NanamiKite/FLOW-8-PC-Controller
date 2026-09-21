@@ -1,6 +1,10 @@
 #include "ui/ui_text.h"
 
 #include <QCoreApplication>
+#include <QLocale>
+
+#include <algorithm>
+#include <cmath>
 
 namespace flow8::ui {
 namespace {
@@ -33,6 +37,10 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Monitor Mix"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Monitor Outputs"),
     QT_TRANSLATE_NOOP("Flow8Ui", "MON %1 Physical Output Source"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "MON1 / MON2 Mix Link"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Monitor OUT %1 Hardware Feed"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "MON1 Mix (Default)"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "MON2 Mix (Default)"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Output Delay: %1 ms"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Output Delay: Unknown · Hardware Required"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Physical Output Settings"),
@@ -55,6 +63,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Authenticating"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Available"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Balance"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Center 0"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Back"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Cancel"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Channel"),
@@ -142,6 +151,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Language"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Level"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Limiter"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Left %1"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Linear"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Line Instrument"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Line instrument starting preset"),
@@ -201,6 +211,7 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "Rename"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Release"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Routing"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Right %1"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Routing · Signal Paths and Physical Outputs"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Routing · Source → Destination"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Route Level"),
@@ -270,9 +281,9 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "USB → Monitor 1"),
     QT_TRANSLATE_NOOP("Flow8Ui", "USB → Monitor 2"),
     QT_TRANSLATE_NOOP("Flow8Ui", "USB / Bluetooth"),
-    QT_TRANSLATE_NOOP("Flow8Ui", "USB Return / Playback"),
-    QT_TRANSLATE_NOOP("Flow8Ui", "USB Return 1/2"),
-    QT_TRANSLATE_NOOP("Flow8Ui", "USB Return 3/4"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "USB Audio / Loopback"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "USB 1/2"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "USB 3/4"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Input 5/6 Playback Source"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Input 7/8 Playback Source"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Analog Input 5/6"),
@@ -281,6 +292,8 @@ namespace {
     QT_TRANSLATE_NOOP("Flow8Ui", "MAIN OUT -10 dBV"),
     QT_TRANSLATE_NOOP("Flow8Ui", "MON OUT 1 -10 dBV"),
     QT_TRANSLATE_NOOP("Flow8Ui", "MON OUT 2 -10 dBV"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Stereo Link: MON1 ↔ MON2"),
+    QT_TRANSLATE_NOOP("Flow8Ui", "Simulator links MON1/MON2 send and master faders; hardware propagation remains UNKNOWN."),
     QT_TRANSLATE_NOOP("Flow8Ui", "USB, Monitor, Headphones, FX Returns and Outputs"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Verified"),
     QT_TRANSLATE_NOOP("Flow8Ui", "Verified from FLOW Mix APK"),
@@ -365,6 +378,53 @@ QString evidenceDisplayName(const model::EvidenceStatus evidence)
     case model::EvidenceStatus::Synthetic: return uiText("SYNTHETIC");
     }
     return uiText("Unknown");
+}
+
+QString panBalanceValueText(const int value)
+{
+    const int bounded = std::clamp(value, -100, 100);
+    if (bounded < 0) {
+        return uiText("Left %1").arg(-bounded);
+    }
+    if (bounded > 0) {
+        return uiText("Right %1").arg(bounded);
+    }
+    return uiText("Center 0");
+}
+
+QString normalizedPercentText(const double normalized)
+{
+    const double bounded = std::clamp(normalized, 0.0, 1.0);
+    return QStringLiteral("%1 %").arg(
+        QLocale().toString(std::lround(bounded * 100.0)));
+}
+
+QString frequencyValueText(const double frequencyHz)
+{
+    const double bounded = std::max(0.0, frequencyHz);
+    if (bounded >= 1000.0) {
+        const double kilohertz = bounded / 1000.0;
+        const bool isWhole = std::abs(kilohertz - std::round(kilohertz)) < 0.0005;
+        return QStringLiteral("%1 kHz").arg(
+            QLocale().toString(kilohertz, 'f', isWhole ? 0 : 1));
+    }
+    const bool isWhole = std::abs(bounded - std::round(bounded)) < 0.0005;
+    return QStringLiteral("%1 Hz").arg(
+        QLocale().toString(bounded, 'f', isWhole ? 0 : 1));
+}
+
+QString decibelValueText(const double valueDb)
+{
+    const double rounded = std::abs(valueDb) < 0.0005 ? 0.0 : valueDb;
+    const QString sign = rounded > 0.0 ? QStringLiteral("+") : QString();
+    return QStringLiteral("%1%2 dB").arg(
+        sign, QLocale().toString(rounded, 'f', 1));
+}
+
+QString qValueText(const double value)
+{
+    return QStringLiteral("Q %1").arg(
+        QLocale().toString(std::max(0.0, value), 'f', 2));
 }
 
 } // namespace flow8::ui

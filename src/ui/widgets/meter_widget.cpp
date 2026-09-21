@@ -1,8 +1,12 @@
 #include "ui/widgets/meter_widget.h"
 
+#include "ui/ui_text.h"
+
 #include <QPainter>
+#include <QSizePolicy>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace flow8::ui {
@@ -10,8 +14,11 @@ namespace flow8::ui {
 MeterWidget::MeterWidget(QWidget* parent)
     : QWidget(parent)
 {
-    setMinimumSize(14, 180);
-    setMaximumWidth(20);
+    setMinimumSize(52, 180);
+    setMaximumWidth(52);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    setAccessibleName(uiText("Level"));
+    setToolTip(QStringLiteral("-60…+10 dB"));
     animationTimer_.setInterval(30);
     connect(&animationTimer_, &QTimer::timeout, this, &MeterWidget::animate);
     animationTimer_.start();
@@ -34,17 +41,24 @@ void MeterWidget::setClipping(const bool clipping)
     update();
 }
 
+double MeterWidget::targetLevelDb() const noexcept
+{
+    return meterDbFromNormalized(targetLevel_);
+}
+
 void MeterWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    const QRectF bar(3.0, 4.0, width() - 6.0, height() - 8.0);
+    const QRectF bar(4.0, 13.0, 10.0, std::max(40, height() - 50));
     painter.setPen(QPen(QColor(53, 57, 64), 1.0));
     painter.setBrush(QColor(19, 21, 25));
     painter.drawRoundedRect(bar, 3.0, 3.0);
 
     const double top = bar.bottom() - displayLevel_ * bar.height();
-    const QRectF levelRect(bar.left() + 2.0, top, bar.width() - 4.0, bar.bottom() - top - 1.0);
+    const QRectF levelRect(
+        bar.left() + 2.0, top, bar.width() - 4.0,
+        std::max(0.0, bar.bottom() - top - 1.0));
     QColor color(73, 187, 126);
     if (displayLevel_ > 0.86) {
         color = QColor(239, 174, 76);
@@ -54,11 +68,31 @@ void MeterWidget::paintEvent(QPaintEvent*)
     }
     painter.setPen(Qt::NoPen);
     painter.setBrush(color);
-    painter.drawRoundedRect(levelRect, 2.0, 2.0);
+    if (levelRect.height() > 0.0) {
+        painter.drawRoundedRect(levelRect, 2.0, 2.0);
+    }
 
     const double peakY = bar.bottom() - peak_ * bar.height();
     painter.setPen(QPen(clipping_ ? QColor(255, 91, 91) : QColor(214, 219, 226), 2.0));
     painter.drawLine(QPointF(bar.left() + 1.0, peakY), QPointF(bar.right() - 1.0, peakY));
+
+    painter.setFont(QFont(font().family(), 7));
+    painter.setPen(QColor(132, 138, 147));
+    constexpr std::array scaleDb {10.0, 0.0, -20.0, -40.0, -60.0};
+    for (const double db : scaleDb) {
+        const double normalized = (db - meterMinimumDb) / (meterMaximumDb - meterMinimumDb);
+        const double y = bar.bottom() - normalized * bar.height();
+        const QString label = db > 0.0
+            ? QStringLiteral("+%1").arg(static_cast<int>(db))
+            : QString::number(static_cast<int>(db));
+        painter.drawText(QRectF(18.0, y - 7.0, width() - 19.0, 14.0),
+                         Qt::AlignLeft | Qt::AlignVCenter, label);
+    }
+
+    painter.setFont(QFont(font().family(), 7, QFont::DemiBold));
+    painter.setPen(clipping_ ? QColor(255, 91, 91) : QColor(189, 194, 202));
+    painter.drawText(QRectF(0.0, height() - 24.0, width(), 20.0), Qt::AlignCenter,
+                     decibelValueText(meterDbFromNormalized(displayLevel_)));
 }
 
 void MeterWidget::animate()

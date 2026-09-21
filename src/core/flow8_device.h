@@ -99,10 +99,10 @@ public:
     [[nodiscard]] bool renameAppSnapshot(int libraryIndex, const QString& name);
     [[nodiscard]] bool deleteAppSnapshot(int libraryIndex);
     [[nodiscard]] bool setUsbMode(model::UsbMode mode);
-    [[nodiscard]] bool setUsbPlaybackAssignment(
+    [[nodiscard]] bool setUsbInputAssignment(
         int pairIndex, model::UsbPlaybackAssignment assignment);
-    [[nodiscard]] bool setMonitorRouteSource(
-        int monitorIndex, model::MonitorRouteSource source);
+    [[nodiscard]] bool setPhysicalMonitorOutputFeed(
+        int outputIndex, model::PhysicalMonitorOutputFeed feed);
     [[nodiscard]] bool setFxOutputRouteEnabled(
         int effectIndex, model::FxOutputDestination destination, bool enabled);
     [[nodiscard]] bool setHeadphoneSource(model::HeadphoneSource source);

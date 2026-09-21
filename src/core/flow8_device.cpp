@@ -43,6 +43,33 @@ double dbToNormalized(const double db) noexcept
     return db <= -70.0 ? 0.0 : std::clamp((db + 70.0) / 80.0, 0.0, 1.0);
 }
 
+std::optional<model::RoutingDestination> linkedMonitorDestination(
+    const model::RoutingDestination destination) noexcept
+{
+    switch (destination) {
+    case model::RoutingDestination::Monitor1:
+        return model::RoutingDestination::Monitor2;
+    case model::RoutingDestination::Monitor2:
+        return model::RoutingDestination::Monitor1;
+    case model::RoutingDestination::Main:
+    case model::RoutingDestination::Fx1:
+    case model::RoutingDestination::Fx2:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::optional<int> linkedMonitorBusIndex(const int busIndex) noexcept
+{
+    if (busIndex == 1) {
+        return 2;
+    }
+    if (busIndex == 2) {
+        return 1;
+    }
+    return std::nullopt;
+}
+
 QJsonObject observedDouble(const model::StateValue<double>& value)
 {
     QJsonObject result;
@@ -358,12 +385,29 @@ bool Flow8Device::setRouteLevel(const int sourceIndex,
     // A future real transport will leave this pending until the matching
     // device notification arrives. The simulator confirms synchronously and
     // never fabricates a BLE payload whose APK layout is still unknown.
-    if (!state_.setRouteLevelPending(sourceIndex, destination, normalized)) {
+    const auto applyRouteLevel = [this, sourceIndex, normalized](
+                                     const model::RoutingDestination target) {
+        return state_.setRouteLevelPending(sourceIndex, target, normalized)
+            && state_.setRouteLevel(sourceIndex, target, normalized,
+                                    model::EvidenceStatus::Synthetic,
+                                    QString::fromLatin1(simulatorSource));
+    };
+
+    if (!applyRouteLevel(destination)) {
         return false;
     }
-    return state_.setRouteLevel(sourceIndex, destination, normalized,
-                                model::EvidenceStatus::Synthetic,
-                                QString::fromLatin1(simulatorSource));
+
+    // The APK confirms the MON stereo-link mode but not its device-side
+    // propagation details. In Simulator mode, mirror only the two fader
+    // domains requested by the desktop interaction model: per-input sends
+    // here and MON masters in setBusFader(). This remains SYNTHETIC and does
+    // not define a BLE command sequence.
+    const auto linkedDestination = linkedMonitorDestination(destination);
+    if (linkedDestination.has_value()
+        && state_.monitorLink().stereoLinked.value.value_or(false)) {
+        return applyRouteLevel(*linkedDestination);
+    }
+    return true;
 }
 
 bool Flow8Device::setDestinationMaster(
@@ -388,8 +432,18 @@ bool Flow8Device::setBusFader(const int index, const double normalized)
             "Flow8Device", "Bus level is unavailable."));
         return false;
     }
-    return state_.setBusFader(index, normalized, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
+    if (!state_.setBusFader(index, normalized, model::EvidenceStatus::Synthetic,
+                            QString::fromLatin1(simulatorSource))) {
+        return false;
+    }
+    const auto linkedBus = linkedMonitorBusIndex(index);
+    if (linkedBus.has_value()
+        && state_.monitorLink().stereoLinked.value.value_or(false)) {
+        return state_.setBusFader(*linkedBus, normalized,
+                                  model::EvidenceStatus::Synthetic,
+                                  QString::fromLatin1(simulatorSource));
+    }
+    return true;
 }
 
 bool Flow8Device::setBusMuted(const int index, const bool muted)
@@ -544,7 +598,7 @@ bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotSco
     snapshot.scope = model::StateValue<model::SnapshotScope>::known(
         scope, model::EvidenceStatus::Synthetic, QString::fromLatin1(simulatorSource));
     QJsonObject document;
-    document.insert(QStringLiteral("format"), QStringLiteral("flow8-simulator-snapshot-v2"));
+    document.insert(QStringLiteral("format"), QStringLiteral("flow8-simulator-snapshot-v3"));
     document.insert(QStringLiteral("scope"), static_cast<int>(scope));
     if (snapshotIncludes(scope, model::SnapshotScope::Channel)) {
         QJsonArray channels;
@@ -633,21 +687,21 @@ bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotSco
     if (snapshotIncludes(scope, model::SnapshotScope::Routing)) {
         QJsonObject routing;
         routing.insert(QStringLiteral("usbMode"), static_cast<int>(
-            state_.routing().usb.mode.value.value_or(model::UsbMode::Streaming)));
-        routing.insert(QStringLiteral("input56Source"), static_cast<int>(
-            state_.routing().usb.input56Source.value.value_or(
+            state_.routing().usbAudio.mode.value.value_or(model::UsbMode::Streaming)));
+        routing.insert(QStringLiteral("input56Assignment"), static_cast<int>(
+            state_.routing().usbAudio.input56Assignment.value.value_or(
                 model::UsbPlaybackAssignment::AnalogInput)));
-        routing.insert(QStringLiteral("input78Source"), static_cast<int>(
-            state_.routing().usb.input78Source.value.value_or(
+        routing.insert(QStringLiteral("input78Assignment"), static_cast<int>(
+            state_.routing().usbAudio.input78Assignment.value.value_or(
                 model::UsbPlaybackAssignment::AnalogInput)));
         routing.insert(QStringLiteral("monitorStereoLink"),
-                       state_.routing().monitor.stereoLinked.value.value_or(false));
-        QJsonArray monitorSources;
-        for (const auto& monitor : state_.routing().monitor.outputSources) {
-            monitorSources.append(static_cast<int>(
-                monitor.value.value_or(model::MonitorRouteSource::MonitorMix)));
+                       state_.monitorLink().stereoLinked.value.value_or(false));
+        QJsonArray monitorOutputFeeds;
+        for (const auto& output : state_.routing().usbAudio.monitorOutputFeeds) {
+            monitorOutputFeeds.append(static_cast<int>(
+                output.value.value_or(model::PhysicalMonitorOutputFeed::NominalMonitorMix)));
         }
-        routing.insert(QStringLiteral("monitorSources"), monitorSources);
+        routing.insert(QStringLiteral("monitorOutputFeeds"), monitorOutputFeeds);
         routing.insert(QStringLiteral("bluetoothUsbPhonesOnly"),
                        state_.routing().headphones.bluetoothUsbPhonesOnly.value.value_or(false));
         routing.insert(QStringLiteral("headphoneSource"), static_cast<int>(
@@ -705,7 +759,8 @@ bool Flow8Device::loadAppSnapshot(const int libraryIndex)
             const QJsonObject root = parsed.object();
             const QString format = root.value(QStringLiteral("format")).toString();
             if (format != QStringLiteral("flow8-simulator-snapshot-v1")
-                && format != QStringLiteral("flow8-simulator-snapshot-v2")) {
+                && format != QStringLiteral("flow8-simulator-snapshot-v2")
+                && format != QStringLiteral("flow8-simulator-snapshot-v3")) {
                 return false;
             }
             const QString source = QString::fromLatin1(simulatorSource);
@@ -819,20 +874,24 @@ bool Flow8Device::loadAppSnapshot(const int libraryIndex)
                         static_cast<model::UsbMode>(usbMode),
                         model::EvidenceStatus::Unknown, source);
                 }
-                if (routing.contains(QStringLiteral("input56Source"))) {
+                const QString input56Key = format == QStringLiteral("flow8-simulator-snapshot-v3")
+                    ? QStringLiteral("input56Assignment") : QStringLiteral("input56Source");
+                if (routing.contains(input56Key)) {
                     const int assignment =
-                        routing.value(QStringLiteral("input56Source")).toInt(-1);
+                        routing.value(input56Key).toInt(-1);
                     if (assignment >= 0 && assignment <= 1) {
-                        (void)state_.setUsbPlaybackAssignment(
+                        (void)state_.setUsbInputAssignment(
                             0, static_cast<model::UsbPlaybackAssignment>(assignment),
                             model::EvidenceStatus::Unknown, source);
                     }
                 }
-                if (routing.contains(QStringLiteral("input78Source"))) {
+                const QString input78Key = format == QStringLiteral("flow8-simulator-snapshot-v3")
+                    ? QStringLiteral("input78Assignment") : QStringLiteral("input78Source");
+                if (routing.contains(input78Key)) {
                     const int assignment =
-                        routing.value(QStringLiteral("input78Source")).toInt(-1);
+                        routing.value(input78Key).toInt(-1);
                     if (assignment >= 0 && assignment <= 1) {
-                        (void)state_.setUsbPlaybackAssignment(
+                        (void)state_.setUsbInputAssignment(
                             1, static_cast<model::UsbPlaybackAssignment>(assignment),
                             model::EvidenceStatus::Unknown, source);
                     }
@@ -861,14 +920,16 @@ bool Flow8Device::loadAppSnapshot(const int libraryIndex)
                 (void)state_.setMonitorStereoLink(
                     routing.value(QStringLiteral("monitorStereoLink")).toBool(),
                     model::EvidenceStatus::Unknown, source);
-                const auto monitorSources =
-                    routing.value(QStringLiteral("monitorSources")).toArray();
-                for (int monitor = 0; monitor < monitorSources.size() && monitor < 2;
-                     ++monitor) {
-                    const int routeSource = monitorSources.at(monitor).toInt(-1);
-                    if (routeSource >= 0 && routeSource <= 2) {
-                        (void)state_.setMonitorRouteSource(
-                            monitor, static_cast<model::MonitorRouteSource>(routeSource),
+                const QString monitorFeedsKey =
+                    format == QStringLiteral("flow8-simulator-snapshot-v3")
+                    ? QStringLiteral("monitorOutputFeeds") : QStringLiteral("monitorSources");
+                const auto monitorOutputFeeds = routing.value(monitorFeedsKey).toArray();
+                for (int output = 0; output < monitorOutputFeeds.size() && output < 2;
+                     ++output) {
+                    const int feed = monitorOutputFeeds.at(output).toInt(-1);
+                    if (feed >= 0 && feed <= 2) {
+                        (void)state_.setPhysicalMonitorOutputFeed(
+                            output, static_cast<model::PhysicalMonitorOutputFeed>(feed),
                             model::EvidenceStatus::Unknown, source);
                     }
                 }
@@ -973,7 +1034,7 @@ bool Flow8Device::setUsbMode(const model::UsbMode mode)
                              QString::fromLatin1(simulatorSource));
 }
 
-bool Flow8Device::setUsbPlaybackAssignment(
+bool Flow8Device::setUsbInputAssignment(
     const int pairIndex, const model::UsbPlaybackAssignment assignment)
 {
     if (!isControlAvailable(Control::Routing)) {
@@ -981,21 +1042,21 @@ bool Flow8Device::setUsbPlaybackAssignment(
             "Flow8Device", "USB routing is unavailable."));
         return false;
     }
-    return state_.setUsbPlaybackAssignment(
+    return state_.setUsbInputAssignment(
         pairIndex, assignment, model::EvidenceStatus::Unknown,
         QString::fromLatin1(simulatorSource));
 }
 
-bool Flow8Device::setMonitorRouteSource(
-    const int monitorIndex, const model::MonitorRouteSource source)
+bool Flow8Device::setPhysicalMonitorOutputFeed(
+    const int outputIndex, const model::PhysicalMonitorOutputFeed feed)
 {
     if (!isControlAvailable(Control::Routing)) {
         reject(Control::Routing, QCoreApplication::translate(
-            "Flow8Device", "Monitor routing is unavailable."));
+            "Flow8Device", "USB audio output routing is unavailable."));
         return false;
     }
-    return state_.setMonitorRouteSource(
-        monitorIndex, source, model::EvidenceStatus::Unknown,
+    return state_.setPhysicalMonitorOutputFeed(
+        outputIndex, feed, model::EvidenceStatus::Unknown,
         QString::fromLatin1(simulatorSource));
 }
 
@@ -1434,20 +1495,20 @@ void Flow8Device::initializeSimulatorProfile()
         }
         }
     }
-    routing.usb.mode = model::StateValue<model::UsbMode>::known(
+    routing.usbAudio.mode = model::StateValue<model::UsbMode>::known(
         model::UsbMode::Streaming, model::EvidenceStatus::Synthetic,
         QString::fromLatin1(simulatorSource));
-    routing.usb.input56Source =
+    routing.usbAudio.input56Assignment =
         model::StateValue<model::UsbPlaybackAssignment>::known(
             model::UsbPlaybackAssignment::AnalogInput,
             model::EvidenceStatus::Synthetic, QString::fromLatin1(simulatorSource));
-    routing.usb.input78Source =
+    routing.usbAudio.input78Assignment =
         model::StateValue<model::UsbPlaybackAssignment>::known(
             model::UsbPlaybackAssignment::AnalogInput,
             model::EvidenceStatus::Synthetic, QString::fromLatin1(simulatorSource));
-    for (auto& source : routing.monitor.outputSources) {
-        source = model::StateValue<model::MonitorRouteSource>::known(
-            model::MonitorRouteSource::MonitorMix,
+    for (auto& output : routing.usbAudio.monitorOutputFeeds) {
+        output = model::StateValue<model::PhysicalMonitorOutputFeed>::known(
+            model::PhysicalMonitorOutputFeed::NominalMonitorMix,
             model::EvidenceStatus::Synthetic, QString::fromLatin1(simulatorSource));
     }
     for (auto& route : routing.fxOutputRoutes) {
@@ -1465,8 +1526,12 @@ void Flow8Device::initializeSimulatorProfile()
         model::RoutingTapPoint::PostFader, model::EvidenceStatus::Synthetic,
         QString::fromLatin1(simulatorSource));
     routing.headphones.bluetoothUsbPhonesOnly = simulatorBool(false);
-    routing.monitor.stereoLinked = simulatorBool(false);
     state_.replaceRouting(std::move(routing));
+    (void)state_.setMonitorStereoLink(
+        false, model::EvidenceStatus::Synthetic,
+        QString::fromLatin1(simulatorSource));
+
+    state_.replaceUsbAudioEndpoints(model::createUsbAudioEndpointProfile());
 
     auto outputs = model::createPhysicalOutputProfile();
     for (auto& output : outputs) {

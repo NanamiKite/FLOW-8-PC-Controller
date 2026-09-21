@@ -42,6 +42,8 @@ void mergeCounted(model::StateValue<T>& target, T value,
 Flow8State::Flow8State(QObject* parent)
     : QObject(parent)
     , signalSources_(model::createSignalSourceProfile())
+    , usbAudioEndpoints_(model::createUsbAudioEndpointProfile())
+    , monitorLink_(model::createMonitorLinkProfile())
     , routing_(model::createRoutingProfile())
     , physicalOutputs_(model::createPhysicalOutputProfile())
 {
@@ -96,6 +98,30 @@ const QVector<model::SignalSourceState>& Flow8State::signalSources() const noexc
 void Flow8State::replaceSignalSources(QVector<model::SignalSourceState> sources)
 {
     signalSources_ = std::move(sources);
+    emit stateReset();
+}
+
+const QVector<model::UsbAudioEndpointState>&
+Flow8State::usbAudioEndpoints() const noexcept
+{
+    return usbAudioEndpoints_;
+}
+
+const model::UsbAudioEndpointState* Flow8State::usbAudioEndpoint(
+    const model::UsbAudioEndpointId id) const noexcept
+{
+    for (const auto& endpoint : usbAudioEndpoints_) {
+        if (endpoint.id == id) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
+}
+
+void Flow8State::replaceUsbAudioEndpoints(
+    QVector<model::UsbAudioEndpointState> endpoints)
+{
+    usbAudioEndpoints_ = std::move(endpoints);
     emit stateReset();
 }
 
@@ -699,42 +725,45 @@ bool Flow8State::failRouteLevel(
 bool Flow8State::setUsbMode(const model::UsbMode mode,
                             const model::EvidenceStatus evidence, const QString& source)
 {
-    if (!model::mergeObservedValue(routing_.usb.mode, mode, evidence, source)) {
+    if (!model::mergeObservedValue(routing_.usbAudio.mode, mode, evidence, source)) {
         return false;
     }
+    emit usbAudioChanged();
     emit routingChanged();
     return true;
 }
 
-bool Flow8State::setUsbPlaybackAssignment(
+bool Flow8State::setUsbInputAssignment(
     const int pairIndex, const model::UsbPlaybackAssignment assignment,
     const model::EvidenceStatus evidence, const QString& source)
 {
     model::StateValue<model::UsbPlaybackAssignment>* target = nullptr;
     if (pairIndex == 0) {
-        target = &routing_.usb.input56Source;
+        target = &routing_.usbAudio.input56Assignment;
     } else if (pairIndex == 1) {
-        target = &routing_.usb.input78Source;
+        target = &routing_.usbAudio.input78Assignment;
     }
     if (target == nullptr
         || !model::mergeObservedValue(*target, assignment, evidence, source)) {
         return false;
     }
+    emit usbAudioChanged();
     emit routingChanged();
     return true;
 }
 
-bool Flow8State::setMonitorRouteSource(
-    const int monitorIndex, const model::MonitorRouteSource routeSource,
+bool Flow8State::setPhysicalMonitorOutputFeed(
+    const int outputIndex, const model::PhysicalMonitorOutputFeed feed,
     const model::EvidenceStatus evidence, const QString& source)
 {
-    if (monitorIndex < 0
-        || monitorIndex >= static_cast<int>(routing_.monitor.outputSources.size())
+    if (outputIndex < 0
+        || outputIndex >= static_cast<int>(routing_.usbAudio.monitorOutputFeeds.size())
         || !model::mergeObservedValue(
-            routing_.monitor.outputSources[static_cast<std::size_t>(monitorIndex)],
-            routeSource, evidence, source)) {
+            routing_.usbAudio.monitorOutputFeeds[static_cast<std::size_t>(outputIndex)],
+            feed, evidence, source)) {
         return false;
     }
+    emit usbAudioChanged();
     emit routingChanged();
     return true;
 }
@@ -811,11 +840,17 @@ bool Flow8State::setMonitorStereoLink(const bool linked,
                                       const QString& source)
 {
     if (!model::mergeObservedValue(
-            routing_.monitor.stereoLinked, linked, evidence, source)) {
+            monitorLink_.stereoLinked, linked, evidence, source)) {
         return false;
     }
+    emit monitorLinkChanged();
     emit routingChanged();
     return true;
+}
+
+const model::MonitorLinkState& Flow8State::monitorLink() const noexcept
+{
+    return monitorLink_;
 }
 
 const QVector<model::PhysicalOutputState>& Flow8State::physicalOutputs() const noexcept

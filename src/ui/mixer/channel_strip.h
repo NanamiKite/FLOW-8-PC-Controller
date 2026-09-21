@@ -52,6 +52,7 @@ private:
     QLabel* eqIndicator_ {};
     QLabel* compressorIndicator_ {};
     QLabel* sendIndicator_ {};
+    QLabel* phantomIndicator_ {};
     QLabel* routeStatus_ {};
     QLabel* panLabel_ {};
     FaderWidget* fader_ {};

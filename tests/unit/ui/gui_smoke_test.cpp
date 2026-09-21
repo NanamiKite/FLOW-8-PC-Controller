@@ -12,13 +12,16 @@
 #include "ui/setup/setup_window.h"
 #include "ui/settings/settings_dialog.h"
 #include "ui/stage/stage_view.h"
+#include "ui/ui_text.h"
 #include "ui/widgets/eq_graph_widget.h"
 #include "ui/widgets/fader_widget.h"
+#include "ui/widgets/meter_widget.h"
 
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QLabel>
 #include <QListWidget>
 #include <QSlider>
 #include <QTabWidget>
@@ -65,6 +68,17 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
 
     auto* fader = window.findChild<flow8::ui::FaderWidget*>(QStringLiteral("fader0"));
     QVERIFY(fader != nullptr);
+    auto* initialStrip = window.findChild<flow8::ui::ChannelStrip*>(
+        QStringLiteral("channelStrip0"));
+    QVERIFY(initialStrip != nullptr);
+    auto* firstMeter = initialStrip->findChild<flow8::ui::MeterWidget*>();
+    QVERIFY(firstMeter != nullptr);
+    QCOMPARE(flow8::ui::meterDbFromNormalized(0.0), -60.0);
+    QCOMPARE(flow8::ui::meterDbFromNormalized(1.0), 10.0);
+    QCOMPARE(firstMeter->height(), fader->height());
+    auto* routeStatus = window.findChild<QLabel*>(QStringLiteral("routeStatus0"));
+    QVERIFY(routeStatus != nullptr);
+    QVERIFY(routeStatus->isHidden());
     fader->setFocus();
     QTest::keyClick(fader, Qt::Key_Home);
     for (int step = 0; step < 17; ++step) {
@@ -76,6 +90,29 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     auto* firstStrip = window.findChild<flow8::ui::ChannelStrip*>(
         QStringLiteral("channelStrip0"));
     QVERIFY(firstStrip != nullptr);
+    auto* secondStrip = window.findChild<flow8::ui::ChannelStrip*>(
+        QStringLiteral("channelStrip1"));
+    auto* thirdStrip = window.findChild<flow8::ui::ChannelStrip*>(
+        QStringLiteral("channelStrip2"));
+    QVERIFY(secondStrip != nullptr);
+    QVERIFY(thirdStrip != nullptr);
+    auto* input1PhantomIndicator = firstStrip->findChild<QLabel*>(
+        QStringLiteral("phantomIndicator0"));
+    auto* input2PhantomIndicator = secondStrip->findChild<QLabel*>(
+        QStringLiteral("phantomIndicator1"));
+    auto* input3PhantomIndicator = thirdStrip->findChild<QLabel*>(
+        QStringLiteral("phantomIndicator2"));
+    QVERIFY(input1PhantomIndicator != nullptr);
+    QVERIFY(input2PhantomIndicator != nullptr);
+    QVERIFY(input3PhantomIndicator != nullptr);
+    QTRY_VERIFY(input1PhantomIndicator->isVisible());
+    QTRY_VERIFY(input2PhantomIndicator->isVisible());
+    QVERIFY(input3PhantomIndicator->isHidden());
+    QCOMPARE(input1PhantomIndicator->property("active").toBool(), false);
+    QVERIFY(device.setChannelPhantom(0, true));
+    QTRY_COMPARE(input1PhantomIndicator->property("active").toBool(), true);
+    QVERIFY(device.setChannelPhantom(0, false));
+    QTRY_COMPARE(input1PhantomIndicator->property("active").toBool(), false);
     QTest::mouseClick(firstStrip, Qt::LeftButton);
     auto* inspector = window.findChild<flow8::ui::InspectorWidget*>(
         QStringLiteral("mixerInputInspector"));
@@ -83,6 +120,43 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QTRY_VERIFY(inspector->isVisible());
     QCOMPARE(inspector->selectedChannel(), 0);
     QCOMPARE(inspector->selectedDestination(), flow8::model::RoutingDestination::Main);
+    auto* inspectorPhantom = inspector->findChild<QCheckBox*>(
+        QStringLiteral("inspectorPhantom"));
+    QVERIFY(inspectorPhantom != nullptr);
+    QTRY_VERIFY(inspectorPhantom->isVisible());
+    QCOMPARE(inspectorPhantom->property("class").toString(),
+             QStringLiteral("phantomControl"));
+    auto* inspectorPan = inspector->findChild<QSlider*>(
+        QStringLiteral("inspectorPan"));
+    auto* inspectorPanValue = inspector->findChild<QLabel*>(
+        QStringLiteral("inspectorPanValue"));
+    QVERIFY(inspectorPan != nullptr);
+    QVERIFY(inspectorPanValue != nullptr);
+    inspectorPan->setValue(-37);
+    QCOMPARE(inspectorPanValue->text(), flow8::ui::panBalanceValueText(-37));
+    QCOMPARE(device.state().channel(0)->pan.value, std::optional(-0.37));
+    inspectorPan->setValue(0);
+    QCOMPARE(inspectorPanValue->text(), flow8::ui::panBalanceValueText(0));
+    auto* inspectorGain = inspector->findChild<QSlider*>(
+        QStringLiteral("inspectorGain"));
+    auto* inspectorGainValue = inspector->findChild<QLabel*>(
+        QStringLiteral("inspectorGainValue"));
+    auto* lowCutFrequency = inspector->findChild<QSlider*>(
+        QStringLiteral("lowCutFrequency"));
+    auto* lowCutFrequencyValue = inspector->findChild<QLabel*>(
+        QStringLiteral("lowCutFrequencyValue"));
+    QVERIFY(inspectorGain != nullptr);
+    QVERIFY(inspectorGainValue != nullptr);
+    QVERIFY(lowCutFrequency != nullptr);
+    QVERIFY(lowCutFrequencyValue != nullptr);
+    QCOMPARE(inspectorGain->minimum(), -200);
+    QCOMPARE(inspectorGain->maximum(), 600);
+    inspectorGain->setValue(-75);
+    QCOMPARE(inspectorGainValue->text(), flow8::ui::decibelValueText(-7.5));
+    QVERIFY(qAbs(device.state().channel(0)->gain.value.value_or(-1.0)
+                 - flow8::model::normalizedInputGainFromDb(-7.5)) < 0.000001);
+    lowCutFrequency->setValue(600);
+    QCOMPARE(lowCutFrequencyValue->text(), flow8::ui::frequencyValueText(600.0));
     auto* inspectorTabs = inspector->findChild<QTabWidget*>();
     QVERIFY(inspectorTabs != nullptr);
     inspectorTabs->setCurrentIndex(1);
@@ -96,6 +170,14 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
             QStringLiteral("eqGain%1").arg(band));
         QVERIFY(eqGain != nullptr);
         QCOMPARE(eqGain->orientation(), Qt::Vertical);
+        QVERIFY2(channelEqGraph->geometry().bottom() <= eqGain->geometry().top(),
+                 "EQ graph must be above the band faders");
+        const auto* eqValue = inspector->findChild<QLabel*>(
+            QStringLiteral("eqBandValue%1").arg(band));
+        QVERIFY(eqValue != nullptr);
+        QVERIFY2(!eqValue->text().contains(QRegularExpression(
+                     QStringLiteral("[eE][+-]?\\d"))),
+                 "EQ value must not use scientific notation");
     }
 
     const double frequencyBefore = device.state().channel(0)->eq.frequencyHz[0]
@@ -154,6 +236,52 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
                  0, flow8::model::RoutingDestination::Main)->effectiveValue(), 0.31);
     QCOMPARE(device.state().channel(0)->pan.value, originalPan);
     QCOMPARE(device.state().channel(0)->muted.value, originalMute);
+
+    QTest::mouseDClick(firstStrip, Qt::LeftButton);
+    auto* channelEdit = window.findChild<flow8::ui::ChannelEditView*>(
+        QStringLiteral("channelEditView"));
+    QVERIFY(channelEdit != nullptr);
+    QTRY_VERIFY(channelEdit->isVisible());
+    QCOMPARE(channelEdit->channel(), 0);
+    auto* channelEditPhantom = channelEdit->findChild<QCheckBox*>(
+        QStringLiteral("channelEditPhantom"));
+    QVERIFY(channelEditPhantom != nullptr);
+    QTRY_VERIFY(channelEditPhantom->isVisible());
+    QCOMPARE(channelEditPhantom->property("class").toString(),
+             QStringLiteral("phantomControl"));
+    QVERIFY(device.setChannelPhantom(0, true));
+    QTRY_VERIFY(channelEditPhantom->isChecked());
+    auto* channelEditPan = channelEdit->findChild<QSlider*>(
+        QStringLiteral("channelEditPan"));
+    auto* channelEditPanValue = channelEdit->findChild<QLabel*>(
+        QStringLiteral("channelEditPanValue"));
+    QVERIFY(channelEditPan != nullptr);
+    QVERIFY(channelEditPanValue != nullptr);
+    channelEditPan->setValue(42);
+    QCOMPARE(channelEditPanValue->text(), flow8::ui::panBalanceValueText(42));
+    QCOMPARE(device.state().channel(0)->pan.value, std::optional(0.42));
+    auto* channelEditGain = channelEdit->findChild<QSlider*>(
+        QStringLiteral("channelEditGain"));
+    auto* channelEditGainValue = channelEdit->findChild<QLabel*>(
+        QStringLiteral("channelEditGainValue"));
+    QVERIFY(channelEditGain != nullptr);
+    QVERIFY(channelEditGainValue != nullptr);
+    QCOMPARE(channelEditGain->minimum(), -200);
+    QCOMPARE(channelEditGain->maximum(), 600);
+    channelEditGain->setValue(420);
+    QCOMPARE(channelEditGainValue->text(), flow8::ui::decibelValueText(42.0));
+    QVERIFY(qAbs(device.state().channel(0)->gain.value.value_or(-1.0)
+                 - flow8::model::normalizedInputGainFromDb(42.0)) < 0.000001);
+
+    channelEdit->setChannel(1);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(channelEditPhantom->isVisible());
+    channelEdit->setChannel(2);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(channelEditPhantom->isHidden());
+    QTest::keyClick(&window, Qt::Key_Escape);
+    QTRY_VERIFY(mixer->isVisible());
+
     auto* monitor2Navigation = window.findChild<QToolButton*>(QStringLiteral("layerMonitor2"));
     QVERIFY(monitor2Navigation != nullptr);
     QTest::mouseClick(monitor2Navigation, Qt::LeftButton);
@@ -164,6 +292,14 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QVERIFY(master != nullptr);
     QTRY_VERIFY(master->isVisible());
     QVERIFY(master->findChild<QSlider*>(QStringLiteral("busLevel")) != nullptr);
+    for (int band = 0; band < 9; ++band) {
+        const auto* busEqValue = master->findChild<QLabel*>(
+            QStringLiteral("busEqValue%1").arg(band));
+        QVERIFY(busEqValue != nullptr);
+        QVERIFY2(!busEqValue->text().contains(QRegularExpression(
+                     QStringLiteral("[eE][+-]?\\d"))),
+                 "Bus EQ value must not use scientific notation");
+    }
 
     auto* mainNavigation = window.findChild<QToolButton*>(QStringLiteral("layerMain"));
     QVERIFY(mainNavigation != nullptr);
@@ -220,9 +356,10 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
         QStringLiteral("hardwareSnapshot\\d+"))).size(), 15);
     setupNavigation->setCurrentRow(4);
     QCoreApplication::processEvents();
-    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbInput56Source")) != nullptr);
-    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbInput78Source")) != nullptr);
-    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("monitorRouteSource0")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbInput56Assignment")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbInput78Assignment")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbMonitorOutputFeed0")) != nullptr);
+    QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("usbMonitorOutputFeed1")) != nullptr);
     QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("headphoneSource")) != nullptr);
     QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("headphoneTapPoint")) != nullptr);
     QVERIFY(setup->findChild<QCheckBox*>(
@@ -234,8 +371,20 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
         QStringLiteral("monitorStereoLink"));
     QVERIFY(stereoLink != nullptr);
     stereoLink->setChecked(true);
-    QCOMPARE(device.state().routing().monitor.stereoLinked.value,
+    QCOMPARE(device.state().monitorLink().stereoLinked.value,
              std::optional(true));
+    mixer->setDestination(flow8::model::RoutingDestination::Monitor1);
+    fader->setFocus();
+    QTest::keyClick(fader, Qt::Key_Home);
+    for (int step = 0; step < 43; ++step) {
+        QTest::keyClick(fader, Qt::Key_Down);
+    }
+    QCOMPARE(device.state().routeLevel(
+                 0, flow8::model::RoutingDestination::Monitor1)->effectiveValue(), 0.57);
+    QCOMPARE(device.state().routeLevel(
+                 0, flow8::model::RoutingDestination::Monitor2)->effectiveValue(), 0.57);
+    mixer->setDestination(flow8::model::RoutingDestination::Monitor2);
+    QCOMPARE(fader->value(), 0.57);
     setupNavigation->setCurrentRow(3);
     QCoreApplication::processEvents();
     QVERIFY(setup->findChild<QComboBox*>(QStringLiteral("setupLanguage")) != nullptr);

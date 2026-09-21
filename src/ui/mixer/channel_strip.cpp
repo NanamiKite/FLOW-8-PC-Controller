@@ -39,6 +39,7 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     , eqIndicator_(indicator({}, this))
     , compressorIndicator_(indicator({}, this))
     , sendIndicator_(indicator({}, this))
+    , phantomIndicator_(indicator(QStringLiteral("48 V"), this))
     , routeStatus_(new QLabel(this))
     , panLabel_(new QLabel(this))
     , fader_(new FaderWidget(this))
@@ -72,10 +73,15 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     panSlider_->setRange(-100, 100);
     panSlider_->setObjectName(QStringLiteral("pan%1").arg(channelIndex));
     routeStatus_->setProperty("class", QStringLiteral("secondaryText"));
+    routeStatus_->setObjectName(QStringLiteral("routeStatus%1").arg(channelIndex));
     routeStatus_->setAlignment(Qt::AlignCenter);
+    phantomIndicator_->setObjectName(QStringLiteral("phantomIndicator%1").arg(channelIndex));
+    phantomIndicator_->setProperty("class", QStringLiteral("phantomIndicator"));
+    phantomIndicator_->setProperty("active", false);
 
     auto* indicators = new QHBoxLayout;
     indicators->setSpacing(4);
+    indicators->addWidget(phantomIndicator_);
     indicators->addWidget(eqIndicator_);
     indicators->addWidget(compressorIndicator_);
     indicators->addWidget(sendIndicator_);
@@ -83,8 +89,8 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     auto* faderRow = new QHBoxLayout;
     faderRow->setContentsMargins(8, 0, 8, 0);
     faderRow->setSpacing(8);
-    faderRow->addWidget(meter_, 0, Qt::AlignVCenter);
-    faderRow->addWidget(fader_, 1, Qt::AlignHCenter);
+    faderRow->addWidget(meter_);
+    faderRow->addWidget(fader_);
 
     auto* buttons = new QHBoxLayout;
     buttons->setSpacing(6);
@@ -170,6 +176,17 @@ void ChannelStrip::refresh()
         ? *channel->name.value : inputDisplayName(channel->inputId));
     typeLabel_->setText(inputTypeDisplayName(channel->inputType));
     compressorIndicator_->setVisible(channel->capabilities.compressor);
+    const bool phantomSupported = channel->capabilities.phantom48V
+        && channel->phantom48V.has_value();
+    const bool phantomActive = phantomSupported
+        && channel->phantom48V->value.value_or(false);
+    phantomIndicator_->setVisible(phantomSupported);
+    if (phantomIndicator_->property("active").toBool() != phantomActive) {
+        phantomIndicator_->setProperty("active", phantomActive);
+        phantomIndicator_->style()->unpolish(phantomIndicator_);
+        phantomIndicator_->style()->polish(phantomIndicator_);
+        phantomIndicator_->update();
+    }
     const auto icon = channel->icon.value.value_or(model::ChannelIcon::None);
     QStyle::StandardPixmap pixmap = QStyle::SP_FileIcon;
     switch (icon) {
@@ -191,12 +208,15 @@ void ChannelStrip::refresh()
     if (route != nullptr && !route->error.isEmpty()) {
         routeStatus_->setText(uiText("Error"));
         routeStatus_->setProperty("routeState", QStringLiteral("error"));
+        routeStatus_->show();
     } else if (route != nullptr && route->pending.has_value()) {
         routeStatus_->setText(uiText("Pending"));
         routeStatus_->setProperty("routeState", QStringLiteral("pending"));
+        routeStatus_->show();
     } else {
-        routeStatus_->setText(uiText("Confirmed"));
+        routeStatus_->clear();
         routeStatus_->setProperty("routeState", QStringLiteral("confirmed"));
+        routeStatus_->hide();
     }
     muteButton_->setChecked(channel->muted.value.value_or(false));
     soloButton_->setChecked(channel->soloed.value.value_or(false));
@@ -217,6 +237,8 @@ void ChannelStrip::retranslateUi()
     eqIndicator_->setText(QStringLiteral("EQ"));
     compressorIndicator_->setText(uiText("Compressor"));
     sendIndicator_->setText(uiText("Route Level"));
+    phantomIndicator_->setText(QStringLiteral("48 V"));
+    phantomIndicator_->setToolTip(uiText("Phantom Power"));
     panLabel_->setText(uiText("Pan / Balance"));
     muteButton_->setText(uiText("Mute"));
     muteButton_->setToolTip(uiText("Mute"));

@@ -105,25 +105,29 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     levelRow->addWidget(busLimiter_, 1);
     busLayout->addLayout(busHeader);
     busLayout->addLayout(levelRow);
-    auto* busEqRow = new QHBoxLayout;
+    auto* busEqRow = new QVBoxLayout;
+    busEqRow->setSpacing(8);
     busEqGraph_->setObjectName(QStringLiteral("busEqGraph"));
-    busEqRow->addWidget(busEqGraph_, 2);
+    busEqRow->addWidget(busEqGraph_, 3);
     auto* busSliders = new QGridLayout;
+    busSliders->setHorizontalSpacing(12);
     for (int band = 0; band < 9; ++band) {
         auto* slider = new QSlider(Qt::Vertical, busPage);
         slider->setRange(-150, 150);
         slider->setMinimumHeight(110);
         slider->setObjectName(QStringLiteral("busEqGain%1").arg(band));
         busEqSliders_.append(slider);
+        auto* valueLabel = new QLabel(busPage);
+        valueLabel->setObjectName(QStringLiteral("busEqValue%1").arg(band));
+        valueLabel->setAlignment(Qt::AlignCenter);
+        busEqLabels_.append(valueLabel);
         busSliders->addWidget(slider, 0, band);
-        busSliders->addWidget(new QLabel(
-            QString::number(model::busEqFrequenciesHz[static_cast<std::size_t>(band)], 'g', 3),
-            busPage), 1, band, Qt::AlignCenter);
+        busSliders->addWidget(valueLabel, 1, band, Qt::AlignCenter);
         connect(slider, &QSlider::valueChanged, this, [this, band](const int value) {
             (void)device_.setBusEqGain(selectedBus_, band, value / 10.0);
         });
     }
-    busEqRow->addLayout(busSliders, 3);
+    busEqRow->addLayout(busSliders, 2);
     busLayout->addLayout(busEqRow, 1);
     connect(busEqGraph_, &EqGraphWidget::bandGainEdited, this,
             [this](const int band, const double gainDb) {
@@ -336,14 +340,31 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     usbLayout->addLayout(usbModeRow);
     auto* usb56Label = new QLabel(usbCard);
     usb56Label->setObjectName(QStringLiteral("usbInput56Label"));
-    usbInput56_->setObjectName(QStringLiteral("usbInput56Source"));
+    usbInput56_->setObjectName(QStringLiteral("usbInput56Assignment"));
     usbLayout->addWidget(usb56Label);
     usbLayout->addWidget(usbInput56_);
     auto* usb78Label = new QLabel(usbCard);
     usb78Label->setObjectName(QStringLiteral("usbInput78Label"));
-    usbInput78_->setObjectName(QStringLiteral("usbInput78Source"));
+    usbInput78_->setObjectName(QStringLiteral("usbInput78Assignment"));
     usbLayout->addWidget(usb78Label);
     usbLayout->addWidget(usbInput78_);
+    for (int output = 0; output < 2; ++output) {
+        auto* label = new QLabel(usbCard);
+        label->setObjectName(QStringLiteral("usbMonitorOutputLabel%1").arg(output));
+        auto* feed = new QComboBox(usbCard);
+        feed->setObjectName(QStringLiteral("usbMonitorOutputFeed%1").arg(output));
+        monitorOutputFeeds_.append(feed);
+        usbLayout->addWidget(label);
+        usbLayout->addWidget(feed);
+        connect(feed, &QComboBox::currentIndexChanged, this,
+                [this, output, feed](const int index) {
+                    if (index >= 0) {
+                        (void)device_.setPhysicalMonitorOutputFeed(
+                            output, static_cast<model::PhysicalMonitorOutputFeed>(
+                                feed->itemData(index).toInt()));
+                    }
+                });
+    }
 
     auto* monitorCard = new QWidget(advancedRouting);
     monitorCard->setProperty("class", QStringLiteral("detailCard"));
@@ -353,23 +374,6 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     monitorSection->setProperty("class", QStringLiteral("sectionLabel"));
     monitorLayout->addWidget(monitorSection);
     monitorStereoLink_->setObjectName(QStringLiteral("monitorStereoLink"));
-    for (int monitor = 0; monitor < 2; ++monitor) {
-        auto* label = new QLabel(monitorCard);
-        label->setObjectName(QStringLiteral("monitorSourceLabel%1").arg(monitor));
-        auto* source = new QComboBox(monitorCard);
-        source->setObjectName(QStringLiteral("monitorRouteSource%1").arg(monitor));
-        monitorSources_.append(source);
-        monitorLayout->addWidget(label);
-        monitorLayout->addWidget(source);
-        connect(source, &QComboBox::currentIndexChanged, this,
-                [this, monitor, source](const int index) {
-                    if (index >= 0) {
-                        (void)device_.setMonitorRouteSource(
-                            monitor, static_cast<model::MonitorRouteSource>(
-                                source->itemData(index).toInt()));
-                    }
-                });
-    }
     monitorLayout->addWidget(monitorStereoLink_);
     monitorLayout->addStretch();
 
@@ -461,14 +465,14 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     });
     connect(usbInput56_, &QComboBox::currentIndexChanged, this, [this](const int index) {
         if (index >= 0) {
-            (void)device_.setUsbPlaybackAssignment(
+            (void)device_.setUsbInputAssignment(
                 0, static_cast<model::UsbPlaybackAssignment>(
                     usbInput56_->itemData(index).toInt()));
         }
     });
     connect(usbInput78_, &QComboBox::currentIndexChanged, this, [this](const int index) {
         if (index >= 0) {
-            (void)device_.setUsbPlaybackAssignment(
+            (void)device_.setUsbInputAssignment(
                 1, static_cast<model::UsbPlaybackAssignment>(
                     usbInput78_->itemData(index).toInt()));
         }
@@ -576,7 +580,7 @@ void DetailPanel::refreshBus()
     if (bus->capabilities.limiter) features.append(uiText("Limiter"));
     if (bus->busId == model::BusId::Monitor1 || bus->busId == model::BusId::Monitor2) {
         features.append(uiText("Channel Sends · Pre/Post-Fader"));
-        if (device_.state().routing().monitor.stereoLinked.value.value_or(false)) {
+        if (device_.state().monitorLink().stereoLinked.value.value_or(false)) {
             features.append(uiText("MON1/2 LINKED"));
         }
     }
@@ -618,6 +622,10 @@ void DetailPanel::refreshBus()
         const QSignalBlocker blocker(busEqSliders_[band]);
         busEqSliders_[band]->setVisible(hasEq);
         busEqSliders_[band]->setValue(static_cast<int>(std::lround(gain * 10.0)));
+        busEqLabels_[band]->setVisible(hasEq);
+        busEqLabels_[band]->setText(QStringLiteral("%1\n%2")
+            .arg(frequencyValueText(model::busEqFrequenciesHz[index]),
+                 decibelValueText(gain)));
     }
     busEqGraph_->setBands(std::move(graphBands));
 }
@@ -715,26 +723,27 @@ void DetailPanel::refreshRouting()
     {
         const QSignalBlocker blocker(usbMode_);
         usbMode_->setCurrentIndex(usbMode_->findData(static_cast<int>(
-            routing.usb.mode.value.value_or(model::UsbMode::Streaming))));
+            routing.usbAudio.mode.value.value_or(model::UsbMode::Streaming))));
     }
     {
         const QSignalBlocker blocker(usbInput56_);
         usbInput56_->setCurrentIndex(usbInput56_->findData(static_cast<int>(
-            routing.usb.input56Source.value.value_or(
+            routing.usbAudio.input56Assignment.value.value_or(
                 model::UsbPlaybackAssignment::AnalogInput))));
     }
     {
         const QSignalBlocker blocker(usbInput78_);
         usbInput78_->setCurrentIndex(usbInput78_->findData(static_cast<int>(
-            routing.usb.input78Source.value.value_or(
+            routing.usbAudio.input78Assignment.value.value_or(
                 model::UsbPlaybackAssignment::AnalogInput))));
     }
-    for (int monitor = 0; monitor < monitorSources_.size(); ++monitor) {
-        const QSignalBlocker blocker(monitorSources_[monitor]);
-        monitorSources_[monitor]->setCurrentIndex(
-            monitorSources_[monitor]->findData(static_cast<int>(
-                routing.monitor.outputSources[static_cast<std::size_t>(monitor)]
-                    .value.value_or(model::MonitorRouteSource::MonitorMix))));
+    for (int output = 0; output < monitorOutputFeeds_.size(); ++output) {
+        const QSignalBlocker blocker(monitorOutputFeeds_[output]);
+        monitorOutputFeeds_[output]->setCurrentIndex(
+            monitorOutputFeeds_[output]->findData(static_cast<int>(
+                routing.usbAudio.monitorOutputFeeds[static_cast<std::size_t>(output)]
+                    .value.value_or(
+                        model::PhysicalMonitorOutputFeed::NominalMonitorMix))));
     }
     for (int effect = 0; effect < 2; ++effect) {
         for (int destination = 0; destination < 3; ++destination) {
@@ -766,7 +775,7 @@ void DetailPanel::refreshRouting()
     {
         const QSignalBlocker blocker(monitorStereoLink_);
         monitorStereoLink_->setChecked(
-            routing.monitor.stereoLinked.value.value_or(false));
+            device_.state().monitorLink().stereoLinked.value.value_or(false));
     }
     constexpr std::array outputIds {
         model::PhysicalOutputId::MainOut,
@@ -868,17 +877,17 @@ void DetailPanel::retranslateUi()
     findChild<QLabel*>(QStringLiteral("headphoneTapLabel"))->setText(
         uiText("Headphone Tap Point"));
     findChild<QLabel*>(QStringLiteral("usbRoutingSection"))->setText(
-        uiText("USB Return / Playback"));
+        uiText("USB Audio / Loopback"));
     findChild<QLabel*>(QStringLiteral("monitorRoutingSection"))->setText(
-        uiText("Monitor Outputs"));
+        uiText("MON1 / MON2 Mix Link"));
     findChild<QLabel*>(QStringLiteral("headphoneRoutingSection"))->setText(
         uiText("Headphones"));
     findChild<QLabel*>(QStringLiteral("fxRoutingSection"))->setText(uiText("FX Returns"));
     findChild<QLabel*>(QStringLiteral("outputRoutingSection"))->setText(
         uiText("Physical Output Settings"));
-    for (int monitor = 0; monitor < 2; ++monitor) {
-        findChild<QLabel*>(QStringLiteral("monitorSourceLabel%1").arg(monitor))->setText(
-            uiText("MON %1 Physical Output Source").arg(monitor + 1));
+    for (int output = 0; output < 2; ++output) {
+        findChild<QLabel*>(QStringLiteral("usbMonitorOutputLabel%1").arg(output))->setText(
+            uiText("Monitor OUT %1 Hardware Feed").arg(output + 1));
     }
     const int selectedUsbMode = usbMode_->currentData().toInt();
     {
@@ -899,23 +908,25 @@ void DetailPanel::retranslateUi()
         combo->addItem(analogLabel,
                        static_cast<int>(model::UsbPlaybackAssignment::AnalogInput));
         combo->addItem(usbLabel,
-                       static_cast<int>(model::UsbPlaybackAssignment::UsbReturn));
+                       static_cast<int>(model::UsbPlaybackAssignment::UsbAudioLoopback));
         combo->setCurrentIndex(qMax(0, combo->findData(selected)));
     };
     populateUsbAssignment(usbInput56_, uiText("Analog Input 5/6"),
-                          uiText("USB Return 1/2"));
+                          uiText("USB 1/2"));
     populateUsbAssignment(usbInput78_, uiText("Analog Input 7/8"),
-                          uiText("USB Return 3/4"));
-    for (auto* combo : monitorSources_) {
+                          uiText("USB 3/4"));
+    for (int output = 0; output < monitorOutputFeeds_.size(); ++output) {
+        auto* combo = monitorOutputFeeds_[output];
         const int selected = combo->currentData().toInt();
         const QSignalBlocker blocker(combo);
         combo->clear();
-        combo->addItem(uiText("Monitor Mix"),
-                       static_cast<int>(model::MonitorRouteSource::MonitorMix));
-        combo->addItem(uiText("USB Return 1/2"),
-                       static_cast<int>(model::MonitorRouteSource::UsbReturn12));
-        combo->addItem(uiText("USB Return 3/4"),
-                       static_cast<int>(model::MonitorRouteSource::UsbReturn34));
+        combo->addItem(
+            output == 0 ? uiText("MON1 Mix (Default)") : uiText("MON2 Mix (Default)"),
+            static_cast<int>(model::PhysicalMonitorOutputFeed::NominalMonitorMix));
+        combo->addItem(uiText("USB 1/2"),
+                       static_cast<int>(model::PhysicalMonitorOutputFeed::Usb12));
+        combo->addItem(uiText("USB 3/4"),
+                       static_cast<int>(model::PhysicalMonitorOutputFeed::Usb34));
         combo->setCurrentIndex(qMax(0, combo->findData(selected)));
     }
     const std::array<const char*, 6> fxRoutes {
@@ -948,7 +959,7 @@ void DetailPanel::retranslateUi()
             qMax(0, headphoneTapPoint_->findData(selectedTapPoint)));
     }
     bluetoothUsbPhonesOnly_->setText(uiText("Bluetooth / USB to Headphones Only"));
-    monitorStereoLink_->setText(uiText("MON1/2 Linked"));
+    monitorStereoLink_->setText(uiText("Stereo Link: MON1 ↔ MON2"));
     const std::array<const char*, 3> outputPadLabels {
         "MAIN OUT -10 dBV", "MON OUT 1 -10 dBV", "MON OUT 2 -10 dBV",
     };

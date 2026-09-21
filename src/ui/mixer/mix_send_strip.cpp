@@ -87,7 +87,7 @@ MixSendStrip::MixSendStrip(Flow8Device& device, const int inputIndex,
     faderRow->setContentsMargins(6, 0, 6, 0);
     faderRow->setSpacing(8);
     faderRow->addWidget(meter_);
-    faderRow->addWidget(fader_, 1, Qt::AlignHCenter);
+    faderRow->addWidget(fader_);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(9, 11, 9, 9);

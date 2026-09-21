@@ -56,6 +56,7 @@ private:
     QSlider* busLimiter_ {};
     EqGraphWidget* busEqGraph_ {};
     QVector<QSlider*> busEqSliders_;
+    QVector<QLabel*> busEqLabels_;
     QLabel* busLevelLabel_ {};
     QLabel* busBalanceLabel_ {};
     QLabel* busLimiterLabel_ {};
@@ -98,7 +99,7 @@ private:
     QComboBox* usbMode_ {};
     QComboBox* usbInput56_ {};
     QComboBox* usbInput78_ {};
-    QVector<QComboBox*> monitorSources_;
+    QVector<QComboBox*> monitorOutputFeeds_;
     QVector<QCheckBox*> fxOutputChecks_;
     QComboBox* headphoneSource_ {};
     QComboBox* headphoneTapPoint_ {};

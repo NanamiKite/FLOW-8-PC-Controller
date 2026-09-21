@@ -1692,5 +1692,53 @@ Simulator mode uses SYNTHETIC data. BLE, GATT and device commands still need har
         <source>MIDI SysEx dump is an official capability. Requesting a real dump needs hardware.</source>
         <translation>MIDI SysEx Dump 是官方能力；请求真实 Dump 需要硬件。</translation>
     </message>
+    <message>
+        <source>USB Audio / Loopback</source>
+        <translation>USB 音频 / 回环</translation>
+    </message>
+    <message>
+        <source>USB 1/2</source>
+        <translation>USB 1/2</translation>
+    </message>
+    <message>
+        <source>USB 3/4</source>
+        <translation>USB 3/4</translation>
+    </message>
+    <message>
+        <source>MON1 / MON2 Mix Link</source>
+        <translation>MON1 / MON2 混音联动</translation>
+    </message>
+    <message>
+        <source>Monitor OUT %1 Hardware Feed</source>
+        <translation>监听输出 %1 硬件信号源</translation>
+    </message>
+    <message>
+        <source>MON1 Mix (Default)</source>
+        <translation>MON1 混音（默认）</translation>
+    </message>
+    <message>
+        <source>MON2 Mix (Default)</source>
+        <translation>MON2 混音（默认）</translation>
+    </message>
+    <message>
+        <source>Stereo Link: MON1 ↔ MON2</source>
+        <translation>立体声联动：MON1 ↔ MON2</translation>
+    </message>
+    <message>
+        <source>Simulator links MON1/MON2 send and master faders; hardware propagation remains UNKNOWN.</source>
+        <translation>模拟器会联动 MON1/MON2 的发送推子和主推子；硬件联动规则仍为 UNKNOWN。</translation>
+    </message>
+    <message>
+        <source>Left %1</source>
+        <translation>左 %1</translation>
+    </message>
+    <message>
+        <source>Center 0</source>
+        <translation>中央 0</translation>
+    </message>
+    <message>
+        <source>Right %1</source>
+        <translation>右 %1</translation>
+    </message>
 </context>
 </TS>

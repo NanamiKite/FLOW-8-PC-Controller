@@ -50,11 +50,14 @@ private:
     QComboBox* channelIcon_ {};
     QCheckBox* channelVisible_ {};
     QSlider* gain_ {};
+    QLabel* gainValue_ {};
     QCheckBox* phantom_ {};
     QCheckBox* phase_ {};
     QCheckBox* lowCutEnabled_ {};
     QSlider* lowCutFrequency_ {};
+    QLabel* lowCutFrequencyValue_ {};
     QSlider* pan_ {};
+    QLabel* panValue_ {};
     QCheckBox* mute_ {};
     QCheckBox* solo_ {};
     QVector<QLabel*> channelFormLabels_;

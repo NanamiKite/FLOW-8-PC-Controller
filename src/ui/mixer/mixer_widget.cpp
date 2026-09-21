@@ -148,7 +148,10 @@ void MixerWidget::rebuild()
         stripsLayout_->addWidget(strip, 1);
         connect(strip, &ChannelStrip::selected, this, &MixerWidget::selectChannel);
         connect(strip, &ChannelStrip::editRequested, this,
-                [this](const int channel) { selectChannel(channel); });
+                [this](const int channel) {
+                    selectChannel(channel);
+                    emit channelEditRequested(channel);
+                });
     }
     if (!channelStrips_.isEmpty()) {
         selectedChannel_ = 0;

@@ -1692,5 +1692,53 @@ Simulator mode uses SYNTHETIC data. BLE, GATT and device commands still need har
         <source>MIDI SysEx dump is an official capability. Requesting a real dump needs hardware.</source>
         <translation>MIDI SysEx dump is an official capability. Requesting a real dump needs hardware.</translation>
     </message>
+    <message>
+        <source>USB Audio / Loopback</source>
+        <translation>USB Audio / Loopback</translation>
+    </message>
+    <message>
+        <source>USB 1/2</source>
+        <translation>USB 1/2</translation>
+    </message>
+    <message>
+        <source>USB 3/4</source>
+        <translation>USB 3/4</translation>
+    </message>
+    <message>
+        <source>MON1 / MON2 Mix Link</source>
+        <translation>MON1 / MON2 Mix Link</translation>
+    </message>
+    <message>
+        <source>Monitor OUT %1 Hardware Feed</source>
+        <translation>Monitor OUT %1 Hardware Feed</translation>
+    </message>
+    <message>
+        <source>MON1 Mix (Default)</source>
+        <translation>MON1 Mix (Default)</translation>
+    </message>
+    <message>
+        <source>MON2 Mix (Default)</source>
+        <translation>MON2 Mix (Default)</translation>
+    </message>
+    <message>
+        <source>Stereo Link: MON1 ↔ MON2</source>
+        <translation>Stereo Link: MON1 ↔ MON2</translation>
+    </message>
+    <message>
+        <source>Simulator links MON1/MON2 send and master faders; hardware propagation remains UNKNOWN.</source>
+        <translation>Simulator links MON1/MON2 send and master faders; hardware propagation remains UNKNOWN.</translation>
+    </message>
+    <message>
+        <source>Left %1</source>
+        <translation>Left %1</translation>
+    </message>
+    <message>
+        <source>Center 0</source>
+        <translation>Center 0</translation>
+    </message>
+    <message>
+        <source>Right %1</source>
+        <translation>Right %1</translation>
+    </message>
 </context>
 </TS>

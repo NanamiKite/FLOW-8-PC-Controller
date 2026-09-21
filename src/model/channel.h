@@ -7,6 +7,7 @@
 
 #include <QString>
 
+#include <algorithm>
 #include <array>
 #include <optional>
 
@@ -48,6 +49,26 @@ enum class MonitorSendMode {
     PreFader,
     PostFader,
 };
+
+// FLOW Mix exposes analog-input gain in engineering units from -20 dB to
+// +60 dB. The live control state remains normalized so it can stay independent
+// from the still-unknown BLE payload layout.
+inline constexpr double inputGainMinimumDb = -20.0;
+inline constexpr double inputGainMaximumDb = 60.0;
+
+[[nodiscard]] constexpr double inputGainDbFromNormalized(const double normalized) noexcept
+{
+    const double unitValue = std::clamp(normalized, 0.0, 1.0);
+    return inputGainMinimumDb
+        + unitValue * (inputGainMaximumDb - inputGainMinimumDb);
+}
+
+[[nodiscard]] constexpr double normalizedInputGainFromDb(const double gainDb) noexcept
+{
+    const double boundedDb = std::clamp(gainDb, inputGainMinimumDb, inputGainMaximumDb);
+    return (boundedDb - inputGainMinimumDb)
+        / (inputGainMaximumDb - inputGainMinimumDb);
+}
 
 struct LowCutState {
     StateValue<bool> enabled;

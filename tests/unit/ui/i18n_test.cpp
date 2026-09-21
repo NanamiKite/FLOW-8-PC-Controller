@@ -45,7 +45,11 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
         "Main Mix", "Master", "Monitor 1 Send", "Monitor 2 Send",
         "FX 1 Send", "FX 2 Send", "Source → Destination",
         "Destination Master", "Route Level", "Pending", "Confirmed",
-        "USB Return / Playback", "USB Return 1/2", "USB Return 3/4",
+        "USB Audio / Loopback", "USB 1/2", "USB 3/4",
+        "MON1 / MON2 Mix Link", "Monitor OUT %1 Hardware Feed",
+        "MON1 Mix (Default)", "MON2 Mix (Default)",
+        "Stereo Link: MON1 ↔ MON2",
+        "Left %1", "Center 0", "Right %1",
         "Monitor Outputs", "Headphones", "Headphone Tap Point",
         "Physical Output Settings", "Bluetooth / USB to Headphones Only",
     };
@@ -61,8 +65,18 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
     QCOMPARE(flow8::ui::uiText("Main Mix"), QString::fromUtf8("主混音"));
     QCOMPARE(flow8::ui::uiText("Master"), QString::fromUtf8("主控"));
     QCOMPARE(flow8::ui::uiText("FX 1 Send"), QString::fromUtf8("FX 1 发送"));
-    QCOMPARE(flow8::ui::uiText("USB Return / Playback"),
-             QString::fromUtf8("USB 返回 / 播放"));
+    QCOMPARE(flow8::ui::uiText("USB Audio / Loopback"),
+             QString::fromUtf8("USB 音频 / 回环"));
+    QCOMPARE(flow8::ui::panBalanceValueText(-37), QString::fromUtf8("左 37"));
+    QCOMPARE(flow8::ui::panBalanceValueText(0), QString::fromUtf8("中央 0"));
+    QCOMPARE(flow8::ui::panBalanceValueText(42), QString::fromUtf8("右 42"));
+    QCOMPARE(flow8::ui::normalizedPercentText(0.5), QStringLiteral("50 %"));
+    QCOMPARE(flow8::ui::frequencyValueText(600.0), QStringLiteral("600 Hz"));
+    QCOMPARE(flow8::ui::frequencyValueText(1000.0), QStringLiteral("1 kHz"));
+    QCOMPARE(flow8::ui::frequencyValueText(16000.0), QStringLiteral("16 kHz"));
+    QCOMPARE(flow8::ui::decibelValueText(3.5), QStringLiteral("+3.5 dB"));
+    QVERIFY(!flow8::ui::frequencyValueText(16000.0).contains(
+        QRegularExpression(QStringLiteral("[eE][+-]?\\d"))));
     QCOMPARE(flow8::ui::uiText("Headphones"), QString::fromUtf8("耳机"));
 
     QString rejection;

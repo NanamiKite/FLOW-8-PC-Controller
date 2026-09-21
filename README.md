@@ -74,18 +74,19 @@ or an in-context Input Inspector. Stage reads the same matrix rather than mainta
 second mixer state. Setup remains a distinct sidebar workspace for Configure Inputs, the
 local Snapshot Library, 15 device Snapshot slots, Preferences, Routing, and Info.
 
-The 7×5 matrix is deliberately scoped to conventional Mixer inputs feeding
-MAIN/MON1/MON2/FX1/FX2. It is not the device's complete routing graph. A broader signal
-catalog separately represents USB Return 1/2 and USB Return 3/4; physical outputs
-separately represent MAIN OUT, MON OUT 1, MON OUT 2, and HEADPHONES. USB playback
-assignment, monitor-source selection, headphone MAIN/MON plus Pre/Post selection, output
-pads, MON stereo link, and six FX return routes are independent routing state. Meter state
-is high-rate transient data kept outside ordinary control state. Simulator data uses
-explicit `SYNTHETIC` evidence.
+The 7×5 matrix is deliberately scoped to seven conventional Mixer inputs feeding
+MAIN/MON1/MON2/FX1/FX2. It is not the device's complete routing graph. USB 1/2 and USB
+3/4 are represented separately as USB Audio loopback endpoints; they are not Mixer
+sources and are not MON buses. Physical outputs separately represent MAIN OUT, MON OUT
+1, MON OUT 2, and HEADPHONES. USB input assignment, physical monitor-output feed
+selection, headphone MAIN/MON plus Pre/Post selection, output pads, MON1/MON2 stereo
+link, and six FX return routes are independent state. Meter state is high-rate transient
+data kept outside ordinary control state. Simulator data uses explicit `SYNTHETIC`
+evidence.
 
 The simulator models channel names/icons/hide-show, Gain/Phase/Low Cut, phantom power where
-applicable, MON pre/post sends, two independent USB returns, USB/FX/headphone routing,
-physical outputs, MON stereo link,
+applicable, MON pre/post sends, two independent USB Audio endpoints,
+USB/FX/headphone routing, physical outputs, and the MON1/MON2 stereo-link relationship,
 app-snapshot store/load/rename/delete, Assisted Setup, EZ-GAIN, global Tap Tempo, and
 output preferences. Hardware commands for these additions remain
 `UNKNOWN / BLOCKED: NEED_HARDWARE`; the simulator never emits guessed packets.

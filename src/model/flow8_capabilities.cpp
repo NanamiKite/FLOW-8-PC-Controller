@@ -170,10 +170,6 @@ QVector<SignalSourceState> createSignalSourceProfile()
                     "Input 7/8", 5},
         Definition {SignalSourceId::BluetoothUsbMixer, SignalSourceType::BluetoothUsbMixer,
                     "Bluetooth / USB Mixer Channel", 6},
-        Definition {SignalSourceId::UsbReturn12, SignalSourceType::UsbReturn,
-                    "USB Return 1/2", std::nullopt},
-        Definition {SignalSourceId::UsbReturn34, SignalSourceType::UsbReturn,
-                    "USB Return 3/4", std::nullopt},
     };
     QVector<SignalSourceState> sources;
     sources.reserve(static_cast<qsizetype>(definitions.size()));
@@ -193,6 +189,39 @@ QVector<SignalSourceState> createSignalSourceProfile()
         });
     }
     return sources;
+}
+
+QVector<UsbAudioEndpointState> createUsbAudioEndpointProfile()
+{
+    const CapabilityEvidence apkEvidence {
+        .source = CapabilitySource::OfficialApk,
+        .reference = QStringLiteral("docs/reverse-engineering.md section 12"),
+    };
+    return {
+        UsbAudioEndpointState {
+            .id = UsbAudioEndpointId::Usb12,
+            .defaultLabel = QStringLiteral("USB 1/2"),
+            .evidence = apkEvidence,
+        },
+        UsbAudioEndpointState {
+            .id = UsbAudioEndpointId::Usb34,
+            .defaultLabel = QStringLiteral("USB 3/4"),
+            .evidence = apkEvidence,
+        },
+    };
+}
+
+MonitorLinkState createMonitorLinkProfile()
+{
+    MonitorLinkState link;
+    link.propagationEvidence = EvidenceStatus::Unknown;
+    link.propagationSource = QStringLiteral(
+        "MON stereo-link propagation rules remain UNKNOWN");
+    link.capabilityEvidence = {
+        .source = CapabilitySource::OfficialApk,
+        .reference = QStringLiteral("docs/reverse-engineering.md section 10"),
+    };
+    return link;
 }
 
 QVector<PhysicalOutputState> createPhysicalOutputProfile()

@@ -40,7 +40,9 @@ private:
     QLabel* preampTitle_ {};
     QLabel* mixTitle_ {};
     QLabel* gainLabel_ {};
+    QLabel* gainValue_ {};
     QLabel* panLabel_ {};
+    QLabel* panValue_ {};
     QSlider* gain_ {};
     QCheckBox* phantom_ {};
     FaderWidget* fader_ {};

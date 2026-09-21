@@ -42,12 +42,23 @@ QString applicationStyle()
         QLabel[class="sessionTitle"] { font-size: 25px; font-weight: 720; }
         QLabel[class="sectionLabel"] { color: #bfc5cf; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; }
         QLabel[class="secondaryText"] { color: #8e96a2; }
+        QLabel[class="parameterValue"] {
+            color: #eef1f5; background: #22262c; border: 1px solid #343943;
+            border-radius: 5px; padding: 4px 7px; font-weight: 650;
+        }
         QLabel[class="inputBadge"], QLabel[class="syntheticBadge"] {
             color: #9bc3ff; background: #1b2940; border: 1px solid #29496f;
             border-radius: 5px; padding: 3px 7px; font-size: 9px; font-weight: 650;
         }
         QLabel[class="stripIndicator"] {
             color: #a8afb9; background: #252930; border-radius: 4px; padding: 3px 4px; font-size: 8px;
+        }
+        QLabel[class="phantomIndicator"] {
+            color: #8d5b60; background: #25191b; border: 1px solid #583037;
+            border-radius: 4px; padding: 3px 5px; font-size: 8px; font-weight: 750;
+        }
+        QLabel[class="phantomIndicator"][active="true"] {
+            color: #fff7f7; background: #d74752; border-color: #ff7d86;
         }
         QToolButton[class="layerButton"] {
             border: 0; border-bottom: 2px solid transparent; border-radius: 5px;
@@ -92,6 +103,18 @@ QString applicationStyle()
         QPushButton:pressed, QToolButton:checked { background: #345f96; border-color: #5a96df; }
         QToolButton[class="muteButton"]:checked { background: #a93f45; border-color: #e2676e; }
         QToolButton[class="soloButton"]:checked { background: #8c6b1d; border-color: #d7aa35; }
+        QCheckBox { color: #e6e9ee; spacing: 8px; }
+        QCheckBox::indicator {
+            width: 17px; height: 17px; border: 2px solid #7b8594;
+            border-radius: 4px; background: #0d0f12;
+        }
+        QCheckBox::indicator:hover { border-color: #c5ccd6; background: #181c22; }
+        QCheckBox::indicator:checked { background: #4f92e8; border-color: #9ac7ff; }
+        QCheckBox::indicator:checked:hover { background: #63a2f2; border-color: #c0dcff; }
+        QCheckBox::indicator:disabled { background: #17191d; border-color: #3b414a; }
+        QCheckBox[class="phantomControl"]::indicator:checked {
+            background: #d74752; border-color: #ff8b93;
+        }
         QSlider::groove:horizontal { height: 4px; background: #343943; border-radius: 2px; }
         QSlider::sub-page:horizontal { background: #e1b941; border-radius: 2px; }
         QSlider::handle:horizontal { width: 14px; margin: -5px 0; background: #d7dce3; border-radius: 7px; }

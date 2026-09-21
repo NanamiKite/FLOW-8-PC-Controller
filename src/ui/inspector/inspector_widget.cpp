@@ -60,11 +60,14 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     , channelIcon_(new QComboBox(this))
     , channelVisible_(new QCheckBox(this))
     , gain_(new QSlider(Qt::Horizontal, this))
+    , gainValue_(new QLabel(this))
     , phantom_(new QCheckBox(this))
     , phase_(new QCheckBox(this))
     , lowCutEnabled_(new QCheckBox(this))
     , lowCutFrequency_(new QSlider(Qt::Horizontal, this))
+    , lowCutFrequencyValue_(new QLabel(this))
     , pan_(new QSlider(Qt::Horizontal, this))
+    , panValue_(new QLabel(this))
     , mute_(new QCheckBox(this))
     , solo_(new QCheckBox(this))
     , ezGainSelected_(new QPushButton(this))
@@ -94,25 +97,56 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
     channelIcon_->setObjectName(QStringLiteral("channelIcon"));
     channelVisible_->setObjectName(QStringLiteral("channelVisible"));
     gain_->setObjectName(QStringLiteral("inspectorGain"));
-    gain_->setRange(0, 1000);
+    gain_->setRange(
+        static_cast<int>(model::inputGainMinimumDb * 10.0),
+        static_cast<int>(model::inputGainMaximumDb * 10.0));
+    gain_->setSingleStep(1);
+    gain_->setPageStep(10);
+    gainValue_->setObjectName(QStringLiteral("inspectorGainValue"));
+    gainValue_->setProperty("class", QStringLiteral("parameterValue"));
+    gainValue_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gainValue_->setMinimumWidth(72);
     phantom_->setObjectName(QStringLiteral("inspectorPhantom"));
+    phantom_->setProperty("class", QStringLiteral("phantomControl"));
     phase_->setObjectName(QStringLiteral("inspectorPhase"));
     lowCutEnabled_->setObjectName(QStringLiteral("lowCutEnabled"));
     lowCutFrequency_->setObjectName(QStringLiteral("lowCutFrequency"));
     lowCutFrequency_->setRange(20, 600);
+    lowCutFrequencyValue_->setObjectName(QStringLiteral("lowCutFrequencyValue"));
+    lowCutFrequencyValue_->setProperty("class", QStringLiteral("parameterValue"));
+    lowCutFrequencyValue_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lowCutFrequencyValue_->setMinimumWidth(72);
     pan_->setObjectName(QStringLiteral("inspectorPan"));
     pan_->setRange(-100, 100);
+    pan_->setTickPosition(QSlider::TicksBelow);
+    pan_->setTickInterval(100);
+    panValue_->setObjectName(QStringLiteral("inspectorPanValue"));
+    panValue_->setProperty("class", QStringLiteral("parameterValue"));
+    panValue_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    panValue_->setMinimumWidth(72);
     mute_->setObjectName(QStringLiteral("inspectorMute"));
     solo_->setObjectName(QStringLiteral("inspectorSolo"));
     channelForm->addRow(channelFormLabels_[0], channelName_);
     channelForm->addRow(channelFormLabels_[1], channelIcon_);
     channelForm->addRow(channelFormLabels_[2], channelVisible_);
-    channelForm->addRow(channelFormLabels_[3], gain_);
+    auto* gainRow = new QHBoxLayout;
+    gainRow->setContentsMargins(0, 0, 0, 0);
+    gainRow->addWidget(gain_, 1);
+    gainRow->addWidget(gainValue_);
+    channelForm->addRow(channelFormLabels_[3], gainRow);
     channelForm->addRow(channelFormLabels_[4], phantom_);
     channelForm->addRow(channelFormLabels_[5], phase_);
     channelForm->addRow(channelFormLabels_[6], lowCutEnabled_);
-    channelForm->addRow(channelFormLabels_[7], lowCutFrequency_);
-    channelForm->addRow(channelFormLabels_[8], pan_);
+    auto* lowCutFrequencyRow = new QHBoxLayout;
+    lowCutFrequencyRow->setContentsMargins(0, 0, 0, 0);
+    lowCutFrequencyRow->addWidget(lowCutFrequency_, 1);
+    lowCutFrequencyRow->addWidget(lowCutFrequencyValue_);
+    channelForm->addRow(channelFormLabels_[7], lowCutFrequencyRow);
+    auto* panRow = new QHBoxLayout;
+    panRow->setContentsMargins(0, 0, 0, 0);
+    panRow->addWidget(pan_, 1);
+    panRow->addWidget(panValue_);
+    channelForm->addRow(channelFormLabels_[8], panRow);
     channelForm->addRow(channelFormLabels_[9], mute_);
     channelForm->addRow(channelFormLabels_[10], solo_);
     channelLayout->addLayout(channelForm);
@@ -148,7 +182,10 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
         (void)device_.setChannelVisible(selectedChannel_, visible);
     });
     connect(gain_, &QSlider::valueChanged, this, [this](const int value) {
-        (void)device_.setChannelGain(selectedChannel_, value / 1000.0);
+        const double gainDb = value / 10.0;
+        gainValue_->setText(decibelValueText(gainDb));
+        (void)device_.setChannelGain(
+            selectedChannel_, model::normalizedInputGainFromDb(gainDb));
     });
     connect(phantom_, &QCheckBox::clicked, this, [this](const bool enabled) {
         if (enabled && QMessageBox::warning(
@@ -166,6 +203,7 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
         (void)device_.setChannelPhaseInverted(selectedChannel_, inverted);
     });
     connect(pan_, &QSlider::valueChanged, this, [this](const int value) {
+        panValue_->setText(panBalanceValueText(value));
         (void)device_.setChannelPan(selectedChannel_, value / 100.0);
     });
     connect(mute_, &QCheckBox::toggled, this, [this](const bool enabled) {
@@ -175,6 +213,8 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
         (void)device_.setChannelSoloed(selectedChannel_, enabled);
     });
     const auto updateLowCut = [this] {
+        lowCutFrequencyValue_->setText(
+            frequencyValueText(lowCutFrequency_->value()));
         (void)device_.setChannelLowCut(selectedChannel_, lowCutEnabled_->isChecked(),
                                         lowCutFrequency_->value());
     };
@@ -201,17 +241,20 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
             &device_, &Flow8Device::cancelEzGain);
 
     auto* eqPage = createPage(tabs_);
-    auto* eqLayout = new QHBoxLayout(eqPage);
+    auto* eqLayout = new QVBoxLayout(eqPage);
     eqLayout->setContentsMargins(10, 8, 10, 8);
+    eqLayout->setSpacing(8);
     eqGraph_->setObjectName(QStringLiteral("channelEqGraph"));
-    eqLayout->addWidget(eqGraph_, 2);
+    eqLayout->addWidget(eqGraph_, 3);
     auto* eqControls = new QGridLayout;
+    eqControls->setHorizontalSpacing(12);
     for (int band = 0; band < 4; ++band) {
         auto* label = new QLabel(eqPage);
         auto* slider = new QSlider(Qt::Vertical, eqPage);
         slider->setRange(-150, 150);
-        slider->setMinimumHeight(140);
+        slider->setMinimumHeight(110);
         slider->setObjectName(QStringLiteral("eqGain%1").arg(band));
+        label->setObjectName(QStringLiteral("eqBandValue%1").arg(band));
         eqGainSliders_.append(slider);
         eqBandLabels_.append(label);
         eqControls->addWidget(slider, 0, band, Qt::AlignHCenter);
@@ -220,7 +263,7 @@ InspectorWidget::InspectorWidget(Flow8Device& device, QWidget* parent)
             (void)device_.setChannelEqGain(selectedChannel_, band, value / 10.0);
         });
     }
-    eqLayout->addLayout(eqControls, 1);
+    eqLayout->addLayout(eqControls, 2);
     connect(eqGraph_, &EqGraphWidget::bandGainEdited, this,
             [this](const int band, const double gainDb) {
                 (void)device_.setChannelEqGain(selectedChannel_, band, gainDb);
@@ -424,9 +467,11 @@ void InspectorWidget::refresh()
             static_cast<int>(channel->icon.value.value_or(model::ChannelIcon::None))));
         channelVisible_->setChecked(channel->visible.value.value_or(true));
         gain_->setVisible(channel->capabilities.gain);
+        gainValue_->setVisible(channel->capabilities.gain);
         channelFormLabels_[3]->setVisible(channel->capabilities.gain);
         gain_->setValue(static_cast<int>(std::lround(
-            channel->gain.value.value_or(0.0) * 1000.0)));
+            model::inputGainDbFromNormalized(channel->gain.value.value_or(0.0)) * 10.0)));
+        gainValue_->setText(decibelValueText(gain_->value() / 10.0));
         phantom_->setVisible(channel->capabilities.phantom48V);
         channelFormLabels_[4]->setVisible(channel->capabilities.phantom48V);
         phantom_->setChecked(channel->phantom48V.has_value()
@@ -439,6 +484,7 @@ void InspectorWidget::refresh()
         lowCutFrequency_->setEnabled(channel->lowCut.has_value());
         lowCutEnabled_->setVisible(channel->capabilities.lowCut);
         lowCutFrequency_->setVisible(channel->capabilities.lowCut);
+        lowCutFrequencyValue_->setVisible(channel->capabilities.lowCut);
         channelFormLabels_[6]->setVisible(channel->capabilities.lowCut);
         channelFormLabels_[7]->setVisible(channel->capabilities.lowCut);
         lowCutEnabled_->setChecked(channel->lowCut.has_value()
@@ -446,8 +492,11 @@ void InspectorWidget::refresh()
         lowCutFrequency_->setValue(static_cast<int>(std::lround(
             channel->lowCut.has_value()
                 ? channel->lowCut->frequencyHz.value.value_or(20.0) : 20.0)));
+        lowCutFrequencyValue_->setText(
+            frequencyValueText(lowCutFrequency_->value()));
         pan_->setValue(static_cast<int>(std::lround(
             channel->pan.value.value_or(0.0) * 100.0)));
+        panValue_->setText(panBalanceValueText(pan_->value()));
         mute_->setChecked(channel->muted.value.value_or(false));
         solo_->setChecked(channel->soloed.value.value_or(false));
     }
@@ -464,6 +513,12 @@ void InspectorWidget::refresh()
         });
         const QSignalBlocker blocker(eqGainSliders_[band]);
         eqGainSliders_[band]->setValue(static_cast<int>(std::lround(graphBands.back().gainDb * 10.0)));
+        const std::array<const char*, 4> names {"Low", "Low Mid", "High Mid", "High"};
+        eqBandLabels_[band]->setText(QStringLiteral("%1\n%2\n%3 · %4")
+            .arg(uiText(names[arrayIndex]),
+                 frequencyValueText(graphBands.back().frequencyHz),
+                 decibelValueText(graphBands.back().gainDb),
+                 qValueText(graphBands.back().q)));
     }
     eqGraph_->setBands(std::move(graphBands));
 

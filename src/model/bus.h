@@ -55,6 +55,16 @@ struct MixBusState {
     std::optional<OutputDelayState> outputDelay;
 };
 
+// MON1 and MON2 remain two independent MixBusState objects. This object holds
+// only their relationship. APK evidence confirms that the link setting exists,
+// but not which parameters the device mirrors while linked.
+struct MonitorLinkState {
+    StateValue<bool> stereoLinked;
+    EvidenceStatus propagationEvidence {EvidenceStatus::Unknown};
+    QString propagationSource;
+    CapabilityEvidence capabilityEvidence;
+};
+
 // Compatibility name for existing high-level APIs. The vector now contains
 // only MAIN, MON1, and MON2; FX engines live in FxState.
 using BusState = MixBusState;

@@ -52,6 +52,11 @@ public:
 
     [[nodiscard]] const QVector<model::SignalSourceState>& signalSources() const noexcept;
     void replaceSignalSources(QVector<model::SignalSourceState> sources);
+    [[nodiscard]] const QVector<model::UsbAudioEndpointState>&
+        usbAudioEndpoints() const noexcept;
+    [[nodiscard]] const model::UsbAudioEndpointState* usbAudioEndpoint(
+        model::UsbAudioEndpointId id) const noexcept;
+    void replaceUsbAudioEndpoints(QVector<model::UsbAudioEndpointState> endpoints);
 
     [[nodiscard]] bool setChannelFader(int index, double normalized,
                                        model::EvidenceStatus evidence, const QString& source);
@@ -154,11 +159,11 @@ public:
                                       const QString& error);
     [[nodiscard]] bool setUsbMode(model::UsbMode mode, model::EvidenceStatus evidence,
                                   const QString& source);
-    [[nodiscard]] bool setUsbPlaybackAssignment(
+    [[nodiscard]] bool setUsbInputAssignment(
         int pairIndex, model::UsbPlaybackAssignment assignment,
         model::EvidenceStatus evidence, const QString& source);
-    [[nodiscard]] bool setMonitorRouteSource(
-        int monitorIndex, model::MonitorRouteSource routeSource,
+    [[nodiscard]] bool setPhysicalMonitorOutputFeed(
+        int outputIndex, model::PhysicalMonitorOutputFeed feed,
         model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setFxOutputRouteEnabled(
         int effectIndex, model::FxOutputDestination destination, bool enabled,
@@ -178,6 +183,7 @@ public:
                                                const QString& source);
     [[nodiscard]] bool setMonitorStereoLink(bool linked, model::EvidenceStatus evidence,
                                              const QString& source);
+    [[nodiscard]] const model::MonitorLinkState& monitorLink() const noexcept;
 
     [[nodiscard]] const QVector<model::PhysicalOutputState>& physicalOutputs() const noexcept;
     [[nodiscard]] const model::PhysicalOutputState* physicalOutput(
@@ -202,6 +208,8 @@ signals:
     void channelChanged(int index);
     void busChanged(int index);
     void effectChanged(int index);
+    void usbAudioChanged();
+    void monitorLinkChanged();
     void physicalOutputChanged(flow8::model::PhysicalOutputId output);
     void snapshotChanged(int index);
     void routingChanged();
@@ -226,7 +234,9 @@ private:
     ConnectionState connectionState_ {ConnectionState::Disconnected};
     QVector<model::ChannelState> channels_;
     QVector<model::SignalSourceState> signalSources_;
+    QVector<model::UsbAudioEndpointState> usbAudioEndpoints_;
     QVector<model::BusState> buses_;
+    model::MonitorLinkState monitorLink_;
     QVector<model::FxState> effects_;
     model::GlobalTempoState globalTempo_;
     QVector<model::SnapshotState> snapshots_;
