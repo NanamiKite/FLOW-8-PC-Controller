@@ -37,6 +37,7 @@ class Flow8DeviceTest final : public QObject {
 private slots:
     void simulatorConnectsAndCreatesProfile();
     void controlsFlowThroughDeviceApi();
+    void mixBusesAndFxRoutingRemainIndependent();
     void realTransportDoesNotClaimReadyBeforeHandshake();
 };
 
@@ -58,9 +59,35 @@ void Flow8DeviceTest::simulatorConnectsAndCreatesProfile()
     QCOMPARE(device.state().snapshots().size(), 15);
     QCOMPARE(device.state().routing().routes.size(), 35);
     QCOMPARE(device.state().routing().usbRoutes.size(), 9);
-    QCOMPARE(device.state().routing().fxMonitorRoutes.size(), 4);
-    QCOMPARE(device.state().monitors().size(), 2);
+    QCOMPARE(device.state().routing().fxOutputRoutes.size(), 6);
+    QCOMPARE(device.state().buses().at(0).busId, flow8::model::BusId::Main);
+    QCOMPARE(device.state().buses().at(1).busId, flow8::model::BusId::Monitor1);
+    QCOMPARE(device.state().buses().at(2).busId, flow8::model::BusId::Monitor2);
+    QCOMPARE(device.state().buses().at(3).busId, flow8::model::BusId::Fx1);
+    QCOMPARE(device.state().buses().at(4).busId, flow8::model::BusId::Fx2);
     QCOMPARE(device.state().globalTempo().bpm.value, std::optional(120.0));
+    QCOMPARE(device.state().channel(0)->monitorSends[0].levelDb.value,
+             std::optional(-10.0));
+    QCOMPARE(device.state().channel(0)->monitorSends[1].levelDb.value,
+             std::optional(-15.0));
+    QCOMPARE(device.state().channel(0)->fxSendLevelDb[0].value,
+             std::optional(-8.0));
+    QCOMPARE(device.state().channel(0)->fxSendLevelDb[1].value,
+             std::optional(-12.0));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 0, flow8::model::FxOutputDestination::Main)->enabled.value,
+             std::optional(true));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 0, flow8::model::FxOutputDestination::Monitor1)->enabled.value,
+             std::optional(true));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 0, flow8::model::FxOutputDestination::Monitor2)->enabled.value,
+             std::optional(false));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 1, flow8::model::FxOutputDestination::Monitor2)->enabled.value,
+             std::optional(true));
+    QCOMPARE(device.state().routing().monitorLink.stereoLinked.value,
+             std::optional(false));
     QVERIFY(device.isControlAvailable(flow8::Flow8Device::Control::ChannelFader));
     QCOMPARE(device.state().channel(0)->inputId, flow8::model::InputId::Input1);
     QCOMPARE(device.state().channel(0)->defaultLabel, QStringLiteral("Input 1"));
@@ -94,6 +121,9 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
     QVERIFY(device.setChannelIcon(0, flow8::model::ChannelIcon::Microphone));
     QVERIFY(device.setChannelVisible(0, false));
     QCOMPARE(device.state().channel(0)->visible.value, std::optional(false));
+    QVERIFY(device.setChannelPhantom(0, true));
+    QCOMPARE(device.state().channel(0)->phantom48V->value, std::optional(true));
+    QVERIFY(!device.setChannelPhantom(2, true));
     QVERIFY(device.setChannelLowCut(0, true, 95.0));
     QCOMPARE(device.state().channel(0)->lowCut->enabled.value, std::optional(true));
     QCOMPARE(device.state().channel(0)->lowCut->frequencyHz.value, std::optional(95.0));
@@ -130,10 +160,11 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
     QCOMPARE(device.state().routing().usbMode.value,
              std::optional(flow8::model::UsbMode::Recording));
     QVERIFY(device.setUsbRouteEnabled(flow8::model::UsbRouteDestination::Monitor1, true));
-    QVERIFY(device.setFxMonitorRouteEnabled(1, 0, true));
+    QVERIFY(device.setFxOutputRouteEnabled(
+        1, flow8::model::FxOutputDestination::Monitor1, true));
     QVERIFY(device.setHeadphoneSource(flow8::model::HeadphoneSource::Monitor2));
     QVERIFY(device.setMonitorStereoLink(true));
-    QCOMPARE(device.state().routing().monitorStereoLink.value, std::optional(true));
+    QCOMPARE(device.state().routing().monitorLink.stereoLinked.value, std::optional(true));
 
     QVERIFY(device.storeAppSnapshot(QStringLiteral("Soundcheck"),
                                     flow8::model::SnapshotScope::Routing));
@@ -145,10 +176,17 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
     QCOMPARE(device.state().snapshots().last().name.value,
              std::optional(QStringLiteral("Show")));
     QVERIFY(device.setUsbMode(flow8::model::UsbMode::Streaming));
+    QVERIFY(device.setFxOutputRouteEnabled(
+        1, flow8::model::FxOutputDestination::Monitor1, false));
     QVERIFY(device.loadAppSnapshot(0));
     QCOMPARE(device.state().activeSnapshotIndex(), 15);
     QCOMPARE(device.state().routing().usbMode.value,
              std::optional(flow8::model::UsbMode::Recording));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 1, flow8::model::FxOutputDestination::Monitor1)->enabled.value,
+             std::optional(true));
+    QVERIFY(device.deleteAppSnapshot(0));
+    QCOMPARE(device.state().snapshots().size(), 15);
 
     QVERIFY(device.configureAssistedSetup(
         flow8::model::InputId::Input1,
@@ -165,6 +203,51 @@ void Flow8DeviceTest::controlsFlowThroughDeviceApi()
     QTRY_VERIFY(device.state().channel(0)->meterLevel.value.value_or(0.0) > 0.0);
     QCOMPARE(device.state().channel(0)->meterLevel.evidence,
              flow8::model::EvidenceStatus::Unknown);
+}
+
+void Flow8DeviceTest::mixBusesAndFxRoutingRemainIndependent()
+{
+    flow8::Flow8Device device;
+    auto transport = std::make_unique<flow8::simulator::FakeTransport>();
+    transport->setRemoteChangesEnabled(false);
+    device.setTransport(std::move(transport));
+    device.connectDevice();
+    QTRY_COMPARE(device.state().connectionState(), flow8::ConnectionState::Ready);
+
+    const double originalMon2Send =
+        *device.state().channel(0)->monitorSends[1].levelDb.value;
+    const double originalFx2Send =
+        *device.state().channel(0)->fxSendLevelDb[1].value;
+    QVERIFY(device.setChannelSendLevel(0, 0, 0.75));
+    QVERIFY(device.state().channel(0)->monitorSends[0].levelDb.value.has_value());
+    QCOMPARE(*device.state().channel(0)->monitorSends[1].levelDb.value, originalMon2Send);
+    QVERIFY(device.setChannelSendLevel(0, 2, 0.60));
+    QVERIFY(device.state().channel(0)->fxSendLevelDb[0].value.has_value());
+    QCOMPARE(*device.state().channel(0)->fxSendLevelDb[1].value, originalFx2Send);
+
+    const double originalMainMaster = *device.state().bus(0)->fader.value;
+    const double originalMon2Master = *device.state().bus(2)->fader.value;
+    QVERIFY(device.setBusFader(1, 0.22));
+    QCOMPARE(device.state().bus(1)->fader.value, std::optional(0.22));
+    QCOMPARE(*device.state().bus(0)->fader.value, originalMainMaster);
+    QCOMPARE(*device.state().bus(2)->fader.value, originalMon2Master);
+
+    QVERIFY(device.setFxOutputRouteEnabled(
+        1, flow8::model::FxOutputDestination::Monitor2, false));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 0, flow8::model::FxOutputDestination::Monitor2)->enabled.value,
+             std::optional(false));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 1, flow8::model::FxOutputDestination::Monitor2)->enabled.value,
+             std::optional(false));
+    QCOMPARE(device.state().routing().fxOutputRoute(
+                 1, flow8::model::FxOutputDestination::Monitor1)->enabled.value,
+             std::optional(false));
+
+    QVERIFY(device.setMonitorStereoLink(true));
+    QCOMPARE(device.state().routing().monitorLink.stereoLinked.value, std::optional(true));
+    QCOMPARE(device.state().bus(1)->fader.value, std::optional(0.22));
+    QCOMPARE(*device.state().bus(2)->fader.value, originalMon2Master);
 }
 
 void Flow8DeviceTest::realTransportDoesNotClaimReadyBeforeHandshake()

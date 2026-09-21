@@ -39,9 +39,7 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     , eqIndicator_(indicator({}, this))
     , compressorIndicator_(indicator({}, this))
     , sendIndicator_(indicator({}, this))
-    , gainLabel_(new QLabel(this))
     , panLabel_(new QLabel(this))
-    , gainSlider_(new QSlider(Qt::Horizontal, this))
     , fader_(new FaderWidget(this))
     , meter_(new MeterWidget(this))
     , muteButton_(new QToolButton(this))
@@ -51,7 +49,7 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     setObjectName(QStringLiteral("channelStrip%1").arg(channelIndex));
     setProperty("class", QStringLiteral("channelStrip"));
     setProperty("selected", false);
-    setMinimumWidth(154);
+    setMinimumWidth(142);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     setCursor(Qt::PointingHandCursor);
 
@@ -63,8 +61,6 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     typeLabel_->setProperty("class", QStringLiteral("inputBadge"));
     typeLabel_->setAlignment(Qt::AlignCenter);
 
-    gainSlider_->setRange(0, 1000);
-    gainSlider_->setObjectName(QStringLiteral("gain%1").arg(channelIndex));
     fader_->setObjectName(QStringLiteral("fader%1").arg(channelIndex));
     muteButton_->setCheckable(true);
     muteButton_->setObjectName(QStringLiteral("mute%1").arg(channelIndex));
@@ -98,18 +94,12 @@ ChannelStrip::ChannelStrip(Flow8Device& device, const int channelIndex, QWidget*
     layout->addWidget(iconLabel_);
     layout->addWidget(nameLabel_);
     layout->addWidget(typeLabel_);
-    layout->addLayout(indicators);
-    layout->addWidget(gainLabel_);
-    layout->addWidget(gainSlider_);
-    layout->addLayout(faderRow, 1);
     layout->addWidget(panLabel_);
     layout->addWidget(panSlider_);
+    layout->addLayout(indicators);
+    layout->addLayout(faderRow, 1);
     layout->addLayout(buttons);
 
-    connect(gainSlider_, &QSlider::valueChanged, this, [this](const int value) {
-        requestSelection();
-        (void)device_.setChannelGain(channelIndex_, value / 1000.0);
-    });
     connect(fader_, &FaderWidget::valueChanged, this, [this](const double value) {
         requestSelection();
         (void)device_.setChannelFader(channelIndex_, value);
@@ -174,14 +164,10 @@ void ChannelStrip::refresh()
     iconLabel_->setPixmap(style()->standardIcon(pixmap).pixmap(20, 20));
     iconLabel_->setVisible(device_.state().preferences().showChannelIcons);
     muteButton_->setVisible(device_.state().preferences().showMuteButtons);
-    gainSlider_->setVisible(channel->capabilities.gain);
-    gainLabel_->setVisible(channel->capabilities.gain);
-    const QSignalBlocker gainBlocker(gainSlider_);
     const QSignalBlocker faderBlocker(fader_);
     const QSignalBlocker muteBlocker(muteButton_);
     const QSignalBlocker soloBlocker(soloButton_);
     const QSignalBlocker panBlocker(panSlider_);
-    gainSlider_->setValue(static_cast<int>(std::lround(channel->gain.value.value_or(0.0) * 1000.0)));
     fader_->setValue(channel->fader.value.value_or(0.0));
     muteButton_->setChecked(channel->muted.value.value_or(false));
     soloButton_->setChecked(channel->soloed.value.value_or(false));
@@ -196,9 +182,7 @@ void ChannelStrip::retranslateUi()
     eqIndicator_->setText(QStringLiteral("EQ"));
     compressorIndicator_->setText(uiText("Compressor"));
     sendIndicator_->setText(uiText("4 Sends"));
-    gainLabel_->setText(uiText("Gain"));
     panLabel_->setText(uiText("Pan / Balance"));
-    gainSlider_->setToolTip(uiText("Input gain (simulator model)"));
     muteButton_->setText(uiText("Mute"));
     muteButton_->setToolTip(uiText("Mute"));
     soloButton_->setText(uiText("Solo"));
@@ -213,6 +197,17 @@ void ChannelStrip::mousePressEvent(QMouseEvent* event)
         requestSelection();
     }
     QWidget::mousePressEvent(event);
+}
+
+void ChannelStrip::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        requestSelection();
+        emit editRequested(channelIndex_);
+        event->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
 }
 
 void ChannelStrip::requestSelection()

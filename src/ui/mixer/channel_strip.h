@@ -29,9 +29,11 @@ public:
 
 signals:
     void selected(int channelIndex);
+    void editRequested(int channelIndex);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
     void requestSelection();
@@ -44,9 +46,7 @@ private:
     QLabel* eqIndicator_ {};
     QLabel* compressorIndicator_ {};
     QLabel* sendIndicator_ {};
-    QLabel* gainLabel_ {};
     QLabel* panLabel_ {};
-    QSlider* gainSlider_ {};
     FaderWidget* fader_ {};
     MeterWidget* meter_ {};
     QToolButton* muteButton_ {};

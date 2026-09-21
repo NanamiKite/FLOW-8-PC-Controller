@@ -3,10 +3,12 @@
 #include "ui/ui_text.h"
 
 #include <QKeyEvent>
+#include <QEnterEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QLocale>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
@@ -70,7 +72,7 @@ void FaderWidget::paintEvent(QPaintEvent*)
 
     const double thumbY = track.bottom() - value_ * track.height();
     const QRectF fill(track.left(), thumbY, track.width(), track.bottom() - thumbY);
-    painter.setBrush(QColor(80, 151, 255));
+    painter.setBrush(underMouse() ? QColor(101, 166, 255) : QColor(80, 151, 255));
     painter.drawRoundedRect(fill, 2.0, 2.0);
 
     painter.setPen(QColor(105, 111, 121));
@@ -94,12 +96,28 @@ void FaderWidget::paintEvent(QPaintEvent*)
                      decibelText(value_) + QStringLiteral(" dB"));
 }
 
+void FaderWidget::enterEvent(QEnterEvent* event)
+{
+    update();
+    QWidget::enterEvent(event);
+}
+
+void FaderWidget::leaveEvent(QEvent* event)
+{
+    update();
+    QWidget::leaveEvent(event);
+}
+
 void FaderWidget::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
         dragging_ = true;
+        dragAnchorY_ = event->position().y();
+        dragStartValue_ = value_;
         setFocus(Qt::MouseFocusReason);
-        setValueFromPosition(event->position());
+        if (!event->modifiers().testFlag(Qt::ShiftModifier)) {
+            setValueFromPosition(event->position());
+        }
         event->accept();
         return;
     }
@@ -109,7 +127,13 @@ void FaderWidget::mousePressEvent(QMouseEvent* event)
 void FaderWidget::mouseMoveEvent(QMouseEvent* event)
 {
     if (dragging_) {
-        setValueFromPosition(event->position());
+        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+            const double delta = (dragAnchorY_ - event->position().y())
+                / (trackRect().height() * 5.0);
+            setUserValue(dragStartValue_ + delta);
+        } else {
+            setValueFromPosition(event->position());
+        }
         event->accept();
         return;
     }
@@ -136,9 +160,17 @@ void FaderWidget::mouseDoubleClickEvent(QMouseEvent* event)
     QWidget::mouseDoubleClickEvent(event);
 }
 
+void FaderWidget::wheelEvent(QWheelEvent* event)
+{
+    const double step = event->modifiers().testFlag(Qt::ShiftModifier) ? 0.002 : 0.01;
+    const int direction = event->angleDelta().y() >= 0 ? 1 : -1;
+    setUserValue(value_ + step * direction);
+    event->accept();
+}
+
 void FaderWidget::keyPressEvent(QKeyEvent* event)
 {
-    const double step = event->modifiers().testFlag(Qt::ShiftModifier) ? 0.05 : 0.01;
+    const double step = event->modifiers().testFlag(Qt::ShiftModifier) ? 0.002 : 0.01;
     if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Right) {
         setUserValue(value_ + step);
         event->accept();

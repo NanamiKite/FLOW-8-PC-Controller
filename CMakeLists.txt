@@ -178,10 +178,16 @@ flow8_enable_warnings(flow8-state-dump-decoder)
 flow8_configure_platform(flow8-state-dump-decoder)
 
 add_library(flow8_ui STATIC
+    src/ui/channel/channel_edit_view.cpp
+    src/ui/channel/channel_edit_view.h
+    src/ui/common/flow_layer_bar.cpp
+    src/ui/common/flow_layer_bar.h
     src/ui/connection_bar.cpp
     src/ui/connection_bar.h
     src/ui/language_manager.cpp
     src/ui/language_manager.h
+    src/ui/layers/layer_views.cpp
+    src/ui/layers/layer_views.h
     src/ui/main_window.cpp
     src/ui/main_window.h
     src/ui/ui_text.cpp
@@ -194,6 +200,8 @@ add_library(flow8_ui STATIC
     src/ui/mixer/channel_strip.h
     src/ui/mixer/main_strip.cpp
     src/ui/mixer/main_strip.h
+    src/ui/mixer/mix_send_strip.cpp
+    src/ui/mixer/mix_send_strip.h
     src/ui/mixer/mixer_widget.cpp
     src/ui/mixer/mixer_widget.h
     src/ui/settings/settings_dialog.cpp
@@ -202,6 +210,8 @@ add_library(flow8_ui STATIC
     src/ui/session/session_start_view.h
     src/ui/setup/assisted_setup_wizard.cpp
     src/ui/setup/assisted_setup_wizard.h
+    src/ui/setup/setup_window.cpp
+    src/ui/setup/setup_window.h
     src/ui/stage/stage_view.cpp
     src/ui/stage/stage_view.h
     src/ui/widgets/eq_graph_widget.cpp

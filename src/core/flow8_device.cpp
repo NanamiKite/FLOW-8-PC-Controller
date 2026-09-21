@@ -12,6 +12,7 @@
 #include <QJsonObject>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace flow8 {
@@ -133,12 +134,14 @@ bool Flow8Device::isControlAvailable(const Control control) const noexcept
     case Control::ChannelPan:
     case Control::ChannelIdentity:
     case Control::ChannelVisibility:
+    case Control::ChannelPhantom:
     case Control::ChannelLowCut:
     case Control::MonitorSendMode:
     case Control::ChannelEq:
     case Control::ChannelCompressor:
     case Control::ChannelSend:
     case Control::BusFader:
+    case Control::BusMute:
     case Control::BusBalance:
     case Control::BusLimiter:
     case Control::BusEq:
@@ -253,6 +256,19 @@ bool Flow8Device::setChannelVisible(const int index, const bool visible)
                                     QString::fromLatin1(simulatorSource));
 }
 
+bool Flow8Device::setChannelPhantom(const int index, const bool enabled)
+{
+    const auto* channel = state_.channel(index);
+    if (!isControlAvailable(Control::ChannelPhantom) || channel == nullptr
+        || !channel->capabilities.phantom48V || !channel->phantom48V.has_value()) {
+        reject(Control::ChannelPhantom, QCoreApplication::translate(
+            "Flow8Device", "Phantom Power is unavailable for this input."));
+        return false;
+    }
+    return state_.setChannelPhantom(index, enabled, model::EvidenceStatus::Unknown,
+                                    QString::fromLatin1(simulatorSource));
+}
+
 bool Flow8Device::setChannelLowCut(const int index, const bool enabled,
                                    const double frequencyHz)
 {
@@ -327,13 +343,19 @@ bool Flow8Device::setBusFader(const int index, const double normalized)
             "Flow8Device", "Bus level is unavailable."));
         return false;
     }
-    const bool changed = state_.setBusFader(index, normalized, model::EvidenceStatus::Unknown,
-                                             QString::fromLatin1(simulatorSource));
-    if (changed && index == 0) {
-        (void)state_.setMainFader(normalized, model::EvidenceStatus::Unknown,
-                                  QString::fromLatin1(simulatorSource));
+    return state_.setBusFader(index, normalized, model::EvidenceStatus::Unknown,
+                              QString::fromLatin1(simulatorSource));
+}
+
+bool Flow8Device::setBusMuted(const int index, const bool muted)
+{
+    if (!isControlAvailable(Control::BusMute)) {
+        reject(Control::BusMute, QCoreApplication::translate(
+            "Flow8Device", "Bus mute is unavailable."));
+        return false;
     }
-    return changed;
+    return state_.setBusMuted(index, muted, model::EvidenceStatus::Unknown,
+                              QString::fromLatin1(simulatorSource));
 }
 
 bool Flow8Device::setBusBalance(const int index, const double balance)
@@ -517,6 +539,7 @@ bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotSco
             QJsonObject entry;
             entry.insert(QStringLiteral("index"), bus.index);
             entry.insert(QStringLiteral("fader"), observedDouble(bus.fader));
+            entry.insert(QStringLiteral("muted"), observedBool(bus.muted));
             if (bus.balance.has_value()) {
                 entry.insert(QStringLiteral("balance"), observedDouble(*bus.balance));
             }
@@ -551,7 +574,7 @@ bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotSco
         routing.insert(QStringLiteral("headphoneSource"), static_cast<int>(
             state_.routing().headphoneSource.value.value_or(model::HeadphoneSource::Main)));
         routing.insert(QStringLiteral("monitorStereoLink"),
-                       state_.routing().monitorStereoLink.value.value_or(false));
+                       state_.routing().monitorLink.stereoLinked.value.value_or(false));
         QJsonArray routes;
         for (const auto& route : state_.routing().routes) {
             routes.append(route.enabled.value.value_or(false));
@@ -563,10 +586,10 @@ bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotSco
         }
         routing.insert(QStringLiteral("usbRoutes"), usbRoutes);
         QJsonArray fxRoutes;
-        for (const auto& route : state_.routing().fxMonitorRoutes) {
+        for (const auto& route : state_.routing().fxOutputRoutes) {
             fxRoutes.append(route.enabled.value.value_or(false));
         }
-        routing.insert(QStringLiteral("fxMonitorRoutes"), fxRoutes);
+        routing.insert(QStringLiteral("fxOutputRoutes"), fxRoutes);
         document.insert(QStringLiteral("routing"), routing);
     }
     snapshot.data = model::StateValue<QByteArray>::known(
@@ -667,12 +690,10 @@ bool Flow8Device::loadAppSnapshot(const int libraryIndex)
                 if (!scalar("fader").isUndefined()) {
                     (void)state_.setBusFader(bus, scalar("fader").toDouble(),
                                              model::EvidenceStatus::Unknown, source);
-                    if (bus == 0) {
-                        (void)state_.setMainFader(
-                            scalar("fader").toDouble(),
-                            model::EvidenceStatus::Unknown, source);
-                    }
                 }
+                if (!scalar("muted").isUndefined())
+                    (void)state_.setBusMuted(bus, scalar("muted").toBool(),
+                                             model::EvidenceStatus::Unknown, source);
                 if (!scalar("balance").isUndefined())
                     (void)state_.setBusBalance(bus, scalar("balance").toDouble(),
                                                model::EvidenceStatus::Unknown, source);
@@ -722,10 +743,25 @@ bool Flow8Device::loadAppSnapshot(const int libraryIndex)
                         static_cast<model::UsbRouteDestination>(route),
                         usbRoutes.at(route).toBool(), model::EvidenceStatus::Unknown, source);
                 }
-                const auto fxRoutes = routing.value(QStringLiteral("fxMonitorRoutes")).toArray();
-                for (int route = 0; route < fxRoutes.size() && route < 4; ++route) {
-                    (void)state_.setFxMonitorRouteEnabled(
-                        route / 2, route % 2, fxRoutes.at(route).toBool(),
+                auto fxRoutes = routing.value(QStringLiteral("fxOutputRoutes")).toArray();
+                if (fxRoutes.isEmpty()) {
+                    // Compatibility with snapshots created before FX → MAIN was modelled.
+                    const auto legacyRoutes =
+                        routing.value(QStringLiteral("fxMonitorRoutes")).toArray();
+                    for (int route = 0; route < legacyRoutes.size() && route < 4; ++route) {
+                        (void)state_.setFxOutputRouteEnabled(
+                            route / 2,
+                            route % 2 == 0 ? model::FxOutputDestination::Monitor1
+                                           : model::FxOutputDestination::Monitor2,
+                            legacyRoutes.at(route).toBool(),
+                            model::EvidenceStatus::Unknown, source);
+                    }
+                }
+                for (int route = 0; route < fxRoutes.size() && route < 6; ++route) {
+                    (void)state_.setFxOutputRouteEnabled(
+                        route / 3,
+                        static_cast<model::FxOutputDestination>(route % 3),
+                        fxRoutes.at(route).toBool(),
                         model::EvidenceStatus::Unknown, source);
                 }
             }
@@ -748,6 +784,32 @@ bool Flow8Device::renameAppSnapshot(const int libraryIndex, const QString& name)
         if (current++ == libraryIndex) {
             return state_.setSnapshotName(index, name, model::EvidenceStatus::Unknown,
                                           QString::fromLatin1(simulatorSource));
+        }
+    }
+    return false;
+}
+
+bool Flow8Device::deleteAppSnapshot(const int libraryIndex)
+{
+    if (!isControlAvailable(Control::SnapshotStore) || libraryIndex < 0) {
+        return false;
+    }
+    auto snapshots = state_.snapshots();
+    int current = 0;
+    for (int index = 0; index < snapshots.size(); ++index) {
+        if (snapshots.at(index).storage != model::SnapshotStorage::AppLibrary) {
+            continue;
+        }
+        if (current++ == libraryIndex) {
+            snapshots.removeAt(index);
+            int appIndex = 0;
+            for (auto& snapshot : snapshots) {
+                if (snapshot.storage == model::SnapshotStorage::AppLibrary) {
+                    snapshot.index = appIndex++;
+                }
+            }
+            state_.replaceSnapshots(std::move(snapshots));
+            return true;
         }
     }
     return false;
@@ -791,17 +853,18 @@ bool Flow8Device::setUsbRouteEnabled(const model::UsbRouteDestination destinatio
                                      QString::fromLatin1(simulatorSource));
 }
 
-bool Flow8Device::setFxMonitorRouteEnabled(const int effectIndex, const int monitorIndex,
-                                            const bool enabled)
+bool Flow8Device::setFxOutputRouteEnabled(
+    const int effectIndex, const model::FxOutputDestination destination,
+    const bool enabled)
 {
     if (!isControlAvailable(Control::Routing)) {
         reject(Control::Routing, QCoreApplication::translate(
-            "Flow8Device", "FX monitor routing is unavailable."));
+            "Flow8Device", "FX output routing is unavailable."));
         return false;
     }
-    return state_.setFxMonitorRouteEnabled(effectIndex, monitorIndex, enabled,
-                                            model::EvidenceStatus::Unknown,
-                                            QString::fromLatin1(simulatorSource));
+    return state_.setFxOutputRouteEnabled(effectIndex, destination, enabled,
+                                           model::EvidenceStatus::Unknown,
+                                           QString::fromLatin1(simulatorSource));
 }
 
 bool Flow8Device::setHeadphoneSource(const model::HeadphoneSource source)
@@ -954,13 +1017,8 @@ bool Flow8Device::setMainFader(const double normalized)
             "Flow8Device", "Main fader BLE address is UNKNOWN."));
         return false;
     }
-    const bool changed = state_.setMainFader(normalized, model::EvidenceStatus::Unknown,
-                                              QString::fromLatin1(simulatorSource));
-    if (changed) {
-        (void)state_.setBusFader(0, normalized, model::EvidenceStatus::Unknown,
-                                 QString::fromLatin1(simulatorSource));
-    }
-    return changed;
+    return state_.setBusFader(0, normalized, model::EvidenceStatus::Unknown,
+                              QString::fromLatin1(simulatorSource));
 }
 
 bool Flow8Device::setMainMuted(const bool muted)
@@ -970,8 +1028,8 @@ bool Flow8Device::setMainMuted(const bool muted)
             "Flow8Device", "Main mute mapping is UNKNOWN."));
         return false;
     }
-    return state_.setMainMuted(muted, model::EvidenceStatus::Unknown,
-                               QString::fromLatin1(simulatorSource));
+    return state_.setBusMuted(0, muted, model::EvidenceStatus::Unknown,
+                              QString::fromLatin1(simulatorSource));
 }
 
 void Flow8Device::handleTransportState(const Flow8Transport::State state)
@@ -1040,7 +1098,7 @@ void Flow8Device::initializeSimulatorProfile()
         if (channel.capabilities.gain) {
             channel.gain = simulatorDouble(0.5);
         }
-        channel.fader = simulatorDouble(0.65);
+        channel.fader = simulatorDouble(std::max(0.38, 0.72 - index * 0.045));
         channel.icon = model::StateValue<model::ChannelIcon>::known(
             channel.inputType == model::InputType::UsbBluetooth
                 ? model::ChannelIcon::Playback : model::ChannelIcon::Microphone,
@@ -1067,11 +1125,13 @@ void Flow8Device::initializeSimulatorProfile()
             channel.compressor.makeupGainDb = simulatorDouble(0.0);
             channel.compressor.gainReductionDb = simulatorDouble(0.0);
         }
+        constexpr std::array<double, 4> initialSendDb {-10.0, -15.0, -8.0, -12.0};
         for (int send = 0; send < static_cast<int>(channel.sendLevelDb.size()); ++send) {
-            channel.sendLevelDb[static_cast<std::size_t>(send)] = simulatorDouble(-20.0);
+            const double levelDb = initialSendDb[static_cast<std::size_t>(send)] - index * 1.5;
+            channel.sendLevelDb[static_cast<std::size_t>(send)] = simulatorDouble(levelDb);
             if (send < 2) {
                 channel.monitorSends[static_cast<std::size_t>(send)].levelDb =
-                    simulatorDouble(-20.0);
+                    simulatorDouble(levelDb);
                 channel.monitorSends[static_cast<std::size_t>(send)].mode =
                     model::StateValue<model::MonitorSendMode>::known(
                         model::MonitorSendMode::PostFader,
@@ -1079,7 +1139,7 @@ void Flow8Device::initializeSimulatorProfile()
                         QString::fromLatin1(simulatorSource));
             } else {
                 channel.fxSendLevelDb[static_cast<std::size_t>(send - 2)] =
-                    simulatorDouble(-20.0);
+                    simulatorDouble(levelDb);
             }
         }
         if (channel.lowCut.has_value()) {
@@ -1099,6 +1159,7 @@ void Flow8Device::initializeSimulatorProfile()
     auto buses = model::createOfficialBusProfile();
     for (auto& bus : buses) {
         bus.fader = simulatorDouble(bus.busId == model::BusId::Main ? 0.75 : 0.65);
+        bus.muted = simulatorBool(false);
         if (bus.balance.has_value()) {
             *bus.balance = simulatorDouble(0.0);
         }
@@ -1117,25 +1178,6 @@ void Flow8Device::initializeSimulatorProfile()
         }
     }
     state_.replaceBuses(std::move(buses));
-
-    QVector<model::MonitorState> monitors;
-    monitors.reserve(2);
-    for (int index = 0; index < 2; ++index) {
-        model::MonitorState monitor;
-        monitor.index = index;
-        monitor.fader = simulatorDouble(0.65);
-        monitor.stereoLinked = simulatorBool(false);
-        monitor.sendMode = model::StateValue<model::MonitorSendMode>::known(
-            model::MonitorSendMode::PostFader, model::EvidenceStatus::Unknown,
-            QString::fromLatin1(simulatorSource));
-        monitor.eq.emplace();
-        monitor.limiterDb.emplace(simulatorDouble(-3.0));
-        monitor.outputDelay.emplace();
-        monitor.outputDelay->enabled = simulatorBool(false);
-        monitor.outputDelay->milliseconds = simulatorDouble(0.0);
-        monitors.append(std::move(monitor));
-    }
-    state_.replaceMonitors(std::move(monitors));
 
     QVector<model::FxState> effects;
     effects.reserve(model::fxEngineCount);
@@ -1187,13 +1229,18 @@ void Flow8Device::initializeSimulatorProfile()
     for (auto& route : routing.usbRoutes) {
         route.enabled = simulatorBool(false);
     }
-    for (auto& route : routing.fxMonitorRoutes) {
-        route.enabled = simulatorBool(false);
+    for (auto& route : routing.fxOutputRoutes) {
+        const bool enabled = route.destination == model::FxOutputDestination::Main
+            || (route.effectIndex == 0
+                && route.destination == model::FxOutputDestination::Monitor1)
+            || (route.effectIndex == 1
+                && route.destination == model::FxOutputDestination::Monitor2);
+        route.enabled = simulatorBool(enabled);
     }
     routing.headphoneSource = model::StateValue<model::HeadphoneSource>::known(
         model::HeadphoneSource::Main, model::EvidenceStatus::Unknown,
         QString::fromLatin1(simulatorSource));
-    routing.monitorStereoLink = simulatorBool(false);
+    routing.monitorLink.stereoLinked = simulatorBool(false);
     state_.replaceRouting(std::move(routing));
 
     model::AssistedSetupState setup;
@@ -1203,10 +1250,6 @@ void Flow8Device::initializeSimulatorProfile()
     ezGain.source = QString::fromLatin1(simulatorSource);
     state_.setEzGainSession(std::move(ezGain));
 
-    (void)state_.setMainFader(0.75, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
-    (void)state_.setMainMuted(false, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
     simulatorMeterStep_ = 0;
     simulatorMeterTimer_.start();
 }

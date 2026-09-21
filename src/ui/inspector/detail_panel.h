@@ -47,6 +47,7 @@ private:
     QLabel* busTitle_ {};
     QLabel* busCapability_ {};
     QSlider* busLevel_ {};
+    QCheckBox* busMute_ {};
     QSlider* busBalance_ {};
     QSlider* busLimiter_ {};
     EqGraphWidget* busEqGraph_ {};
@@ -88,7 +89,7 @@ private:
     QLabel* advancedRoutingTitle_ {};
     QComboBox* usbMode_ {};
     QVector<QCheckBox*> usbRouteChecks_;
-    QVector<QCheckBox*> fxMonitorChecks_;
+    QVector<QCheckBox*> fxOutputChecks_;
     QComboBox* headphoneSource_ {};
     QCheckBox* monitorStereoLink_ {};
     QLabel* routingEvidence_ {};

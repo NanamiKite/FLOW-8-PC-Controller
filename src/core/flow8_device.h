@@ -23,12 +23,14 @@ public:
         ChannelPan,
         ChannelIdentity,
         ChannelVisibility,
+        ChannelPhantom,
         ChannelLowCut,
         MonitorSendMode,
         ChannelEq,
         ChannelCompressor,
         ChannelSend,
         BusFader,
+        BusMute,
         BusBalance,
         BusLimiter,
         BusEq,
@@ -66,6 +68,7 @@ public:
     [[nodiscard]] bool setChannelName(int index, const QString& name);
     [[nodiscard]] bool setChannelIcon(int index, model::ChannelIcon icon);
     [[nodiscard]] bool setChannelVisible(int index, bool visible);
+    [[nodiscard]] bool setChannelPhantom(int index, bool enabled);
     [[nodiscard]] bool setChannelLowCut(int index, bool enabled, double frequencyHz);
     [[nodiscard]] bool setMonitorSendMode(int index, int monitor,
                                           model::MonitorSendMode mode);
@@ -73,6 +76,7 @@ public:
     [[nodiscard]] bool setChannelCompressorAmount(int index, double amount);
     [[nodiscard]] bool setChannelSendLevel(int index, int send, double normalized);
     [[nodiscard]] bool setBusFader(int index, double normalized);
+    [[nodiscard]] bool setBusMuted(int index, bool muted);
     [[nodiscard]] bool setBusBalance(int index, double balance);
     [[nodiscard]] bool setBusLimiterDb(int index, double thresholdDb);
     [[nodiscard]] bool setBusEqGain(int index, int band, double gainDb);
@@ -84,11 +88,13 @@ public:
     [[nodiscard]] bool storeAppSnapshot(const QString& name, model::SnapshotScope scope);
     [[nodiscard]] bool loadAppSnapshot(int libraryIndex);
     [[nodiscard]] bool renameAppSnapshot(int libraryIndex, const QString& name);
+    [[nodiscard]] bool deleteAppSnapshot(int libraryIndex);
     [[nodiscard]] bool setRouteEnabled(int inputIndex,
                                        model::RoutingDestination destination, bool enabled);
     [[nodiscard]] bool setUsbMode(model::UsbMode mode);
     [[nodiscard]] bool setUsbRouteEnabled(model::UsbRouteDestination destination, bool enabled);
-    [[nodiscard]] bool setFxMonitorRouteEnabled(int effectIndex, int monitorIndex, bool enabled);
+    [[nodiscard]] bool setFxOutputRouteEnabled(
+        int effectIndex, model::FxOutputDestination destination, bool enabled);
     [[nodiscard]] bool setHeadphoneSource(model::HeadphoneSource source);
     [[nodiscard]] bool setMonitorStereoLink(bool linked);
     void setPreferences(model::AppPreferences preferences);

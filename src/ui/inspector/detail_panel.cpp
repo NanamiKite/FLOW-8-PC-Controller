@@ -33,6 +33,7 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     , busTitle_(new QLabel(this))
     , busCapability_(new QLabel(this))
     , busLevel_(new QSlider(Qt::Horizontal, this))
+    , busMute_(new QCheckBox(this))
     , busBalance_(new QSlider(Qt::Horizontal, this))
     , busLimiter_(new QSlider(Qt::Horizontal, this))
     , busEqGraph_(new EqGraphWidget(this))
@@ -88,6 +89,7 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     auto* levelRow = new QHBoxLayout;
     levelRow->addWidget(busLevelLabel_);
     levelRow->addWidget(busLevel_, 1);
+    levelRow->addWidget(busMute_);
     levelRow->addWidget(busBalanceLabel_);
     levelRow->addWidget(busBalance_, 1);
     levelRow->addWidget(busLimiterLabel_);
@@ -115,6 +117,9 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     busLayout->addLayout(busEqRow, 1);
     connect(busLevel_, &QSlider::valueChanged, this, [this](const int value) {
         (void)device_.setBusFader(selectedBus_, value / 1000.0);
+    });
+    connect(busMute_, &QCheckBox::toggled, this, [this](const bool muted) {
+        (void)device_.setBusMuted(selectedBus_, muted);
     });
     connect(busBalance_, &QSlider::valueChanged, this, [this](const int value) {
         (void)device_.setBusBalance(selectedBus_, value / 100.0);
@@ -269,15 +274,17 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
                 });
     }
     for (int effect = 0; effect < 2; ++effect) {
-        for (int monitor = 0; monitor < 2; ++monitor) {
-            const int route = effect * 2 + monitor;
+        for (int destination = 0; destination < 3; ++destination) {
+            const int route = effect * 3 + destination;
             auto* check = new QCheckBox(advancedRouting);
-            check->setObjectName(QStringLiteral("fxMonitorRoute%1").arg(route));
-            fxMonitorChecks_.append(check);
-            advancedGrid->addWidget(check, 3, route);
+            check->setObjectName(QStringLiteral("fxOutputRoute%1").arg(route));
+            fxOutputChecks_.append(check);
+            advancedGrid->addWidget(check, 3 + effect, destination);
             connect(check, &QCheckBox::toggled, this,
-                    [this, effect, monitor](const bool enabled) {
-                        (void)device_.setFxMonitorRouteEnabled(effect, monitor, enabled);
+                    [this, effect, destination](const bool enabled) {
+                        (void)device_.setFxOutputRouteEnabled(
+                            effect, static_cast<model::FxOutputDestination>(destination),
+                            enabled);
                     });
         }
     }
@@ -371,7 +378,7 @@ void DetailPanel::refreshBus()
     if (bus->capabilities.limiter) features.append(uiText("Limiter"));
     if (bus->busId == model::BusId::Monitor1 || bus->busId == model::BusId::Monitor2) {
         features.append(uiText("Channel Sends · Pre/Post-Fader"));
-        if (device_.state().routing().monitorStereoLink.value.value_or(false)) {
+        if (device_.state().routing().monitorLink.stereoLinked.value.value_or(false)) {
             features.append(uiText("MON1/2 LINKED"));
         }
     }
@@ -387,9 +394,11 @@ void DetailPanel::refreshBus()
         }
     }
     const QSignalBlocker levelBlocker(busLevel_);
+    const QSignalBlocker muteBlocker(busMute_);
     const QSignalBlocker balanceBlocker(busBalance_);
     const QSignalBlocker limiterBlocker(busLimiter_);
     busLevel_->setValue(static_cast<int>(std::lround(bus->fader.value.value_or(0.0) * 1000.0)));
+    busMute_->setChecked(bus->muted.value.value_or(false));
     busBalance_->setVisible(bus->balance.has_value());
     busBalance_->setValue(static_cast<int>(std::lround(
         (bus->balance.has_value() ? bus->balance->value.value_or(0.0) : 0.0) * 100.0)));
@@ -533,11 +542,12 @@ void DetailPanel::refreshRouting()
             route != nullptr && route->enabled.value.value_or(false));
     }
     for (int effect = 0; effect < 2; ++effect) {
-        for (int monitor = 0; monitor < 2; ++monitor) {
-            const int index = effect * 2 + monitor;
-            const auto* route = routing.fxMonitorRoute(effect, monitor);
-            const QSignalBlocker blocker(fxMonitorChecks_[index]);
-            fxMonitorChecks_[index]->setChecked(
+        for (int destination = 0; destination < 3; ++destination) {
+            const int index = effect * 3 + destination;
+            const auto* route = routing.fxOutputRoute(
+                effect, static_cast<model::FxOutputDestination>(destination));
+            const QSignalBlocker blocker(fxOutputChecks_[index]);
+            fxOutputChecks_[index]->setChecked(
                 route != nullptr && route->enabled.value.value_or(false));
         }
     }
@@ -548,13 +558,15 @@ void DetailPanel::refreshRouting()
     }
     {
         const QSignalBlocker blocker(monitorStereoLink_);
-        monitorStereoLink_->setChecked(routing.monitorStereoLink.value.value_or(false));
+        monitorStereoLink_->setChecked(
+            routing.monitorLink.stereoLinked.value.value_or(false));
     }
 }
 
 void DetailPanel::retranslateUi()
 {
     busLevelLabel_->setText(uiText("Level"));
+    busMute_->setText(uiText("Mute"));
     busBalanceLabel_->setText(uiText("Balance"));
     busLimiterLabel_->setText(uiText("Limiter"));
 
@@ -629,12 +641,12 @@ void DetailPanel::retranslateUi()
     for (int index = 0; index < usbRouteChecks_.size(); ++index) {
         usbRouteChecks_[index]->setText(uiText(usbRoutes[static_cast<std::size_t>(index)]));
     }
-    const std::array<const char*, 4> fxRoutes {
-        "FX 1 → Monitor 1", "FX 1 → Monitor 2",
-        "FX 2 → Monitor 1", "FX 2 → Monitor 2",
+    const std::array<const char*, 6> fxRoutes {
+        "FX 1 → Main", "FX 1 → Monitor 1", "FX 1 → Monitor 2",
+        "FX 2 → Main", "FX 2 → Monitor 1", "FX 2 → Monitor 2",
     };
-    for (int index = 0; index < fxMonitorChecks_.size(); ++index) {
-        fxMonitorChecks_[index]->setText(uiText(fxRoutes[static_cast<std::size_t>(index)]));
+    for (int index = 0; index < fxOutputChecks_.size(); ++index) {
+        fxOutputChecks_[index]->setText(uiText(fxRoutes[static_cast<std::size_t>(index)]));
     }
     const int selectedHeadphone = headphoneSource_->currentData().toInt();
     {

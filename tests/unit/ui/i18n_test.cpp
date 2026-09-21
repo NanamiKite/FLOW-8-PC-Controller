@@ -12,6 +12,7 @@
 #include <QSettings>
 #include <QTest>
 #include <QTemporaryDir>
+#include <QToolButton>
 
 #include <array>
 #include <memory>
@@ -34,11 +35,15 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
         flow8::ui::UiLanguage::English,
         flow8::ui::UiLanguage::SimplifiedChinese,
     };
-    const std::array<const char*, 20> critical {
+    const std::array<const char*, 34> critical {
         "Connection", "Disconnected", "Mixer", "Channel", "Main", "Monitor 1",
         "Compressor", "Snapshot", "Routing", "Settings", "Unknown",
         "Needs Hardware Verification", "Stage View", "Preferences", "Assisted Setup",
         "USB Recording", "Pre-Fader", "Post-Fader", "Start New", "EZ-GAIN ready",
+        "Main Out", "Setup", "Configure Inputs", "Snapshot Library",
+        "Mixer Snapshots", "Preamp", "Hardware Required", "Edit Channel",
+        "Main Mix", "Master", "Monitor 1 Send", "Monitor 2 Send",
+        "FX 1 Send", "FX 2 Send",
     };
     for (const auto language : languages) {
         QVERIFY2(manager.setLanguage(language, false), "compiled translator did not load");
@@ -48,6 +53,10 @@ void I18nTest::translatorsLoadAndCriticalTextIsComplete()
             QVERIFY2(!translated.contains(QChar::ReplacementCharacter), source);
         }
     }
+    QVERIFY(manager.setLanguage(flow8::ui::UiLanguage::SimplifiedChinese, false));
+    QCOMPARE(flow8::ui::uiText("Main Mix"), QString::fromUtf8("主混音"));
+    QCOMPARE(flow8::ui::uiText("Master"), QString::fromUtf8("主控"));
+    QCOMPARE(flow8::ui::uiText("FX 1 Send"), QString::fromUtf8("FX 1 发送"));
 
     QString rejection;
     flow8::Flow8Device device;
@@ -104,11 +113,15 @@ void I18nTest::mainWindowRetranslatesAtRuntime()
     QTRY_COMPARE(device.state().connectionState(), flow8::ConnectionState::Ready);
     auto* inputOne = window.findChild<QLabel*>(QStringLiteral("channelName0"));
     QVERIFY(inputOne != nullptr);
+    auto* mainOut = window.findChild<QToolButton*>(QStringLiteral("layerMainOut"));
+    QVERIFY(mainOut != nullptr);
+    QCOMPARE(mainOut->text(), QStringLiteral("Main Out"));
 
     QVERIFY(manager.setLanguage(flow8::ui::UiLanguage::SimplifiedChinese, false));
     QCoreApplication::processEvents();
     QCOMPARE(connect->text(), QString::fromUtf8("断开"));
     QCOMPARE(inputOne->text(), QString::fromUtf8("输入 1"));
+    QCOMPARE(mainOut->text(), QString::fromUtf8("主输出"));
     QVERIFY(!window.windowTitle().contains(QChar::ReplacementCharacter));
 
     QVERIFY(manager.setLanguage(flow8::ui::UiLanguage::English, false));
@@ -137,9 +150,10 @@ void I18nTest::visibleKeyControlsFitBothLanguages()
     QCoreApplication::processEvents();
 
     const QStringList names {
-        QStringLiteral("connectButton"), QStringLiteral("settingsButton"),
-        QStringLiteral("navigation0"), QStringLiteral("navigation1"),
-        QStringLiteral("navigation7"), QStringLiteral("navigation8"),
+        QStringLiteral("connectButton"), QStringLiteral("setupButton"),
+        QStringLiteral("preferencesButton"), QStringLiteral("layerMixer"),
+        QStringLiteral("layerStage"), QStringLiteral("layerFx1"),
+        QStringLiteral("layerMonitor1"), QStringLiteral("layerMainOut"),
     };
     for (const QString& name : names) {
         auto* control = window.findChild<QWidget*>(name);

@@ -37,6 +37,15 @@ enum class HeadphoneSource {
     Monitor2,
 };
 
+// FX input sends live on ChannelState. These destinations describe only the
+// return of an already-processed FX engine and must not be conflated with the
+// per-input FX send levels.
+enum class FxOutputDestination {
+    Main,
+    Monitor1,
+    Monitor2,
+};
+
 struct RouteState {
     int inputIndex {};
     RoutingDestination destination {RoutingDestination::Main};
@@ -48,19 +57,23 @@ struct UsbRouteState {
     StateValue<bool> enabled;
 };
 
-struct FxMonitorRouteState {
+struct FxOutputRouteState {
     int effectIndex {};
-    int monitorIndex {};
+    FxOutputDestination destination {FxOutputDestination::Main};
     StateValue<bool> enabled;
+};
+
+struct MonitorLinkState {
+    StateValue<bool> stereoLinked;
 };
 
 struct RoutingState {
     QVector<RouteState> routes;
     StateValue<UsbMode> usbMode;
     QVector<UsbRouteState> usbRoutes;
-    QVector<FxMonitorRouteState> fxMonitorRoutes;
+    QVector<FxOutputRouteState> fxOutputRoutes;
     StateValue<HeadphoneSource> headphoneSource;
-    StateValue<bool> monitorStereoLink;
+    MonitorLinkState monitorLink;
 
     [[nodiscard]] const RouteState* route(int inputIndex,
                                           RoutingDestination destination) const noexcept
@@ -84,12 +97,12 @@ struct RoutingState {
         return nullptr;
     }
 
-    [[nodiscard]] const FxMonitorRouteState* fxMonitorRoute(
-        int effectIndex, int monitorIndex) const noexcept
+    [[nodiscard]] const FxOutputRouteState* fxOutputRoute(
+        int effectIndex, FxOutputDestination destination) const noexcept
     {
-        for (const auto& candidate : fxMonitorRoutes) {
+        for (const auto& candidate : fxOutputRoutes) {
             if (candidate.effectIndex == effectIndex
-                && candidate.monitorIndex == monitorIndex) {
+                && candidate.destination == destination) {
                 return &candidate;
             }
         }

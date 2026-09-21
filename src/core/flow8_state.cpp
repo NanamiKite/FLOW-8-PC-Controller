@@ -181,6 +181,20 @@ bool Flow8State::setChannelVisible(const int index, const bool visible,
     return true;
 }
 
+bool Flow8State::setChannelPhantom(const int index, const bool enabled,
+                                   const model::EvidenceStatus evidence,
+                                   const QString& source)
+{
+    auto* target = mutableChannel(index);
+    if (target == nullptr || !target->capabilities.phantom48V
+        || !target->phantom48V.has_value()
+        || !model::mergeObservedValue(*target->phantom48V, enabled, evidence, source)) {
+        return false;
+    }
+    emit channelChanged(index);
+    return true;
+}
+
 bool Flow8State::setChannelLowCut(const int index, const bool enabled,
                                   const double frequencyHz,
                                   const model::EvidenceStatus evidence,
@@ -326,6 +340,18 @@ bool Flow8State::setBusFader(const int index, const double normalized,
     return true;
 }
 
+bool Flow8State::setBusMuted(const int index, const bool muted,
+                             const model::EvidenceStatus evidence, const QString& source)
+{
+    auto* target = mutableBus(index);
+    if (target == nullptr || !target->muted.has_value()
+        || !model::mergeObservedValue(*target->muted, muted, evidence, source)) {
+        return false;
+    }
+    emit busChanged(index);
+    return true;
+}
+
 bool Flow8State::setBusBalance(const int index, const double balance,
                                const model::EvidenceStatus evidence, const QString& source)
 {
@@ -364,45 +390,6 @@ bool Flow8State::setBusEqGain(const int index, const int band, const double gain
     }
     emit busChanged(index);
     return true;
-}
-
-const model::MainState& Flow8State::main() const noexcept
-{
-    return main_;
-}
-
-bool Flow8State::setMainFader(const double normalized, const model::EvidenceStatus evidence,
-                              const QString& source)
-{
-    if (!isUnitInterval(normalized)) {
-        return false;
-    }
-    if (!model::mergeObservedValue(main_.fader, normalized, evidence, source)) {
-        return false;
-    }
-    emit mainChanged();
-    return true;
-}
-
-bool Flow8State::setMainMuted(const bool muted, const model::EvidenceStatus evidence,
-                              const QString& source)
-{
-    if (!model::mergeObservedValue(main_.muted, muted, evidence, source)) {
-        return false;
-    }
-    emit mainChanged();
-    return true;
-}
-
-const QVector<model::MonitorState>& Flow8State::monitors() const noexcept
-{
-    return monitors_;
-}
-
-void Flow8State::replaceMonitors(QVector<model::MonitorState> monitors)
-{
-    monitors_ = std::move(monitors);
-    emit stateReset();
 }
 
 const QVector<model::FxState>& Flow8State::effects() const noexcept
@@ -585,13 +572,12 @@ bool Flow8State::setUsbRouteEnabled(const model::UsbRouteDestination destination
     return false;
 }
 
-bool Flow8State::setFxMonitorRouteEnabled(const int effectIndex, const int monitorIndex,
-                                           const bool enabled,
-                                           const model::EvidenceStatus evidence,
-                                           const QString& source)
+bool Flow8State::setFxOutputRouteEnabled(
+    const int effectIndex, const model::FxOutputDestination destination,
+    const bool enabled, const model::EvidenceStatus evidence, const QString& source)
 {
-    for (auto& route : routing_.fxMonitorRoutes) {
-        if (route.effectIndex == effectIndex && route.monitorIndex == monitorIndex) {
+    for (auto& route : routing_.fxOutputRoutes) {
+        if (route.effectIndex == effectIndex && route.destination == destination) {
             if (!model::mergeObservedValue(route.enabled, enabled, evidence, source)) {
                 return false;
             }
@@ -618,12 +604,9 @@ bool Flow8State::setMonitorStereoLink(const bool linked,
                                       const model::EvidenceStatus evidence,
                                       const QString& source)
 {
-    if (!model::mergeObservedValue(routing_.monitorStereoLink, linked, evidence, source)) {
+    if (!model::mergeObservedValue(
+            routing_.monitorLink.stereoLinked, linked, evidence, source)) {
         return false;
-    }
-    for (auto& monitor : monitors_) {
-        (void)model::mergeObservedValue(
-            monitor.stereoLinked, linked, evidence, source);
     }
     emit routingChanged();
     return true;
@@ -944,6 +927,11 @@ void Flow8State::ensureReferenceStateShape()
             bus.balance.emplace();
         } else if (!profile.balance.has_value()) {
             bus.balance.reset();
+        }
+        if (profile.muted.has_value() && !bus.muted.has_value()) {
+            bus.muted.emplace();
+        } else if (!profile.muted.has_value()) {
+            bus.muted.reset();
         }
         if (profile.limiterDb.has_value() && !bus.limiterDb.has_value()) {
             bus.limiterDb.emplace();

@@ -2,6 +2,9 @@
 
 #include <QWidget>
 
+class QEnterEvent;
+class QEvent;
+
 namespace flow8::ui {
 
 class FaderWidget final : public QWidget {
@@ -20,10 +23,13 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
@@ -33,6 +39,8 @@ private:
 
     double value_ {0.75};
     bool dragging_ {};
+    double dragAnchorY_ {};
+    double dragStartValue_ {};
 };
 
 } // namespace flow8::ui

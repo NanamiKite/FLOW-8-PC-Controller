@@ -65,13 +65,21 @@ buses, two FX engines, 15 hardware snapshot slots, routing, animated meters, cha
 bus EQ, compressor amount, and send controls. Simulator values are functional test data,
 not FLOW 8 captures or protocol evidence.
 
-The desktop workspace includes Mixer, Stage, FX1/FX2, MON1/MON2, MAIN, Snapshot, and
-Routing views. It models channel names/icons/hide-show, Low Cut, MON pre/post sends,
-expanded USB/FX/headphone routing, MON stereo link, a separate app snapshot library,
-Preferences, Assisted Setup, and EZ-GAIN. Hardware commands for these additions remain
+The fixed desktop Layer Bar follows the FLOW Mix operating model: Mixer, Stage, FX1,
+FX2, MON1, MON2, MAIN, and MAIN OUT switch the entire workspace. Mixer remains a dense
+console surface; double-clicking an input opens a separate Channel Edit page rather than
+keeping a permanent inspector beside the faders. Setup is a distinct sidebar workspace
+for Configure Inputs, the app Snapshot Library, 15 Mixer Snapshot hardware slots,
+Preferences, Routing, and Info.
+
+The simulator models channel names/icons/hide-show, Low Cut, phantom power where
+applicable, MON pre/post sends, expanded USB/FX/headphone routing, MON stereo link,
+app-snapshot store/load/rename/delete, Assisted Setup, EZ-GAIN, global Tap Tempo, and
+output preferences. Hardware commands for these additions remain
 `UNKNOWN / BLOCKED: NEED_HARDWARE`; the simulator never emits guessed packets.
 
-The desktop UI uses custom faders, smooth meters, EQ graphs, and an inspector while
+The desktop UI uses custom HiDPI-aware faders (drag, wheel, Shift fine adjustment,
+keyboard and double-click reset), smooth meters, EQ graphs, and responsive layouts while
 preserving the architectural rule that Widgets call only `Flow8Device`.
 
 ## Languages
@@ -82,8 +90,9 @@ The complete desktop UI supports:
 - English (`en-US`)
 
 The first launch follows the system locale (`zh_*` selects Simplified Chinese; all other
-locales select English). The language can be changed at runtime in **Settings → Language**
-and is remembered for later launches. Qt Linguist `.ts` sources live in `translations/`;
+locales select English). The language can be changed at runtime in
+**Setup → Preferences → Language** and is remembered for later launches. Qt Linguist
+`.ts` sources live in `translations/`;
 CMake compiles and deploys the corresponding `.qm` files without hard-coded Qt paths.
 
 ## Official capability model

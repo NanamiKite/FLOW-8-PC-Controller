@@ -92,6 +92,7 @@ QVector<BusState> createOfficialBusProfile()
     struct Definition {
         BusId id;
         const char* name;
+        bool mute;
         bool balance;
         bool equalizer;
         bool limiter;
@@ -99,11 +100,11 @@ QVector<BusState> createOfficialBusProfile()
         bool outputDelay;
     };
     constexpr std::array definitions {
-        Definition {BusId::Main, "MAIN", true, true, true, false, true},
-        Definition {BusId::Monitor1, "MON 1", false, true, true, false, true},
-        Definition {BusId::Monitor2, "MON 2", false, true, true, false, true},
-        Definition {BusId::Fx1, "FX 1", false, false, false, true, false},
-        Definition {BusId::Fx2, "FX 2", false, false, false, true, false},
+        Definition {BusId::Main, "MAIN", true, true, true, true, false, true},
+        Definition {BusId::Monitor1, "MON 1", true, false, true, true, false, true},
+        Definition {BusId::Monitor2, "MON 2", true, false, true, true, false, true},
+        Definition {BusId::Fx1, "FX 1", false, false, false, false, true, false},
+        Definition {BusId::Fx2, "FX 2", false, false, false, false, true, false},
     };
 
     QVector<BusState> buses;
@@ -114,6 +115,7 @@ QVector<BusState> createOfficialBusProfile()
         bus.index = static_cast<int>(index);
         bus.busId = definition.id;
         bus.capabilities = {
+            .mute = definition.mute,
             .balance = definition.balance,
             .equalizer = definition.equalizer,
             .limiter = definition.limiter,
@@ -124,6 +126,9 @@ QVector<BusState> createOfficialBusProfile()
         bus.name = StateValue<QString>::known(
             QString::fromLatin1(definition.name), EvidenceStatus::Verified,
             QStringLiteral("OfficialManual capability label"));
+        if (definition.mute) {
+            bus.muted.emplace();
+        }
         if (definition.balance) {
             bus.balance.emplace();
         }
@@ -197,12 +202,17 @@ RoutingState createRoutingProfile()
             .enabled = {},
         });
     }
-    routing.fxMonitorRoutes.reserve(4);
+    constexpr std::array fxDestinations {
+        FxOutputDestination::Main,
+        FxOutputDestination::Monitor1,
+        FxOutputDestination::Monitor2,
+    };
+    routing.fxOutputRoutes.reserve(2 * static_cast<int>(fxDestinations.size()));
     for (int effect = 0; effect < 2; ++effect) {
-        for (int monitor = 0; monitor < 2; ++monitor) {
-            routing.fxMonitorRoutes.append(FxMonitorRouteState {
+        for (const auto destination : fxDestinations) {
+            routing.fxOutputRoutes.append(FxOutputRouteState {
                 .effectIndex = effect,
-                .monitorIndex = monitor,
+                .destination = destination,
                 .enabled = {},
             });
         }

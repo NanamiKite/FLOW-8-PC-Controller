@@ -4,6 +4,7 @@
 
 class QToolButton;
 class QLabel;
+class QMouseEvent;
 
 namespace flow8 {
 class Flow8Device;
@@ -24,6 +25,10 @@ public:
 
 signals:
     void selected();
+    void editRequested();
+
+protected:
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
     Flow8Device& device_;

@@ -31,14 +31,16 @@ ConnectionBar::ConnectionBar(QWidget* parent)
     : QWidget(parent)
     , transportSelector_(new QComboBox(this))
     , connectButton_(new QPushButton(this))
-    , settingsButton_(new QPushButton(this))
+    , setupButton_(new QPushButton(this))
+    , preferencesButton_(new QPushButton(this))
     , statusLabel_(new QLabel(this))
     , subtitle_(new QLabel(this))
 {
     setObjectName(QStringLiteral("connectionBar"));
     transportSelector_->setObjectName(QStringLiteral("transportSelector"));
     connectButton_->setObjectName(QStringLiteral("connectButton"));
-    settingsButton_->setObjectName(QStringLiteral("settingsButton"));
+    setupButton_->setObjectName(QStringLiteral("setupButton"));
+    preferencesButton_->setObjectName(QStringLiteral("preferencesButton"));
     statusLabel_->setObjectName(QStringLiteral("connectionStatus"));
 
     auto* brand = new QLabel(QStringLiteral("FLOW 8"), this);
@@ -53,9 +55,11 @@ ConnectionBar::ConnectionBar(QWidget* parent)
     layout->addStretch();
     layout->addWidget(transportSelector_);
     layout->addWidget(connectButton_);
+    statusLabel_->setProperty("class", QStringLiteral("connectionState"));
     layout->addWidget(statusLabel_);
     layout->addSpacing(8);
-    layout->addWidget(settingsButton_);
+    layout->addWidget(setupButton_);
+    layout->addWidget(preferencesButton_);
 
     connect(connectButton_, &QPushButton::clicked, this, [this] {
         if (state_ == ConnectionState::Disconnected || state_ == ConnectionState::Error) {
@@ -64,7 +68,9 @@ ConnectionBar::ConnectionBar(QWidget* parent)
             emit disconnectRequested();
         }
     });
-    connect(settingsButton_, &QPushButton::clicked, this, &ConnectionBar::settingsRequested);
+    connect(setupButton_, &QPushButton::clicked, this, &ConnectionBar::setupRequested);
+    connect(preferencesButton_, &QPushButton::clicked,
+            this, &ConnectionBar::preferencesRequested);
     retranslateUi();
 }
 
@@ -89,7 +95,8 @@ void ConnectionBar::retranslateUi()
     transportSelector_->setCurrentIndex(selection < 0 ? 0 : selection);
     transportSelector_->setToolTip(uiText(
         "The simulator is deterministic test data and is not a FLOW 8 hardware claim."));
-    settingsButton_->setText(uiText("Preferences"));
+    setupButton_->setText(uiText("Setup"));
+    preferencesButton_->setText(uiText("Preferences"));
     setConnectionState(state_);
 }
 

@@ -20,6 +20,7 @@ enum class BusId {
 };
 
 struct BusCapabilities {
+    bool mute {};
     bool balance {};
     bool equalizer {};
     bool limiter {};
@@ -39,26 +40,11 @@ struct BusState {
     BusCapabilities capabilities;
     StateValue<QString> name;
     StateValue<double> fader;
+    std::optional<StateValue<bool>> muted;
     StateValue<double> levelDb;
     std::optional<StateValue<double>> balance;
     std::optional<StateValue<double>> limiterDb;
     std::optional<BusEqState> eq;
-    std::optional<OutputDelayState> outputDelay;
-};
-
-struct MainState {
-    StateValue<double> fader;
-    StateValue<bool> muted;
-    StateValue<double> pan;
-};
-
-struct MonitorState {
-    int index {};
-    StateValue<double> fader;
-    StateValue<bool> stereoLinked;
-    StateValue<MonitorSendMode> sendMode;
-    std::optional<BusEqState> eq;
-    std::optional<StateValue<double>> limiterDb;
     std::optional<OutputDelayState> outputDelay;
 };
 

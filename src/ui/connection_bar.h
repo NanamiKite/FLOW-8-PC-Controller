@@ -22,12 +22,14 @@ public:
 signals:
     void connectRequested();
     void disconnectRequested();
-    void settingsRequested();
+    void setupRequested();
+    void preferencesRequested();
 
 private:
     QComboBox* transportSelector_ {};
     QPushButton* connectButton_ {};
-    QPushButton* settingsButton_ {};
+    QPushButton* setupButton_ {};
+    QPushButton* preferencesButton_ {};
     QLabel* statusLabel_ {};
     QLabel* subtitle_ {};
     ConnectionState state_ {ConnectionState::Disconnected};

@@ -75,8 +75,10 @@ void MixerModelTest::snapshotAndRoutingShapesAreDistinct()
     const auto routing = flow8::model::createRoutingProfile();
     QCOMPARE(routing.routes.size(), 35);
     QCOMPARE(routing.usbRoutes.size(), 9);
-    QCOMPARE(routing.fxMonitorRoutes.size(), 4);
+    QCOMPARE(routing.fxOutputRoutes.size(), 6);
     QVERIFY(routing.route(4, flow8::model::RoutingDestination::Fx2) != nullptr);
+    QVERIFY(routing.fxOutputRoute(0, flow8::model::FxOutputDestination::Main) != nullptr);
+    QVERIFY(routing.fxOutputRoute(1, flow8::model::FxOutputDestination::Monitor2) != nullptr);
     QVERIFY(routing.route(7, flow8::model::RoutingDestination::Main) == nullptr);
 }
 
@@ -84,10 +86,10 @@ void MixerModelTest::flowMixFunctionalExtensionsRemainExplicit()
 {
     const auto routing = flow8::model::createRoutingProfile();
     QVERIFY(routing.usbRoute(flow8::model::UsbRouteDestination::Monitor2) != nullptr);
-    QVERIFY(routing.fxMonitorRoute(1, 1) != nullptr);
+    QVERIFY(routing.fxOutputRoute(1, flow8::model::FxOutputDestination::Monitor2) != nullptr);
     QVERIFY(!routing.usbMode.value.has_value());
     QVERIFY(!routing.headphoneSource.value.has_value());
-    QVERIFY(!routing.monitorStereoLink.value.has_value());
+    QVERIFY(!routing.monitorLink.stereoLinked.value.has_value());
 
     const flow8::model::AppPreferences preferences;
     QVERIFY(preferences.showMuteButtons);

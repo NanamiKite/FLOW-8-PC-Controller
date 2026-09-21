@@ -7,6 +7,7 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -25,7 +26,7 @@ MainStrip::MainStrip(Flow8Device& device, QWidget* parent)
 {
     setObjectName(QStringLiteral("mainStrip"));
     setProperty("class", QStringLiteral("mainStrip"));
-    setMinimumWidth(154);
+    setMinimumWidth(142);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     fader_->setObjectName(QStringLiteral("mainFader"));
     mute_->setCheckable(true);
@@ -68,14 +69,18 @@ MainStrip::MainStrip(Flow8Device& device, QWidget* parent)
 
 void MainStrip::refresh()
 {
-    const auto& main = device_.state().main();
-    setEnabled(device_.state().connectionState() == ConnectionState::Ready);
+    const auto* main = device_.state().bus(0);
+    setEnabled(main != nullptr
+        && device_.state().connectionState() == ConnectionState::Ready);
+    if (main == nullptr) {
+        return;
+    }
     const QSignalBlocker faderBlocker(fader_);
     const QSignalBlocker muteBlocker(mute_);
-    fader_->setValue(main.fader.value.value_or(0.0));
-    mute_->setChecked(main.muted.value.value_or(false));
-    meter_->setLevel(main.fader.value.value_or(0.0) * 0.78);
-    meter_->setPeak(main.fader.value.value_or(0.0) * 0.84);
+    fader_->setValue(main->fader.value.value_or(0.0));
+    mute_->setChecked(main->muted.value.value_or(false));
+    meter_->setLevel(main->fader.value.value_or(0.0) * 0.78);
+    meter_->setPeak(main->fader.value.value_or(0.0) * 0.84);
 }
 
 void MainStrip::retranslateUi()
@@ -86,6 +91,16 @@ void MainStrip::retranslateUi()
     mute_->setText(uiText("Mute"));
     mute_->setToolTip(uiText("Mute"));
     fader_->retranslateUi();
+}
+
+void MainStrip::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        emit editRequested();
+        event->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
 }
 
 } // namespace flow8::ui

@@ -64,6 +64,8 @@ public:
                                       model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setChannelVisible(int index, bool visible,
                                          model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setChannelPhantom(int index, bool enabled,
+                                         model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setChannelLowCut(int index, bool enabled, double frequencyHz,
                                         model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setMonitorSendMode(int index, int monitor,
@@ -86,21 +88,14 @@ public:
     void replaceBuses(QVector<model::BusState> buses);
     [[nodiscard]] bool setBusFader(int index, double normalized,
                                    model::EvidenceStatus evidence, const QString& source);
+    [[nodiscard]] bool setBusMuted(int index, bool muted,
+                                   model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setBusBalance(int index, double balance,
                                      model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setBusLimiterDb(int index, double thresholdDb,
                                        model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setBusEqGain(int index, int band, double gainDb,
                                     model::EvidenceStatus evidence, const QString& source);
-
-    [[nodiscard]] const model::MainState& main() const noexcept;
-    [[nodiscard]] bool setMainFader(double normalized, model::EvidenceStatus evidence,
-                                    const QString& source);
-    [[nodiscard]] bool setMainMuted(bool muted, model::EvidenceStatus evidence,
-                                    const QString& source);
-
-    [[nodiscard]] const QVector<model::MonitorState>& monitors() const noexcept;
-    void replaceMonitors(QVector<model::MonitorState> monitors);
 
     [[nodiscard]] const QVector<model::FxState>& effects() const noexcept;
     void replaceEffects(QVector<model::FxState> effects);
@@ -134,9 +129,9 @@ public:
     [[nodiscard]] bool setUsbRouteEnabled(model::UsbRouteDestination destination, bool enabled,
                                            model::EvidenceStatus evidence,
                                            const QString& source);
-    [[nodiscard]] bool setFxMonitorRouteEnabled(int effectIndex, int monitorIndex, bool enabled,
-                                                 model::EvidenceStatus evidence,
-                                                 const QString& source);
+    [[nodiscard]] bool setFxOutputRouteEnabled(
+        int effectIndex, model::FxOutputDestination destination, bool enabled,
+        model::EvidenceStatus evidence, const QString& source);
     [[nodiscard]] bool setHeadphoneSource(model::HeadphoneSource sourceValue,
                                            model::EvidenceStatus evidence,
                                            const QString& source);
@@ -167,7 +162,6 @@ signals:
     void assistedSetupChanged();
     void ezGainSessionChanged();
     void globalTempoChanged();
-    void mainChanged();
 
 private:
     [[nodiscard]] model::ChannelState* mutableChannel(int index) noexcept;
@@ -179,8 +173,6 @@ private:
     ConnectionState connectionState_ {ConnectionState::Disconnected};
     QVector<model::ChannelState> channels_;
     QVector<model::BusState> buses_;
-    model::MainState main_;
-    QVector<model::MonitorState> monitors_;
     QVector<model::FxState> effects_;
     model::GlobalTempoState globalTempo_;
     QVector<model::SnapshotState> snapshots_;
