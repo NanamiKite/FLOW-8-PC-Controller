@@ -15,18 +15,6 @@
 #include <cmath>
 
 namespace flow8::ui {
-namespace {
-
-QString decibelText(const double value)
-{
-    if (value <= 0.0001) {
-        return QStringLiteral("−∞");
-    }
-    const double db = -70.0 + value * 80.0;
-    return QLocale().toString(db, 'f', 1);
-}
-
-} // namespace
 
 FaderWidget::FaderWidget(QWidget* parent)
     : QWidget(parent)
@@ -56,6 +44,32 @@ void FaderWidget::setValue(const double value)
     }
     value_ = bounded;
     update();
+}
+
+void FaderWidget::setDbRange(const double minimumDb, const double maximumDb)
+{
+    if (!std::isfinite(minimumDb) || !std::isfinite(maximumDb)
+        || minimumDb >= maximumDb) {
+        return;
+    }
+    minimumDb_ = minimumDb;
+    maximumDb_ = maximumDb;
+    update();
+}
+
+double FaderWidget::minimumDb() const noexcept
+{
+    return minimumDb_;
+}
+
+double FaderWidget::maximumDb() const noexcept
+{
+    return maximumDb_;
+}
+
+double FaderWidget::valueDb() const noexcept
+{
+    return minimumDb_ + value_ * (maximumDb_ - minimumDb_);
 }
 
 void FaderWidget::paintEvent(QPaintEvent*)
@@ -92,8 +106,10 @@ void FaderWidget::paintEvent(QPaintEvent*)
 
     painter.setPen(QColor(189, 194, 202));
     painter.setFont(QFont(font().family(), 9, QFont::DemiBold));
+    const QString valueText = value_ <= 0.0001 && minimumDb_ <= -70.0
+        ? QStringLiteral("−∞ dB") : decibelValueText(valueDb());
     painter.drawText(QRectF(0.0, height() - 24.0, width(), 20.0), Qt::AlignCenter,
-                     decibelText(value_) + QStringLiteral(" dB"));
+                     valueText);
 }
 
 void FaderWidget::enterEvent(QEnterEvent* event)
@@ -153,7 +169,8 @@ void FaderWidget::mouseReleaseEvent(QMouseEvent* event)
 void FaderWidget::mouseDoubleClickEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
-        setUserValue(0.875); // 0 dB on the project's -70..+10 normalized scale.
+        setUserValue(std::clamp(
+            (0.0 - minimumDb_) / (maximumDb_ - minimumDb_), 0.0, 1.0));
         event->accept();
         return;
     }

@@ -2,6 +2,8 @@
 
 #include "core/flow8_device.h"
 #include "ui/widgets/eq_graph_widget.h"
+#include "ui/widgets/fader_widget.h"
+#include "ui/widgets/knob_widget.h"
 #include "ui/widgets/meter_widget.h"
 #include "ui/ui_text.h"
 
@@ -34,10 +36,10 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     , busTitle_(new QLabel(this))
     , busCapability_(new QLabel(this))
     , busMeter_(new MeterWidget(this))
-    , busLevel_(new QSlider(Qt::Horizontal, this))
+    , busLevel_(new FaderWidget(this))
     , busMute_(new QCheckBox(this))
-    , busBalance_(new QSlider(Qt::Horizontal, this))
-    , busLimiter_(new QSlider(Qt::Horizontal, this))
+    , busBalance_(new KnobWidget(this))
+    , busLimiter_(new KnobWidget(this))
     , busEqGraph_(new EqGraphWidget(this))
     , busOutputDelay_(new QLabel(this))
     , fxTitle_(new QLabel(this))
@@ -88,21 +90,57 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
     busLevelLabel_ = new QLabel(busPage);
     busBalanceLabel_ = new QLabel(busPage);
     busLimiterLabel_ = new QLabel(busPage);
-    busLevel_->setRange(0, 1000);
     busLevel_->setObjectName(QStringLiteral("busLevel"));
-    busBalance_->setRange(-100, 100);
+    busLevel_->setDbRange(-60.0, 10.0);
     busBalance_->setObjectName(QStringLiteral("busBalance"));
-    busLimiter_->setRange(-300, 0);
+    busBalance_->setRange(-1.0, 1.0);
+    busBalance_->setSingleStep(0.01);
+    busBalance_->setDefaultValue(0.0);
+    busBalance_->setDisplayMode(KnobWidget::DisplayMode::PanBalance);
     busLimiter_->setObjectName(QStringLiteral("busLimiter"));
+    busLimiter_->setRange(-30.0, 0.0);
+    busLimiter_->setSingleStep(0.1);
+    busLimiter_->setDefaultValue(0.0);
+    busLimiter_->setDisplayMode(KnobWidget::DisplayMode::Decibels);
+
+    busLevelLabel_->setAlignment(Qt::AlignCenter);
+    busBalanceLabel_->setAlignment(Qt::AlignCenter);
+    busLimiterLabel_->setAlignment(Qt::AlignCenter);
+    auto* masterControl = new QWidget(busPage);
+    auto* masterLayout = new QVBoxLayout(masterControl);
+    masterLayout->setContentsMargins(0, 0, 0, 0);
+    masterLayout->setSpacing(6);
+    auto* meterFader = new QHBoxLayout;
+    meterFader->setContentsMargins(0, 0, 0, 0);
+    meterFader->setSpacing(8);
+    meterFader->addWidget(busMeter_);
+    meterFader->addWidget(busLevel_);
+    masterLayout->addWidget(busLevelLabel_);
+    masterLayout->addLayout(meterFader, 1);
+    masterLayout->addWidget(busMute_);
+
+    auto* balanceControl = new QWidget(busPage);
+    auto* balanceLayout = new QVBoxLayout(balanceControl);
+    balanceLayout->setContentsMargins(0, 0, 0, 0);
+    balanceLayout->setSpacing(6);
+    balanceLayout->addWidget(busBalanceLabel_);
+    balanceLayout->addWidget(busBalance_, 0, Qt::AlignTop | Qt::AlignHCenter);
+    balanceLayout->addStretch();
+
+    auto* limiterControl = new QWidget(busPage);
+    auto* limiterLayout = new QVBoxLayout(limiterControl);
+    limiterLayout->setContentsMargins(0, 0, 0, 0);
+    limiterLayout->setSpacing(6);
+    limiterLayout->addWidget(busLimiterLabel_);
+    limiterLayout->addWidget(busLimiter_, 0, Qt::AlignTop | Qt::AlignHCenter);
+    limiterLayout->addStretch();
+
     auto* levelRow = new QHBoxLayout;
-    levelRow->addWidget(busMeter_);
-    levelRow->addWidget(busLevelLabel_);
-    levelRow->addWidget(busLevel_, 1);
-    levelRow->addWidget(busMute_);
-    levelRow->addWidget(busBalanceLabel_);
-    levelRow->addWidget(busBalance_, 1);
-    levelRow->addWidget(busLimiterLabel_);
-    levelRow->addWidget(busLimiter_, 1);
+    levelRow->setSpacing(16);
+    levelRow->addWidget(masterControl);
+    levelRow->addWidget(balanceControl);
+    levelRow->addWidget(limiterControl);
+    levelRow->addStretch();
     busLayout->addLayout(busHeader);
     busLayout->addLayout(levelRow);
     auto* busEqRow = new QVBoxLayout;
@@ -133,17 +171,17 @@ DetailPanel::DetailPanel(Flow8Device& device, QWidget* parent)
             [this](const int band, const double gainDb) {
                 (void)device_.setBusEqGain(selectedBus_, band, gainDb);
             });
-    connect(busLevel_, &QSlider::valueChanged, this, [this](const int value) {
-        (void)device_.setBusFader(selectedBus_, value / 1000.0);
+    connect(busLevel_, &FaderWidget::valueChanged, this, [this](const double value) {
+        (void)device_.setBusFader(selectedBus_, value);
     });
     connect(busMute_, &QCheckBox::toggled, this, [this](const bool muted) {
         (void)device_.setBusMuted(selectedBus_, muted);
     });
-    connect(busBalance_, &QSlider::valueChanged, this, [this](const int value) {
-        (void)device_.setBusBalance(selectedBus_, value / 100.0);
+    connect(busBalance_, &KnobWidget::valueChanged, this, [this](const double value) {
+        (void)device_.setBusBalance(selectedBus_, value);
     });
-    connect(busLimiter_, &QSlider::valueChanged, this, [this](const int value) {
-        (void)device_.setBusLimiterDb(selectedBus_, value / 10.0);
+    connect(busLimiter_, &KnobWidget::valueChanged, this, [this](const double value) {
+        (void)device_.setBusLimiterDb(selectedBus_, value);
     });
 
     auto* fxPage = new QWidget(pages_);
@@ -599,18 +637,19 @@ void DetailPanel::refreshBus()
     const QSignalBlocker muteBlocker(busMute_);
     const QSignalBlocker balanceBlocker(busBalance_);
     const QSignalBlocker limiterBlocker(busLimiter_);
-    busLevel_->setValue(static_cast<int>(std::lround(bus->fader.value.value_or(0.0) * 1000.0)));
+    busLevel_->setValue(bus->fader.value.value_or(0.0));
     refreshBusMeter();
     busMute_->setVisible(bus->muted.has_value());
     busMute_->setChecked(bus->muted.has_value()
         && bus->muted->value.value_or(false));
     busBalance_->setVisible(bus->balance.has_value());
-    busBalance_->setValue(static_cast<int>(std::lround(
-        (bus->balance.has_value() ? bus->balance->value.value_or(0.0) : 0.0) * 100.0)));
+    busBalanceLabel_->setVisible(bus->balance.has_value());
+    busBalance_->setValue(
+        bus->balance.has_value() ? bus->balance->value.value_or(0.0) : 0.0);
     busLimiter_->setVisible(bus->limiterDb.has_value());
-    busLimiter_->setValue(static_cast<int>(std::lround(
-        (bus->limiterDb.has_value() ? bus->limiterDb->value.value_or(-30.0) : -30.0)
-            * 10.0)));
+    busLimiterLabel_->setVisible(bus->limiterDb.has_value());
+    busLimiter_->setValue(
+        bus->limiterDb.has_value() ? bus->limiterDb->value.value_or(-30.0) : -30.0);
     busEqGraph_->setVisible(bus->eq.has_value());
     QVector<EqGraphBand> graphBands;
     graphBands.reserve(9);
@@ -795,9 +834,13 @@ void DetailPanel::refreshRouting()
 void DetailPanel::retranslateUi()
 {
     busLevelLabel_->setText(uiText("Level"));
+    busLevel_->setAccessibleName(uiText("Level"));
+    busLevel_->retranslateUi();
     busMute_->setText(uiText("Mute"));
     busBalanceLabel_->setText(uiText("Balance"));
+    busBalance_->setAccessibleName(uiText("Balance"));
     busLimiterLabel_->setText(uiText("Limiter"));
+    busLimiter_->setAccessibleName(uiText("Limiter"));
 
     const QSignalBlocker presetBlocker(fxPreset_);
     fxPreset_->clear();

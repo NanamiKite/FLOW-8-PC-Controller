@@ -29,6 +29,7 @@ MainStrip::MainStrip(Flow8Device& device, QWidget* parent)
     setMinimumWidth(142);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     fader_->setObjectName(QStringLiteral("mainFader"));
+    fader_->setDbRange(-60.0, 10.0);
     mute_->setCheckable(true);
     mute_->setObjectName(QStringLiteral("mainMute"));
     mute_->setProperty("class", QStringLiteral("muteButton"));

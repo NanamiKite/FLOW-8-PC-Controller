@@ -296,6 +296,7 @@ MainOutView::MainOutView(Flow8Device& device, QWidget* parent)
     delayState_->setProperty("class", QStringLiteral("secondaryText"));
     outputLevelMode_->setProperty("class", QStringLiteral("secondaryText"));
     fader_->setObjectName(QStringLiteral("mainOutFader"));
+    fader_->setDbRange(-60.0, 10.0);
     mute_->setObjectName(QStringLiteral("mainOutMute"));
     mute_->setProperty("class", QStringLiteral("muteButton"));
     mute_->setCheckable(true);

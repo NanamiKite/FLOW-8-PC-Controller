@@ -227,6 +227,8 @@ add_library(flow8_ui STATIC
     src/ui/widgets/eq_graph_widget.h
     src/ui/widgets/fader_widget.cpp
     src/ui/widgets/fader_widget.h
+    src/ui/widgets/knob_widget.cpp
+    src/ui/widgets/knob_widget.h
     src/ui/widgets/meter_widget.cpp
     src/ui/widgets/meter_widget.h
 )

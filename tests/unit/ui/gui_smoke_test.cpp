@@ -15,6 +15,7 @@
 #include "ui/ui_text.h"
 #include "ui/widgets/eq_graph_widget.h"
 #include "ui/widgets/fader_widget.h"
+#include "ui/widgets/knob_widget.h"
 #include "ui/widgets/meter_widget.h"
 
 #include <QPushButton>
@@ -291,7 +292,28 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
         QStringLiteral("destinationMasterPanel"));
     QVERIFY(master != nullptr);
     QTRY_VERIFY(master->isVisible());
-    QVERIFY(master->findChild<QSlider*>(QStringLiteral("busLevel")) != nullptr);
+    auto* busLevel = master->findChild<flow8::ui::FaderWidget*>(
+        QStringLiteral("busLevel"));
+    auto* busLimiter = master->findChild<flow8::ui::KnobWidget*>(
+        QStringLiteral("busLimiter"));
+    QVERIFY(busLevel != nullptr);
+    QVERIFY(busLimiter != nullptr);
+    QCOMPARE(busLevel->minimumDb(), -60.0);
+    QCOMPARE(busLevel->maximumDb(), 10.0);
+    QCOMPARE(busLimiter->minimum(), -30.0);
+    QCOMPARE(busLimiter->maximum(), 0.0);
+    QCOMPARE(busLimiter->displayMode(),
+             flow8::ui::KnobWidget::DisplayMode::Decibels);
+    QTRY_VERIFY(busLimiter->isVisible());
+    busLevel->setFocus();
+    QTest::keyClick(busLevel, Qt::Key_Home);
+    QCOMPARE(device.state().bus(2)->fader.value, std::optional(1.0));
+    const double limiterBefore = device.state().bus(2)->limiterDb->value.value_or(-30.0);
+    busLimiter->setFocus();
+    QTest::keyClick(busLimiter, Qt::Key_Right);
+    QVERIFY(qAbs(device.state().bus(2)->limiterDb->value.value_or(-30.0)
+                 - (limiterBefore + 0.1)) < 0.000001);
+    QVERIFY(busLimiter->valueText().endsWith(QStringLiteral(" dB")));
     for (int band = 0; band < 9; ++band) {
         const auto* busEqValue = master->findChild<QLabel*>(
             QStringLiteral("busEqValue%1").arg(band));
@@ -306,6 +328,19 @@ void GuiSmokeTest::simulatorConnectsAndBuildsMixer()
     QTest::mouseClick(mainNavigation, Qt::LeftButton);
     QCOMPARE(mixer->destination(), flow8::model::RoutingDestination::Main);
     QTRY_VERIFY(mixer->isVisible());
+    auto* busBalance = master->findChild<flow8::ui::KnobWidget*>(
+        QStringLiteral("busBalance"));
+    QVERIFY(busBalance != nullptr);
+    QTRY_VERIFY(busBalance->isVisible());
+    QCOMPARE(busBalance->minimum(), -1.0);
+    QCOMPARE(busBalance->maximum(), 1.0);
+    QCOMPARE(busBalance->displayMode(),
+             flow8::ui::KnobWidget::DisplayMode::PanBalance);
+    busBalance->setFocus();
+    QTest::keyClick(busBalance, Qt::Key_Right);
+    QVERIFY(qAbs(device.state().bus(0)->balance->value.value_or(0.0) - 0.01)
+            < 0.000001);
+    QCOMPARE(busBalance->valueText(), flow8::ui::panBalanceValueText(1));
 
     auto* mainOutNavigation = window.findChild<QToolButton*>(QStringLiteral("layerMainOut"));
     QVERIFY(mainOutNavigation != nullptr);

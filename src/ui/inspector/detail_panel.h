@@ -20,6 +20,8 @@ class Flow8Device;
 namespace flow8::ui {
 
 class EqGraphWidget;
+class FaderWidget;
+class KnobWidget;
 class MeterWidget;
 
 class DetailPanel final : public QWidget {
@@ -50,10 +52,10 @@ private:
     QLabel* busTitle_ {};
     QLabel* busCapability_ {};
     MeterWidget* busMeter_ {};
-    QSlider* busLevel_ {};
+    FaderWidget* busLevel_ {};
     QCheckBox* busMute_ {};
-    QSlider* busBalance_ {};
-    QSlider* busLimiter_ {};
+    KnobWidget* busBalance_ {};
+    KnobWidget* busLimiter_ {};
     EqGraphWidget* busEqGraph_ {};
     QVector<QSlider*> busEqSliders_;
     QVector<QLabel*> busEqLabels_;
