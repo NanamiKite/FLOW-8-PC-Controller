@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QByteArrayView>
 #include <QString>
+#include <QVector>
 
 #include <optional>
 
@@ -37,30 +38,40 @@ enum class PacketType : quint8 {
     GetChannelLabels = 0x23,
     ChannelLabels = 0x24,
     Setting = 0x25,
-    // 0x26 is retained only as a reference-project observation.
-    ReferenceParameterQuery = 0x26,
+    GetSetting = 0x26,
     SnapshotNames = 0x27,
     FactoryReset = 0x29,
     FxState = 0x30,
     FxPreset = 0x31,
     SnapshotRename = 0x32,
-    ConnectionState = 0x33,
-    Identity = 0x35,
-    AuthenticationAck = 0x36,
+    ChannelConnectionState = 0x33,
+    ChannelSimulateConnectionState = 0x34,
+    HandshakeHost = 0x35,
+    HandshakeReply = 0x36,
     GetMixerState = 0x37,
     MixerState = 0x38,
-    Authentication = 0x39,
+    HandshakeClient = 0x39,
     FxTempo = 0x40,
     SelectOutput = 0x41,
+    RequestData = 0x42,
+    TransferData = 0x43,
+    AckData = 0x44,
+    SetMidi = 0x45,
+    GetMidi = 0x46,
+    SetFxPresetDescription = 0x47,
+    SetFxPresetDescriptionAck = 0x48,
+    ChannelReserved = 0x49,
     ChannelDelay = 0x4A,
-    DumpTrigger = 0x4B,
+    SysExMidiDump = 0x4B,
 };
 
 struct Packet {
     quint8 type {};
     quint8 fragmentCount {};
-    // Present structurally when fragmentCount > 1. Their sequence/index
-    // semantic ordering remains INFERRED, so neutral names are intentional.
+    // APK-native framing confirms sequence ID followed by fragment index.
+    std::optional<quint8> sequenceId;
+    std::optional<quint8> fragmentIndex;
+    // Compatibility aliases retained for existing raw inspection tools.
     std::optional<quint8> fragmentHeaderA;
     std::optional<quint8> fragmentHeaderB;
     QByteArray payload;
@@ -73,6 +84,8 @@ struct Packet {
 enum class PacketError {
     TooShort,
     InvalidFragmentCount,
+    InvalidFragmentIndex,
+    TooManyFragments,
     MissingFragmentHeader,
     ChecksumMismatch,
 };
@@ -89,6 +102,12 @@ struct PacketParseResult {
 [[nodiscard]] QString packetTypeName(quint8 value);
 [[nodiscard]] model::EvidenceStatus packetEvidence(quint8 value) noexcept;
 [[nodiscard]] QByteArray frameSingleFragment(quint8 type, QByteArrayView payload = {});
+// Reproduces the APK common framing. At the Android MTU-255 configuration,
+// maxRawPacketSize is 251: single payload capacity 248, fragmented capacity
+// 246. Returns an empty vector when limits cannot be represented safely.
+[[nodiscard]] QVector<QByteArray> frameCommand(
+    quint8 type, QByteArrayView payload, qsizetype maxRawPacketSize = 251,
+    quint8 sequenceId = 0);
 [[nodiscard]] PacketParseResult parsePacket(QByteArrayView raw);
 
 } // namespace flow8::protocol

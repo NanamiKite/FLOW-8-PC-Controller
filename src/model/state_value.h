@@ -28,8 +28,17 @@ struct StateValue {
     std::optional<T> value;
     EvidenceStatus evidence {EvidenceStatus::Unknown};
     QString source;
+    // Local intent is never authoritative. RX observations clear these
+    // fields, including when the device reports a different value.
+    std::optional<T> pending;
+    QString error;
 
     [[nodiscard]] bool isKnown() const noexcept { return value.has_value(); }
+
+    [[nodiscard]] std::optional<T> effectiveValue() const
+    {
+        return pending.has_value() ? pending : value;
+    }
 
     static StateValue known(T newValue, EvidenceStatus status, QString sourceDescription = {})
     {
@@ -37,6 +46,8 @@ struct StateValue {
             .value = std::move(newValue),
             .evidence = status,
             .source = std::move(sourceDescription),
+            .pending = std::nullopt,
+            .error = {},
         };
     }
 };
@@ -60,6 +71,8 @@ template<typename T>
         return false;
     }
     target = StateValue<T>::known(std::move(newValue), evidence, std::move(source));
+    target.pending.reset();
+    target.error.clear();
     return true;
 }
 

@@ -70,6 +70,8 @@ struct PhysicalOutputState {
     bool sourceSelectable {};
     std::optional<PhysicalOutputSource> nominalSource;
     std::optional<StateValue<bool>> padMinus10Dbv;
+    // Currently populated for the headphone sink by the 0x38 tail.
+    StateValue<double> levelDb;
     CapabilityEvidence evidence;
 };
 

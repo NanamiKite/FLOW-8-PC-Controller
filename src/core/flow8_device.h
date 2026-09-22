@@ -2,6 +2,8 @@
 
 #include "core/flow8_state.h"
 #include "core/flow8_transport.h"
+#include "core/semantic_command_queue.h"
+#include "protocol/command_stream_decoder.h"
 
 #include <QObject>
 #include <QElapsedTimer>
@@ -60,6 +62,9 @@ public:
     void setTransport(std::unique_ptr<Flow8Transport> transport);
     void connectDevice();
     void disconnectDevice();
+    void setAutomaticStateRecovery(bool enabled) noexcept;
+    [[nodiscard]] bool automaticStateRecovery() const noexcept;
+    [[nodiscard]] bool requestMixerState();
 
     [[nodiscard]] bool isControlAvailable(Control control) const noexcept;
     [[nodiscard]] bool setChannelFader(int index, double normalized);
@@ -123,10 +128,17 @@ signals:
     void transportChanged();
     void controlRejected(flow8::Flow8Device::Control control, const QString& reason);
     void protocolPacketObserved(quint8 type, const QByteArray& raw);
+    void protocolError(const QString& message);
 
 private:
     void handleTransportState(Flow8Transport::State state);
     void handleBytesReceived(const QByteArray& payload);
+    void handleBytesWritten(const QByteArray& payload);
+    [[nodiscard]] bool enqueueProtocolCommand(
+        protocol::Flow8Command command,
+        SemanticCommandQueue::Coalescing coalescing);
+    void pumpProtocolQueue();
+    void resetProtocolQueue();
     void initializeSimulatorProfile();
     void updateSimulatorMeters();
     [[nodiscard]] bool simulatorReady() const noexcept;
@@ -137,6 +149,12 @@ private:
     QTimer simulatorMeterTimer_;
     QElapsedTimer tapTimer_;
     int simulatorMeterStep_ {};
+    protocol::CommandStreamDecoder commandStreamDecoder_;
+    SemanticCommandQueue commandQueue_;
+    QVector<QByteArray> activeWriteFrames_;
+    qsizetype activeWriteIndex_ {};
+    bool writeInFlight_ {};
+    bool automaticStateRecovery_ {true};
 };
 
 } // namespace flow8

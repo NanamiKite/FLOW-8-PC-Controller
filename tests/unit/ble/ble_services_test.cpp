@@ -13,6 +13,7 @@ private slots:
     void constantsKeepApkAndReferenceEvidenceSeparate();
     void candidateFilterAcceptsNameOrService();
     void propertiesAreRenderedWithoutLosingFlags();
+    void transportPolicyIsExplicitAndOfflineSafe();
     void transportRejectsConnectWithoutDevice();
 };
 
@@ -58,6 +59,23 @@ void BleServicesTest::propertiesAreRenderedWithoutLosingFlags()
         | QLowEnergyCharacteristic::WriteNoResponse);
     QCOMPARE(names, QStringList({QStringLiteral("read"), QStringLiteral("write-without-response"),
                                  QStringLiteral("notify")}));
+}
+
+void BleServicesTest::transportPolicyIsExplicitAndOfflineSafe()
+{
+    flow8::ble::BleTransport transport;
+    QVERIFY(transport.automaticNotificationSubscription());
+    QVERIFY(!transport.notificationsEnabled());
+    QCOMPARE(transport.negotiatedMtu(), 23);
+    QCOMPARE(transport.writePreference(),
+             flow8::ble::BleTransport::WritePreference::Automatic);
+
+    transport.setAutomaticNotificationSubscription(false);
+    transport.setWritePreference(
+        flow8::ble::BleTransport::WritePreference::WithoutResponse);
+    QVERIFY(!transport.automaticNotificationSubscription());
+    QCOMPARE(transport.writePreference(),
+             flow8::ble::BleTransport::WritePreference::WithoutResponse);
 }
 
 void BleServicesTest::transportRejectsConnectWithoutDevice()

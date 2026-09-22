@@ -21,6 +21,7 @@ struct EqState {
 struct BusEqState {
     std::array<StateValue<double>, 9> gainDb;
     std::array<StateValue<double>, 9> frequencyHz;
+    std::array<StateValue<double>, 9> q;
 };
 
 } // namespace flow8::model

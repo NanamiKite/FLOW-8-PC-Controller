@@ -38,17 +38,31 @@ enum class ApkCommandId : quint8 {
     GetChannelLabels = 0x23,
     ChannelLabels = 0x24,
     Setting = 0x25,
+    GetSetting = 0x26,
     SnapshotNames = 0x27,
     FactoryReset = 0x29,
     FxState = 0x30,
     FxPreset = 0x31,
     SnapshotRename = 0x32,
-    ConnectionState = 0x33,
+    ChannelConnectionState = 0x33,
+    ChannelSimulateConnectionState = 0x34,
+    HandshakeHost = 0x35,
+    HandshakeReply = 0x36,
     GetMixerState = 0x37,
     MixerState = 0x38,
+    HandshakeClient = 0x39,
     FxTempo = 0x40,
     SelectOutput = 0x41,
+    RequestData = 0x42,
+    TransferData = 0x43,
+    AckData = 0x44,
+    SetMidi = 0x45,
+    GetMidi = 0x46,
+    SetFxPresetDescription = 0x47,
+    SetFxPresetDescriptionAck = 0x48,
+    ChannelReserved = 0x49,
     ChannelDelay = 0x4a,
+    SysExMidiDump = 0x4b,
 };
 
 using ApkEndpointId = model::EndpointId;
@@ -62,8 +76,8 @@ struct ApkCommandDescriptor {
     // Native packet construction confirms that the command ID is the first
     // byte of the raw packet envelope.
     bool commandByteConfirmed {true};
-    // True only for commands whose complete outbound schema has been
-    // recovered. Currently this is Gain (0x02) and RouteLevel (0x06).
+    // True only for commands whose complete descriptor schema was recovered
+    // from the pinned APK/native codec.
     bool payloadLayoutKnown {};
     model::EvidenceStatus payloadEvidence {model::EvidenceStatus::Unknown};
 };

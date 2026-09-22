@@ -15,6 +15,7 @@ struct InputMeterState {
     StateValue<double> peak;
     StateValue<bool> clipping;
     StateValue<double> gainReductionDb;
+    StateValue<quint8> gainReductionCode;
 };
 
 struct OutputMeterState {
@@ -23,6 +24,7 @@ struct OutputMeterState {
     StateValue<double> peak;
     StateValue<bool> clipping;
     StateValue<double> gainReductionDb;
+    StateValue<quint8> gainReductionCode;
 };
 
 struct MeterState {

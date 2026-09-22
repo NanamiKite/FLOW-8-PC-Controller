@@ -16,6 +16,8 @@ public:
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] State state() const noexcept override;
     [[nodiscard]] bool isSimulator() const noexcept override;
+    [[nodiscard]] model::EvidenceStatus observationEvidence() const noexcept override;
+    [[nodiscard]] QString observationSource() const override;
 
     void connectTransport() override;
     void disconnectTransport() override;

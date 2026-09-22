@@ -102,6 +102,9 @@ struct ChannelState {
     QString defaultLabel;
     StateValue<QString> name;
     StateValue<ChannelIcon> icon;
+    // The APK wire icon is a u16 catalogue identifier. ChannelIcon remains a
+    // small UI abstraction; rawIconId preserves the complete device value.
+    StateValue<quint16> rawIconId;
     StateValue<bool> visible;
     StateValue<double> gain;
     std::optional<StateValue<bool>> phaseInverted;
@@ -119,6 +122,8 @@ struct ChannelState {
     // lowCut->frequencyHz when safe to do so.
     std::optional<StateValue<quint16>> lowCutHz;
     std::optional<StateValue<bool>> phantom48V;
+    StateValue<bool> leftConnected;
+    StateValue<bool> rightConnected;
     std::array<MonitorSendState, 2> monitorSends;
     std::array<StateValue<double>, 2> fxSendLevelDb;
     // Compatibility view used by the existing reference SysEx parser:

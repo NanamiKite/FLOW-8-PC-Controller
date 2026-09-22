@@ -9,6 +9,7 @@
 #include "model/signal_path.h"
 #include "model/session.h"
 #include "model/snapshot.h"
+#include "protocol/flow8_command.h"
 
 #include <QObject>
 #include <QVector>
@@ -16,6 +17,10 @@
 namespace flow8 {
 
 namespace protocol {
+struct DecodedCommand;
+struct InputStateCommand;
+struct OutputStateCommand;
+struct FxStateCommand;
 struct ParsedSysExState;
 }
 
@@ -23,6 +28,13 @@ struct SysExApplyResult {
     bool applied {};
     int fieldsApplied {};
     int fieldsRejected {};
+    QString reason;
+};
+
+struct ProtocolApplyResult {
+    bool applied {};
+    bool composite {};
+    int fieldsApplied {};
     QString reason;
 };
 
@@ -202,6 +214,19 @@ public:
     // values retain their evidence/source and cannot downgrade stronger state.
     [[nodiscard]] SysExApplyResult applySysExState(const protocol::ParsedSysExState& parsed);
 
+    // Applies one fully parsed RX command to the authoritative confirmed
+    // state. The caller supplies origin evidence so simulator echoes stay
+    // SYNTHETIC while real transport notifications can be device evidence.
+    [[nodiscard]] ProtocolApplyResult applyProtocolCommand(
+        const protocol::DecodedCommand& decoded,
+        model::EvidenceStatus originEvidence,
+        const QString& source);
+    // Records local intent without changing confirmed device state. A later
+    // RX observation clears the matching StateValue::pending field.
+    [[nodiscard]] bool markProtocolCommandPending(
+        const protocol::Flow8Command& command);
+    void failAllPendingProtocolCommands(const QString& error);
+
 signals:
     void connectionStateChanged(flow8::ConnectionState state);
     void stateReset();
@@ -228,6 +253,18 @@ private:
         model::PhysicalOutputId id) noexcept;
     [[nodiscard]] model::RouteLevelState* mutableRouteLevel(
         int sourceIndex, model::RoutingDestination destination) noexcept;
+    [[nodiscard]] bool applyInputProtocolState(
+        const protocol::InputStateCommand& input,
+        model::EvidenceStatus evidence, const QString& source,
+        int& fieldsApplied);
+    [[nodiscard]] bool applyOutputProtocolState(
+        const protocol::OutputStateCommand& output,
+        model::EvidenceStatus evidence, const QString& source,
+        int& fieldsApplied);
+    [[nodiscard]] bool applyFxProtocolState(
+        const protocol::FxStateCommand& effect,
+        model::EvidenceStatus evidence, const QString& source,
+        int& fieldsApplied);
     void ensureReferenceStateShape();
     [[nodiscard]] static bool isUnitInterval(double value) noexcept;
 

@@ -3,6 +3,8 @@
 #include "model/channel.h"
 #include "model/routing.h"
 #include "protocol/gain_codec.h"
+#include "protocol/command_codec.h"
+#include "protocol/flow8_command.h"
 #include "protocol/route_level_codec.h"
 
 #include <QString>
@@ -20,7 +22,8 @@ namespace flow8 {
 // acceptance remains a separate hardware concern.
 class SemanticCommandQueue final {
 public:
-    enum class Kind { RouteLevel, Gain, Discrete };
+    enum class Kind { RouteLevel, Gain, Protocol, Discrete };
+    enum class Coalescing { Discrete, Continuous };
 
     using EncodeResult = std::variant<
         protocol::RouteLevelEncodeResult,
@@ -33,6 +36,8 @@ public:
         double normalized {};
         double gainDb {};
         QString action;
+        std::optional<protocol::Flow8Command> protocolCommand;
+        QString coalescingKey;
 
         [[nodiscard]] bool isDestinationMaster() const noexcept
         {
@@ -52,6 +57,7 @@ public:
         // successful result's packet to a transport.
         [[nodiscard]] std::optional<EncodeResult>
         encodePacket() const noexcept;
+        [[nodiscard]] protocol::CommandEncodeResult encodePackets() const;
     };
 
     [[nodiscard]] bool enqueueRouteLevel(
@@ -64,11 +70,18 @@ public:
     [[nodiscard]] bool enqueueGain(int sourceIndex, double gainDb);
     [[nodiscard]] bool enqueueGain(model::EndpointId inputEndpoint, double gainDb);
     [[nodiscard]] bool enqueueDiscrete(QString action);
+    // General semantic command entry. Command-specific types retain the
+    // meaning; this queue only owns ordering/coalescing and invokes the
+    // registry codec after a command becomes in-flight.
+    [[nodiscard]] bool enqueueProtocolCommand(
+        protocol::Flow8Command command,
+        Coalescing coalescing = Coalescing::Discrete);
     [[nodiscard]] std::optional<Command> beginNext();
     [[nodiscard]] bool completeInFlight();
     [[nodiscard]] const std::optional<Command>& inFlight() const noexcept;
     [[nodiscard]] qsizetype pendingCount() const noexcept;
     void clearPending();
+    void reset();
 
 private:
     QVector<Command> pending_;

@@ -1,9 +1,36 @@
 #include "core/semantic_command_queue.h"
 
 #include <cmath>
+#include <type_traits>
 #include <utility>
 
 namespace flow8 {
+namespace {
+
+template<class... Ts>
+struct Overloaded : Ts... { using Ts::operator()...; };
+template<class... Ts>
+Overloaded(Ts...) -> Overloaded<Ts...>;
+
+QString continuousCommandKey(const protocol::Flow8Command& command)
+{
+    return std::visit(Overloaded {
+        [](const protocol::PanCommand& v) { return QStringLiteral("pan:%1").arg(v.endpoint); },
+        [](const protocol::GainCommand& v) { return QStringLiteral("gain:%1").arg(static_cast<quint8>(v.inputEndpoint)); },
+        [](const protocol::GraphicEqCommand& v) { return QStringLiteral("geq:%1:%2").arg(v.endpoint).arg(v.band); },
+        [](const protocol::HighPassFilterCommand& v) { return QStringLiteral("hpf:%1").arg(v.endpoint); },
+        [](const protocol::RouteLevelCommand& v) { return QStringLiteral("route:%1:%2").arg(static_cast<quint8>(v.sourceEndpoint)).arg(static_cast<quint8>(v.destinationEndpoint)); },
+        [](const protocol::ParametricEqCommand& v) { return QStringLiteral("peq:%1:%2").arg(v.endpoint).arg(v.band); },
+        [](const protocol::FxSetupCommand& v) { return QStringLiteral("fx-setup:%1").arg(v.endpoint); },
+        [](const protocol::CompressorCommand& v) { return QStringLiteral("compressor:%1").arg(v.endpoint); },
+        [](const protocol::LimiterCommand& v) { return QStringLiteral("limiter:%1").arg(v.endpoint); },
+        [](const protocol::FxTempoCommand&) { return QStringLiteral("tempo:global"); },
+        [](const protocol::ChannelDelayCommand& v) { return QStringLiteral("delay:%1").arg(v.endpoint); },
+        [](const auto&) { return QString(); },
+    }, command);
+}
+
+} // namespace
 
 std::optional<protocol::RouteLevelCommand>
 SemanticCommandQueue::Command::routeLevelCommand() const noexcept
@@ -42,6 +69,25 @@ SemanticCommandQueue::Command::encodePacket() const noexcept
         return EncodeResult {protocol::encodeGain(*inputGainCommand)};
     }
     return std::nullopt;
+}
+
+protocol::CommandEncodeResult
+SemanticCommandQueue::Command::encodePackets() const
+{
+    if (protocolCommand.has_value()) {
+        return protocol::encodeCommand(*protocolCommand);
+    }
+    if (const auto route = routeLevelCommand(); route.has_value()) {
+        return protocol::encodeCommand(protocol::Flow8Command {*route});
+    }
+    if (const auto gain = gainCommand(); gain.has_value()) {
+        return protocol::encodeCommand(protocol::Flow8Command {*gain});
+    }
+    return {
+        .packets = {},
+        .error = protocol::CommandCodecError::UnsupportedCommand,
+        .message = QStringLiteral("discrete action has no protocol command"),
+    };
 }
 
 bool SemanticCommandQueue::enqueueRouteLevel(
@@ -83,6 +129,8 @@ bool SemanticCommandQueue::enqueueRouteLevel(
         .destinationEndpoint = destinationEndpoint,
         .normalized = normalized,
         .action = {},
+        .protocolCommand = std::nullopt,
+        .coalescingKey = {},
     });
     return true;
 }
@@ -124,6 +172,8 @@ bool SemanticCommandQueue::enqueueGain(
         .sourceEndpoint = inputEndpoint,
         .gainDb = gainDb,
         .action = {},
+        .protocolCommand = std::nullopt,
+        .coalescingKey = {},
     });
     return true;
 }
@@ -137,6 +187,33 @@ bool SemanticCommandQueue::enqueueDiscrete(QString action)
     pending_.append(Command {
         .kind = Kind::Discrete,
         .action = std::move(action),
+        .protocolCommand = std::nullopt,
+        .coalescingKey = {},
+    });
+    return true;
+}
+
+bool SemanticCommandQueue::enqueueProtocolCommand(
+    protocol::Flow8Command command, const Coalescing coalescing)
+{
+    QString key;
+    if (coalescing == Coalescing::Continuous) {
+        key = continuousCommandKey(command);
+        if (key.isEmpty()) {
+            return false;
+        }
+        for (auto& queued : pending_) {
+            if (queued.kind == Kind::Protocol && queued.coalescingKey == key) {
+                queued.protocolCommand = std::move(command);
+                return true;
+            }
+        }
+    }
+    pending_.append(Command {
+        .kind = Kind::Protocol,
+        .action = protocol::commandSemanticName(command),
+        .protocolCommand = std::move(command),
+        .coalescingKey = std::move(key),
     });
     return true;
 }
@@ -173,6 +250,12 @@ qsizetype SemanticCommandQueue::pendingCount() const noexcept
 void SemanticCommandQueue::clearPending()
 {
     pending_.clear();
+}
+
+void SemanticCommandQueue::reset()
+{
+    pending_.clear();
+    inFlight_.reset();
 }
 
 } // namespace flow8

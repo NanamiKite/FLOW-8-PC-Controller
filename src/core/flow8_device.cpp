@@ -2,6 +2,8 @@
 
 #include "model/flow8_capabilities.h"
 #include "protocol/codec.h"
+#include "protocol/command_codec.h"
+#include "protocol/flow8_command.h"
 #include "protocol/flow8_protocol.h"
 #include "protocol/packet.h"
 
@@ -114,6 +116,30 @@ std::optional<int> linkedMonitorBusIndex(const int busIndex) noexcept
     return std::nullopt;
 }
 
+std::optional<model::EndpointId> busEndpoint(const int busIndex) noexcept
+{
+    switch (busIndex) {
+    case 0: return model::EndpointId::MainLr;
+    case 1: return model::EndpointId::Monitor1;
+    case 2: return model::EndpointId::Monitor2;
+    default: return std::nullopt;
+    }
+}
+
+std::optional<model::EndpointId> fxEndpoint(const int effectIndex) noexcept
+{
+    if (effectIndex == 0) return model::EndpointId::Fx1;
+    if (effectIndex == 1) return model::EndpointId::Fx2;
+    return std::nullopt;
+}
+
+bool protocolTransportCanWrite(const Flow8Transport::State state) noexcept
+{
+    return state == Flow8Transport::State::Connected
+        || state == Flow8Transport::State::WaitingForHandshake
+        || state == Flow8Transport::State::WaitingForHandshakeReply;
+}
+
 QJsonObject observedDouble(const model::StateValue<double>& value)
 {
     QJsonObject result;
@@ -166,6 +192,7 @@ void Flow8Device::setTransport(std::unique_ptr<Flow8Transport> transport)
         transport_->disconnectTransport();
         transport_->disconnect(this);
     }
+    resetProtocolQueue();
     transport_ = std::move(transport);
     state_.setConnectionState(ConnectionState::Disconnected);
 
@@ -174,6 +201,8 @@ void Flow8Device::setTransport(std::unique_ptr<Flow8Transport> transport)
                 &Flow8Device::handleTransportState);
         connect(transport_.get(), &Flow8Transport::bytesReceived, this,
                 &Flow8Device::handleBytesReceived);
+        connect(transport_.get(), &Flow8Transport::bytesWritten, this,
+                &Flow8Device::handleBytesWritten);
         connect(transport_.get(), &Flow8Transport::errorOccurred, this, [this](const QString&) {
             state_.setConnectionState(ConnectionState::Error);
         });
@@ -195,10 +224,43 @@ void Flow8Device::disconnectDevice()
     }
 }
 
+void Flow8Device::setAutomaticStateRecovery(const bool enabled) noexcept
+{
+    automaticStateRecovery_ = enabled;
+}
+
+bool Flow8Device::automaticStateRecovery() const noexcept
+{
+    return automaticStateRecovery_;
+}
+
+bool Flow8Device::requestMixerState()
+{
+    if (!transport_ || transport_->isSimulator()
+        || !protocolTransportCanWrite(transport_->state())) {
+        return false;
+    }
+    state_.setConnectionState(ConnectionState::Synchronizing);
+    return enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::GetMixerStateCommand {}},
+        SemanticCommandQueue::Coalescing::Discrete);
+}
+
 bool Flow8Device::isControlAvailable(const Control control) const noexcept
 {
-    if (!simulatorReady()) {
-        // Real hardware controls remain disabled until mappings are project-verified.
+    const bool protocolReady = transport_ && !transport_->isSimulator()
+        && transport_->state() == Flow8Transport::State::Connected
+        && state_.connectionState() == ConnectionState::Ready;
+    if (!simulatorReady() && !protocolReady) {
+        return false;
+    }
+
+    // These remain desktop/simulator workflows rather than confirmed device
+    // commands. All other controls below have an APK-confirmed command or are
+    // deliberately local UI state.
+    if (!simulatorReady()
+        && (control == Control::AssistedSetup || control == Control::EzGain
+            || control == Control::MonitorSendMode)) {
         return false;
     }
 
@@ -248,13 +310,23 @@ bool Flow8Device::setChannelGain(const int index, const double normalized)
 {
     const auto* channel = state_.channel(index);
     if (!isControlAvailable(Control::ChannelGain) || channel == nullptr
-        || !channel->capabilities.gain) {
+        || !channel->capabilities.gain || !std::isfinite(normalized)
+        || normalized < 0.0 || normalized > 1.0) {
         reject(Control::ChannelGain, QCoreApplication::translate(
             "Flow8Device", "Gain mapping is not hardware-verified."));
         return false;
     }
-    return state_.setChannelGain(index, normalized, model::EvidenceStatus::Unknown,
-                                 QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelGain(index, normalized, model::EvidenceStatus::Synthetic,
+                                     QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = model::inputEndpointForIndex(index);
+    return endpoint.has_value() && enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::GainCommand {
+            .inputEndpoint = *endpoint,
+            .gainDb = model::inputGainDbFromNormalized(normalized),
+            .semanticEvidence = model::EvidenceStatus::VerifiedFromApk,
+        }}, SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setChannelPhaseInverted(const int index, const bool inverted)
@@ -266,42 +338,59 @@ bool Flow8Device::setChannelPhaseInverted(const int index, const bool inverted)
             "Flow8Device", "Phase control is unavailable."));
         return false;
     }
-    return state_.setChannelPhaseInverted(
-        index, inverted, model::EvidenceStatus::Unknown,
-        QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelPhaseInverted(
+            index, inverted, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::PhaseCommand {
+        static_cast<quint8>(index), inverted}}, SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setChannelMuted(const int index, const bool muted)
 {
-    if (!isControlAvailable(Control::ChannelMute)) {
+    if (!isControlAvailable(Control::ChannelMute) || state_.channel(index) == nullptr) {
         reject(Control::ChannelMute, QCoreApplication::translate(
             "Flow8Device", "Mute mapping is not hardware-verified."));
         return false;
     }
-    return state_.setChannelMuted(index, muted, model::EvidenceStatus::Unknown,
-                                  QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelMuted(index, muted, model::EvidenceStatus::Synthetic,
+                                      QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::MuteCommand {
+        static_cast<quint8>(index), muted}}, SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setChannelSoloed(const int index, const bool soloed)
 {
-    if (!isControlAvailable(Control::ChannelSolo)) {
+    if (!isControlAvailable(Control::ChannelSolo) || state_.channel(index) == nullptr) {
         reject(Control::ChannelSolo, QCoreApplication::translate(
             "Flow8Device", "Solo mapping is not hardware-verified."));
         return false;
     }
-    return state_.setChannelSoloed(index, soloed, model::EvidenceStatus::Unknown,
-                                   QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelSoloed(index, soloed, model::EvidenceStatus::Synthetic,
+                                       QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SoloCommand {
+        static_cast<quint8>(index), soloed}}, SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setChannelPan(const int index, const double pan)
 {
-    if (!isControlAvailable(Control::ChannelPan)) {
+    if (!isControlAvailable(Control::ChannelPan) || state_.channel(index) == nullptr
+        || !std::isfinite(pan) || pan < -1.0 || pan > 1.0) {
         reject(Control::ChannelPan, QCoreApplication::translate(
             "Flow8Device", "Pan mapping is not hardware-verified."));
         return false;
     }
-    return state_.setChannelPan(index, pan, model::EvidenceStatus::Unknown,
-                                QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelPan(index, pan, model::EvidenceStatus::Synthetic,
+                                    QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::PanCommand {
+        static_cast<quint8>(index), pan}}, SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setChannelName(const int index, const QString& name)
@@ -311,8 +400,16 @@ bool Flow8Device::setChannelName(const int index, const QString& name)
             "Flow8Device", "Channel customization is unavailable."));
         return false;
     }
-    return state_.setChannelName(index, name, model::EvidenceStatus::Unknown,
-                                 QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelName(index, name, model::EvidenceStatus::Synthetic,
+                                     QString::fromLatin1(simulatorSource));
+    }
+    const auto* channel = state_.channel(index);
+    const QByteArray utf8 = name.trimmed().toUtf8();
+    if (channel == nullptr || utf8.isEmpty() || utf8.size() > 20) return false;
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::LabelCommand {{
+        static_cast<quint8>(index), channel->rawIconId.value.value_or(0), utf8}}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setChannelIcon(const int index, const model::ChannelIcon icon)
@@ -322,8 +419,14 @@ bool Flow8Device::setChannelIcon(const int index, const model::ChannelIcon icon)
             "Flow8Device", "Channel customization is unavailable."));
         return false;
     }
-    return state_.setChannelIcon(index, icon, model::EvidenceStatus::Unknown,
-                                 QString::fromLatin1(simulatorSource));
+    // ChannelIcon is a desktop abstraction, not the APK's complete u16 icon
+    // catalogue. Keep it local unless Simulator is active; no wire ID is
+    // guessed here.
+    return state_.setChannelIcon(index, icon,
+                                 simulatorReady() ? model::EvidenceStatus::Synthetic
+                                                  : model::EvidenceStatus::Unknown,
+                                 simulatorReady() ? QString::fromLatin1(simulatorSource)
+                                                  : QStringLiteral("PC-local channel icon"));
 }
 
 bool Flow8Device::setChannelVisible(const int index, const bool visible)
@@ -333,8 +436,11 @@ bool Flow8Device::setChannelVisible(const int index, const bool visible)
             "Flow8Device", "Channel visibility is unavailable."));
         return false;
     }
-    return state_.setChannelVisible(index, visible, model::EvidenceStatus::Unknown,
-                                    QString::fromLatin1(simulatorSource));
+    return state_.setChannelVisible(index, visible,
+                                    simulatorReady() ? model::EvidenceStatus::Synthetic
+                                                     : model::EvidenceStatus::Unknown,
+                                    simulatorReady() ? QString::fromLatin1(simulatorSource)
+                                                     : QStringLiteral("PC-local channel visibility"));
 }
 
 bool Flow8Device::setChannelPhantom(const int index, const bool enabled)
@@ -346,8 +452,12 @@ bool Flow8Device::setChannelPhantom(const int index, const bool enabled)
             "Flow8Device", "Phantom Power is unavailable for this input."));
         return false;
     }
-    return state_.setChannelPhantom(index, enabled, model::EvidenceStatus::Unknown,
-                                    QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelPhantom(index, enabled, model::EvidenceStatus::Synthetic,
+                                        QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::PhantomCommand {
+        static_cast<quint8>(index), enabled}}, SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setChannelLowCut(const int index, const bool enabled,
@@ -358,9 +468,20 @@ bool Flow8Device::setChannelLowCut(const int index, const bool enabled,
             "Flow8Device", "Low Cut is unavailable."));
         return false;
     }
-    return state_.setChannelLowCut(index, enabled, frequencyHz,
-                                   model::EvidenceStatus::Unknown,
-                                   QString::fromLatin1(simulatorSource));
+    const auto* channel = state_.channel(index);
+    if (channel == nullptr || !channel->capabilities.lowCut
+        || !std::isfinite(frequencyHz) || frequencyHz < 20.0 || frequencyHz > 600.0) {
+        return false;
+    }
+    if (simulatorReady()) {
+        return state_.setChannelLowCut(index, enabled, frequencyHz,
+                                       model::EvidenceStatus::Synthetic,
+                                       QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::HighPassFilterCommand {
+        static_cast<quint8>(index), enabled,
+        static_cast<quint16>(std::lrint(frequencyHz))}},
+        SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setMonitorSendMode(const int index, const int monitor,
@@ -380,27 +501,48 @@ bool Flow8Device::setChannelEqGain(const int index, const int band, const double
 {
     const auto* channel = state_.channel(index);
     if (!isControlAvailable(Control::ChannelEq) || channel == nullptr
-        || !channel->capabilities.equalizer) {
+        || !channel->capabilities.equalizer || !std::isfinite(gainDb)
+        || gainDb < -15.0 || gainDb > 15.0) {
         reject(Control::ChannelEq, QCoreApplication::translate(
             "Flow8Device", "Channel EQ is unavailable."));
         return false;
     }
-    return state_.setChannelEqGain(index, band, gainDb, model::EvidenceStatus::Unknown,
-                                   QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelEqGain(index, band, gainDb,
+                                       model::EvidenceStatus::Synthetic,
+                                       QString::fromLatin1(simulatorSource));
+    }
+    if (band < 0 || band >= static_cast<int>(channel->eq.gainDb.size())
+        || !channel->eq.frequencyHz[static_cast<std::size_t>(band)].value.has_value()
+        || !channel->eq.q[static_cast<std::size_t>(band)].value.has_value()) {
+        reject(Control::ChannelEq, QStringLiteral("EQ state must be synchronized before editing"));
+        return false;
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::ParametricEqCommand {
+        static_cast<quint8>(index), static_cast<quint8>(band),
+        static_cast<quint16>(std::lrint(*channel->eq.frequencyHz[static_cast<std::size_t>(band)].value)),
+        *channel->eq.q[static_cast<std::size_t>(band)].value, gainDb}},
+        SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setChannelCompressorAmount(const int index, const double amount)
 {
     const auto* channel = state_.channel(index);
     if (!isControlAvailable(Control::ChannelCompressor) || channel == nullptr
-        || !channel->capabilities.compressor) {
+        || !channel->capabilities.compressor || !std::isfinite(amount)
+        || amount < 0.0 || amount > 1.0) {
         reject(Control::ChannelCompressor,
                QCoreApplication::translate(
                    "Flow8Device", "Compressor is unavailable for this input."));
         return false;
     }
-    return state_.setChannelCompressorAmount(index, amount, model::EvidenceStatus::Unknown,
-                                              QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setChannelCompressorAmount(
+            index, amount, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::CompressorCommand {
+        static_cast<quint8>(index), amount}}, SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setChannelSendLevel(const int index, const int send,
@@ -426,9 +568,23 @@ bool Flow8Device::setRouteLevel(const int sourceIndex,
         return false;
     }
 
-    // A future real transport will leave this pending until the matching
-    // device notification arrives. The simulator confirms synchronously and
-    // never fabricates a BLE payload whose APK layout is still unknown.
+    if (!simulatorReady()) {
+        const auto source = model::inputEndpointForIndex(sourceIndex);
+        if (!source.has_value()) return false;
+        if (!state_.setRouteLevelPending(sourceIndex, destination, normalized)) return false;
+        if (!enqueueProtocolCommand(protocol::Flow8Command {protocol::RouteLevelCommand {
+                .sourceEndpoint = *source,
+                .destinationEndpoint = model::endpointForDestination(destination),
+                .normalizedValue = normalized,
+                .semanticEvidence = model::EvidenceStatus::VerifiedFromApk,
+            }}, SemanticCommandQueue::Coalescing::Continuous)) {
+            (void)state_.failRouteLevel(sourceIndex, destination,
+                                        QStringLiteral("command queue rejected route level"));
+            return false;
+        }
+        return true;
+    }
+
     const auto applyRouteLevel = [this, sourceIndex, normalized](
                                      const model::RoutingDestination target) {
         return state_.setRouteLevelPending(sourceIndex, target, normalized)
@@ -476,10 +632,19 @@ bool Flow8Device::setBusFader(const int index, const double normalized)
             "Flow8Device", "Bus level is unavailable."));
         return false;
     }
-    if (!state_.setBusFader(index, normalized, model::EvidenceStatus::Synthetic,
-                            QString::fromLatin1(simulatorSource))) {
-        return false;
+    const auto endpoint = busEndpoint(index);
+    if (!endpoint.has_value() || !std::isfinite(normalized)
+        || normalized < 0.0 || normalized > 1.0) return false;
+    if (!simulatorReady()) {
+        return enqueueProtocolCommand(protocol::Flow8Command {protocol::RouteLevelCommand {
+            .sourceEndpoint = *endpoint,
+            .destinationEndpoint = *endpoint,
+            .normalizedValue = normalized,
+            .semanticEvidence = model::EvidenceStatus::VerifiedFromApk,
+        }}, SemanticCommandQueue::Coalescing::Continuous);
     }
+    if (!state_.setBusFader(index, normalized, model::EvidenceStatus::Synthetic,
+                            QString::fromLatin1(simulatorSource))) return false;
     const auto linkedBus = linkedMonitorBusIndex(index);
     if (linkedBus.has_value()
         && state_.monitorLink().stereoLinked.value.value_or(false)) {
@@ -497,41 +662,80 @@ bool Flow8Device::setBusMuted(const int index, const bool muted)
             "Flow8Device", "Bus mute is unavailable."));
         return false;
     }
-    return state_.setBusMuted(index, muted, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setBusMuted(index, muted, model::EvidenceStatus::Synthetic,
+                                  QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = busEndpoint(index);
+    return endpoint.has_value() && enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::MuteCommand {
+            static_cast<quint8>(*endpoint), muted}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setBusBalance(const int index, const double balance)
 {
-    if (!isControlAvailable(Control::BusBalance)) {
+    if (!isControlAvailable(Control::BusBalance) || !std::isfinite(balance)
+        || balance < -1.0 || balance > 1.0) {
         reject(Control::BusBalance, QCoreApplication::translate(
             "Flow8Device", "Bus balance is unavailable."));
         return false;
     }
-    return state_.setBusBalance(index, balance, model::EvidenceStatus::Unknown,
-                                QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setBusBalance(index, balance, model::EvidenceStatus::Synthetic,
+                                    QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = busEndpoint(index);
+    return endpoint.has_value() && enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::PanCommand {
+            static_cast<quint8>(*endpoint), balance}},
+        SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setBusLimiterDb(const int index, const double thresholdDb)
 {
-    if (!isControlAvailable(Control::BusLimiter)) {
+    if (!isControlAvailable(Control::BusLimiter) || !std::isfinite(thresholdDb)
+        || thresholdDb < -30.0 || thresholdDb > 0.0) {
         reject(Control::BusLimiter, QCoreApplication::translate(
             "Flow8Device", "Bus limiter is unavailable."));
         return false;
     }
-    return state_.setBusLimiterDb(index, thresholdDb, model::EvidenceStatus::Unknown,
-                                  QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setBusLimiterDb(index, thresholdDb,
+                                      model::EvidenceStatus::Synthetic,
+                                      QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = busEndpoint(index);
+    return endpoint.has_value() && enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::LimiterCommand {
+            static_cast<quint8>(*endpoint), thresholdDb}},
+        SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setBusEqGain(const int index, const int band, const double gainDb)
 {
-    if (!isControlAvailable(Control::BusEq)) {
+    if (!isControlAvailable(Control::BusEq) || !std::isfinite(gainDb)
+        || gainDb < -15.0 || gainDb > 15.0) {
         reject(Control::BusEq, QCoreApplication::translate(
             "Flow8Device", "Bus EQ is unavailable."));
         return false;
     }
-    return state_.setBusEqGain(index, band, gainDb, model::EvidenceStatus::Unknown,
-                               QString::fromLatin1(simulatorSource));
+    const auto* bus = state_.bus(index);
+    if (simulatorReady()) {
+        return state_.setBusEqGain(index, band, gainDb,
+                                   model::EvidenceStatus::Synthetic,
+                                   QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = busEndpoint(index);
+    if (!endpoint.has_value() || bus == nullptr || !bus->eq.has_value()
+        || band < 0 || band >= static_cast<int>(bus->eq->gainDb.size())
+        || !bus->eq->frequencyHz[static_cast<std::size_t>(band)].value.has_value()
+        || !bus->eq->q[static_cast<std::size_t>(band)].value.has_value()) return false;
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::GraphicEqCommand {
+        static_cast<quint8>(*endpoint), static_cast<quint8>(band),
+        static_cast<quint16>(std::lrint(*bus->eq->frequencyHz[static_cast<std::size_t>(band)].value)),
+        *bus->eq->q[static_cast<std::size_t>(band)].value, gainDb}},
+        SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::setFxPreset(const int index, const int preset)
@@ -541,8 +745,15 @@ bool Flow8Device::setFxPreset(const int index, const int preset)
             "Flow8Device", "FX preset is unavailable."));
         return false;
     }
-    return state_.setFxPreset(index, preset, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setFxPreset(index, preset, model::EvidenceStatus::Synthetic,
+                                  QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = fxEndpoint(index);
+    return endpoint.has_value() && preset >= 0 && preset <= 255
+        && enqueueProtocolCommand(protocol::Flow8Command {protocol::FxPresetCommand {
+            static_cast<quint8>(*endpoint), static_cast<quint8>(preset)}},
+            SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setFxParameter(const int index, const int parameter,
@@ -553,8 +764,16 @@ bool Flow8Device::setFxParameter(const int index, const int parameter,
             "Flow8Device", "FX parameter is unavailable."));
         return false;
     }
-    return state_.setFxParameter(index, parameter, normalized, model::EvidenceStatus::Unknown,
-                                 QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setFxParameter(index, parameter, normalized,
+                                     model::EvidenceStatus::Synthetic,
+                                     QString::fromLatin1(simulatorSource));
+    }
+    // 0x11's three bytes are structurally known, but mapping a generic UI
+    // percentage to preset-dependent raw parameter semantics is still UNKNOWN.
+    reject(Control::FxParameter, QStringLiteral(
+        "FX raw parameter meaning is not established for this preset."));
+    return false;
 }
 
 bool Flow8Device::setFxMuted(const int index, const bool muted)
@@ -564,19 +783,37 @@ bool Flow8Device::setFxMuted(const int index, const bool muted)
             "Flow8Device", "FX mute is unavailable."));
         return false;
     }
-    return state_.setFxMuted(index, muted, model::EvidenceStatus::Unknown,
-                             QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setFxMuted(index, muted, model::EvidenceStatus::Synthetic,
+                                 QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = fxEndpoint(index);
+    return endpoint.has_value() && enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::MuteCommand {
+            static_cast<quint8>(*endpoint), muted}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setFxMaster(const int index, const double normalized)
 {
-    if (!isControlAvailable(Control::BusFader)) {
+    if (!isControlAvailable(Control::BusFader) || !std::isfinite(normalized)
+        || normalized < 0.0 || normalized > 1.0) {
         reject(Control::BusFader, QCoreApplication::translate(
             "Flow8Device", "FX master is unavailable."));
         return false;
     }
-    return state_.setFxMaster(index, normalized, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setFxMaster(index, normalized, model::EvidenceStatus::Synthetic,
+                                  QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = fxEndpoint(index);
+    return endpoint.has_value() && enqueueProtocolCommand(
+        protocol::Flow8Command {protocol::RouteLevelCommand {
+            .sourceEndpoint = *endpoint,
+            .destinationEndpoint = *endpoint,
+            .normalizedValue = normalized,
+            .semanticEvidence = model::EvidenceStatus::VerifiedFromApk,
+        }}, SemanticCommandQueue::Coalescing::Continuous);
 }
 
 bool Flow8Device::tapTempo()
@@ -594,7 +831,12 @@ bool Flow8Device::tapTempo()
         }
     }
     tapTimer_.restart();
-    (void)state_.setGlobalTempo(bpm, model::EvidenceStatus::Unknown,
+    if (!simulatorReady()) {
+        return enqueueProtocolCommand(protocol::Flow8Command {protocol::FxTempoCommand {
+            static_cast<quint16>(std::lrint(bpm))}},
+            SemanticCommandQueue::Coalescing::Continuous);
+    }
+    (void)state_.setGlobalTempo(bpm, model::EvidenceStatus::Synthetic,
                                 QString::fromLatin1(simulatorSource));
     bool changed = false;
     for (int index = 0; index < state_.effects().size(); ++index) {
@@ -611,7 +853,10 @@ bool Flow8Device::recallSnapshot(const int index)
             "Flow8Device", "Snapshot recall is unavailable."));
         return false;
     }
-    return state_.setActiveSnapshotIndex(index);
+    if (simulatorReady()) return state_.setActiveSnapshotIndex(index);
+    if (index < 0 || index > 14) return false;
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SnapshotLoadCommand {
+        static_cast<quint8>(index)}}, SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::storeAppSnapshot(const QString& name, const model::SnapshotScope scope)
@@ -1074,8 +1319,13 @@ bool Flow8Device::setUsbMode(const model::UsbMode mode)
             "Flow8Device", "USB routing is unavailable."));
         return false;
     }
-    return state_.setUsbMode(mode, model::EvidenceStatus::Unknown,
-                             QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setUsbMode(mode, model::EvidenceStatus::Synthetic,
+                                 QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SettingCommand {
+        0x07, QByteArray(1, mode == model::UsbMode::Streaming ? '\x01' : '\x00')}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setUsbInputAssignment(
@@ -1086,9 +1336,15 @@ bool Flow8Device::setUsbInputAssignment(
             "Flow8Device", "USB routing is unavailable."));
         return false;
     }
-    return state_.setUsbInputAssignment(
-        pairIndex, assignment, model::EvidenceStatus::Unknown,
-        QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setUsbInputAssignment(
+            pairIndex, assignment, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    // Setting IDs 0x04/0x06 remain semantically UNKNOWN in the handoff.
+    reject(Control::Routing, QStringLiteral(
+        "USB input-assignment setting IDs remain UNKNOWN."));
+    return false;
 }
 
 bool Flow8Device::setPhysicalMonitorOutputFeed(
@@ -1099,9 +1355,14 @@ bool Flow8Device::setPhysicalMonitorOutputFeed(
             "Flow8Device", "USB audio output routing is unavailable."));
         return false;
     }
-    return state_.setPhysicalMonitorOutputFeed(
-        outputIndex, feed, model::EvidenceStatus::Unknown,
-        QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setPhysicalMonitorOutputFeed(
+            outputIndex, feed, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    reject(Control::Routing, QStringLiteral(
+        "Monitor output-feed value mapping remains UNKNOWN."));
+    return false;
 }
 
 bool Flow8Device::setFxOutputRouteEnabled(
@@ -1113,9 +1374,35 @@ bool Flow8Device::setFxOutputRouteEnabled(
             "Flow8Device", "FX output routing is unavailable."));
         return false;
     }
-    return state_.setFxOutputRouteEnabled(effectIndex, destination, enabled,
-                                           model::EvidenceStatus::Unknown,
-                                           QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setFxOutputRouteEnabled(effectIndex, destination, enabled,
+                                               model::EvidenceStatus::Synthetic,
+                                               QString::fromLatin1(simulatorSource));
+    }
+    const auto endpoint = fxEndpoint(effectIndex);
+    if (!endpoint.has_value() || effectIndex < 0
+        || effectIndex >= state_.effects().size()) return false;
+    const auto& fx = state_.effects().at(effectIndex);
+    for (const auto& raw : fx.rawParameters) {
+        if (!raw.value.has_value()) {
+            reject(Control::Routing, QStringLiteral(
+                "FX state must be synchronized before return routing is edited."));
+            return false;
+        }
+    }
+    quint8 flags = 0;
+    for (int route = 0; route < 3; ++route) {
+        const auto target = static_cast<model::FxOutputDestination>(route);
+        const auto* current = state_.routing().fxOutputRoute(effectIndex, target);
+        const bool value = target == destination ? enabled
+            : current != nullptr && current->enabled.value.value_or(false);
+        if (value) flags |= static_cast<quint8>(1U << route);
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::FxSetupCommand {
+        static_cast<quint8>(*endpoint),
+        *fx.rawParameters[0].value, *fx.rawParameters[1].value,
+        *fx.rawParameters[2].value, flags}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setHeadphoneSource(const model::HeadphoneSource source)
@@ -1125,8 +1412,13 @@ bool Flow8Device::setHeadphoneSource(const model::HeadphoneSource source)
             "Flow8Device", "Headphone routing is unavailable."));
         return false;
     }
-    return state_.setHeadphoneSource(source, model::EvidenceStatus::Unknown,
-                                     QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setHeadphoneSource(source, model::EvidenceStatus::Synthetic,
+                                         QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SettingCommand {
+        0x0c, QByteArray(1, source == model::HeadphoneSource::Monitor ? '\x01' : '\x00')}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setHeadphoneTapPoint(const model::RoutingTapPoint tapPoint)
@@ -1136,9 +1428,14 @@ bool Flow8Device::setHeadphoneTapPoint(const model::RoutingTapPoint tapPoint)
             "Flow8Device", "Headphone routing is unavailable."));
         return false;
     }
-    return state_.setHeadphoneTapPoint(
-        tapPoint, model::EvidenceStatus::Unknown,
-        QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setHeadphoneTapPoint(
+            tapPoint, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SettingCommand {
+        0x0d, QByteArray(1, tapPoint == model::RoutingTapPoint::PostFader ? '\x01' : '\x00')}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setBluetoothUsbPhonesOnly(const bool enabled)
@@ -1148,9 +1445,14 @@ bool Flow8Device::setBluetoothUsbPhonesOnly(const bool enabled)
             "Flow8Device", "Bluetooth / USB routing is unavailable."));
         return false;
     }
-    return state_.setBluetoothUsbPhonesOnly(
-        enabled, model::EvidenceStatus::Unknown,
-        QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setBluetoothUsbPhonesOnly(
+            enabled, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SettingCommand {
+        0x02, QByteArray(1, enabled ? '\x01' : '\x00')}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setOutputPadMinus10Dbv(
@@ -1161,9 +1463,16 @@ bool Flow8Device::setOutputPadMinus10Dbv(
             "Flow8Device", "Output routing is unavailable."));
         return false;
     }
-    return state_.setOutputPadMinus10Dbv(
-        output, enabled, model::EvidenceStatus::Unknown,
-        QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setOutputPadMinus10Dbv(
+            output, enabled, model::EvidenceStatus::Synthetic,
+            QString::fromLatin1(simulatorSource));
+    }
+    if (output == model::PhysicalOutputId::Headphones) return false;
+    const quint8 setting = output == model::PhysicalOutputId::MainOut ? 0x0e : 0x0f;
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SettingCommand {
+        setting, QByteArray(1, enabled ? '\x01' : '\x00')}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 bool Flow8Device::setMonitorStereoLink(const bool linked)
@@ -1173,8 +1482,13 @@ bool Flow8Device::setMonitorStereoLink(const bool linked)
             "Flow8Device", "Monitor stereo link is unavailable."));
         return false;
     }
-    return state_.setMonitorStereoLink(linked, model::EvidenceStatus::Unknown,
-                                       QString::fromLatin1(simulatorSource));
+    if (simulatorReady()) {
+        return state_.setMonitorStereoLink(linked, model::EvidenceStatus::Synthetic,
+                                           QString::fromLatin1(simulatorSource));
+    }
+    return enqueueProtocolCommand(protocol::Flow8Command {protocol::SettingCommand {
+        0x0b, QByteArray(1, linked ? '\x01' : '\x00')}},
+        SemanticCommandQueue::Coalescing::Discrete);
 }
 
 void Flow8Device::setPreferences(model::AppPreferences preferences)
@@ -1305,8 +1619,7 @@ bool Flow8Device::setMainFader(const double normalized)
             "Flow8Device", "Main fader BLE address is UNKNOWN."));
         return false;
     }
-    return state_.setBusFader(0, normalized, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
+    return setBusFader(0, normalized);
 }
 
 bool Flow8Device::setMainMuted(const bool muted)
@@ -1316,8 +1629,7 @@ bool Flow8Device::setMainMuted(const bool muted)
             "Flow8Device", "Main mute mapping is UNKNOWN."));
         return false;
     }
-    return state_.setBusMuted(0, muted, model::EvidenceStatus::Unknown,
-                              QString::fromLatin1(simulatorSource));
+    return setBusMuted(0, muted);
 }
 
 void Flow8Device::handleTransportState(const Flow8Transport::State state)
@@ -1325,6 +1637,9 @@ void Flow8Device::handleTransportState(const Flow8Transport::State state)
     switch (state) {
     case Flow8Transport::State::Disconnected:
         simulatorMeterTimer_.stop();
+        commandStreamDecoder_.reset();
+        state_.failAllPendingProtocolCommands(QStringLiteral("transport disconnected"));
+        resetProtocolQueue();
         state_.setConnectionState(ConnectionState::Disconnected);
         break;
     case Flow8Transport::State::Scanning:
@@ -1332,6 +1647,8 @@ void Flow8Device::handleTransportState(const Flow8Transport::State state)
         break;
     case Flow8Transport::State::Connecting:
     case Flow8Transport::State::Reconnecting:
+        commandStreamDecoder_.reset();
+        resetProtocolQueue();
         state_.setConnectionState(ConnectionState::Connecting);
         break;
     case Flow8Transport::State::RequestingMtu:
@@ -1351,6 +1668,8 @@ void Flow8Device::handleTransportState(const Flow8Transport::State state)
         break;
     case Flow8Transport::State::Error:
         simulatorMeterTimer_.stop();
+        state_.failAllPendingProtocolCommands(QStringLiteral("transport error"));
+        resetProtocolQueue();
         state_.setConnectionState(ConnectionState::Error);
         break;
     }
@@ -1358,17 +1677,137 @@ void Flow8Device::handleTransportState(const Flow8Transport::State state)
 
 void Flow8Device::handleBytesReceived(const QByteArray& payload)
 {
-    const auto result = protocol::parsePacket(payload);
-    if (!result.ok()) {
+    const auto packetResult = protocol::parsePacket(payload);
+    if (!packetResult.ok()) {
+        emit protocolError(packetResult.message);
         return;
     }
-    const auto& packet = *result.packet;
+    const auto& packet = *packetResult.packet;
     emit protocolPacketObserved(packet.type, packet.raw);
 
-    // The old reference project describes a different candidate payload for
-    // 0x06. New APK/native evidence confirms the route/master semantic but not
-    // its final wire schema, so no incoming 0x06 bytes are applied to state.
-    // Raw observation remains available through protocolPacketObserved.
+    const auto decoded = commandStreamDecoder_.accept(payload);
+    if (!decoded.ok()) {
+        if (!decoded.awaitingFragments && !decoded.message.isEmpty()) {
+            emit protocolError(decoded.message);
+        }
+        return;
+    }
+
+    const auto evidence = transport_ ? transport_->observationEvidence()
+                                     : model::EvidenceStatus::Unknown;
+    if (evidence == model::EvidenceStatus::Unknown
+        || evidence == model::EvidenceStatus::Blocked) {
+        emit protocolError(QStringLiteral("transport RX has no explicit evidence origin"));
+        return;
+    }
+    const QString source = transport_->observationSource();
+    (void)state_.applyProtocolCommand(*decoded.command, evidence, source);
+
+    // APK receive handlers use 0x36 as the point at which the full mixer
+    // reconstruction request is queued. Snapshot load and factory reset also
+    // invalidate the confirmed mixer image and request a new 0x38.
+    if (automaticStateRecovery_
+        && (std::holds_alternative<protocol::HandshakeReplyCommand>(decoded.command->value)
+            || std::holds_alternative<protocol::SnapshotLoadCommand>(decoded.command->value)
+            || std::holds_alternative<protocol::FactoryResetCommand>(decoded.command->value))) {
+        (void)requestMixerState();
+    }
+    if (std::holds_alternative<protocol::MixerStateCommand>(decoded.command->value)) {
+        if (transport_) {
+            transport_->protocolSessionReady();
+        }
+        state_.setConnectionState(ConnectionState::Ready);
+    }
+}
+
+void Flow8Device::handleBytesWritten(const QByteArray& payload)
+{
+    if (!writeInFlight_ || activeWriteFrames_.isEmpty()
+        || activeWriteIndex_ < 0 || activeWriteIndex_ >= activeWriteFrames_.size()
+        || payload != activeWriteFrames_.at(activeWriteIndex_)) {
+        return;
+    }
+
+    writeInFlight_ = false;
+    ++activeWriteIndex_;
+    if (activeWriteIndex_ >= activeWriteFrames_.size()) {
+        activeWriteFrames_.clear();
+        activeWriteIndex_ = 0;
+        (void)commandQueue_.completeInFlight();
+    }
+    QMetaObject::invokeMethod(this, &Flow8Device::pumpProtocolQueue,
+                              Qt::QueuedConnection);
+}
+
+bool Flow8Device::enqueueProtocolCommand(
+    protocol::Flow8Command command,
+    const SemanticCommandQueue::Coalescing coalescing)
+{
+    if (!transport_ || transport_->isSimulator()
+        || !protocolTransportCanWrite(transport_->state())) {
+        return false;
+    }
+    if (!commandQueue_.enqueueProtocolCommand(std::move(command), coalescing)) {
+        return false;
+    }
+    pumpProtocolQueue();
+    return true;
+}
+
+void Flow8Device::pumpProtocolQueue()
+{
+    if (!transport_ || transport_->isSimulator()
+        || !protocolTransportCanWrite(transport_->state())
+        || writeInFlight_) {
+        return;
+    }
+
+    while (activeWriteFrames_.isEmpty()) {
+        const auto command = commandQueue_.beginNext();
+        if (!command.has_value()) {
+            return;
+        }
+        auto encoded = command->encodePackets();
+        if (encoded.ok()) {
+            if (command->protocolCommand.has_value()) {
+                (void)state_.markProtocolCommandPending(*command->protocolCommand);
+            } else if (const auto route = command->routeLevelCommand(); route.has_value()) {
+                (void)state_.markProtocolCommandPending(protocol::Flow8Command {*route});
+            } else if (const auto gain = command->gainCommand(); gain.has_value()) {
+                (void)state_.markProtocolCommandPending(protocol::Flow8Command {*gain});
+            }
+            activeWriteFrames_ = std::move(encoded.packets);
+            activeWriteIndex_ = 0;
+            break;
+        }
+        emit protocolError(encoded.message);
+        (void)commandQueue_.completeInFlight();
+    }
+
+    if (activeWriteIndex_ >= activeWriteFrames_.size()) {
+        return;
+    }
+    const QByteArray frame = activeWriteFrames_.at(activeWriteIndex_);
+    writeInFlight_ = true;
+    if (!transport_->send(frame)) {
+        writeInFlight_ = false;
+        activeWriteFrames_.clear();
+        activeWriteIndex_ = 0;
+        (void)commandQueue_.completeInFlight();
+        state_.failAllPendingProtocolCommands(
+            QStringLiteral("transport rejected protocol frame"));
+        emit protocolError(QStringLiteral("transport rejected protocol frame"));
+        QMetaObject::invokeMethod(this, &Flow8Device::pumpProtocolQueue,
+                                  Qt::QueuedConnection);
+    }
+}
+
+void Flow8Device::resetProtocolQueue()
+{
+    commandQueue_.reset();
+    activeWriteFrames_.clear();
+    activeWriteIndex_ = 0;
+    writeInFlight_ = false;
 }
 
 void Flow8Device::initializeSimulatorProfile()

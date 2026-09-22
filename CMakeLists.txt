@@ -13,18 +13,62 @@ option(
     "Fail configuration when the Qt Bluetooth development component is unavailable"
     OFF
 )
+option(
+    FLOW8_REQUIRE_MINGW
+    "Fail configuration unless the Windows target uses the GNU MinGW-w64 toolchain"
+    OFF
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
+if(FLOW8_REQUIRE_MINGW)
+    if(NOT WIN32)
+        message(FATAL_ERROR "FLOW8_REQUIRE_MINGW is only valid for a Windows target.")
+    endif()
+    if(NOT MINGW OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        message(FATAL_ERROR
+            "The selected preset requires Qt MinGW-w64. Put the Qt MinGW bin directory "
+            "containing g++.exe first on PATH; MSVC is not required."
+        )
+    endif()
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 include(Platform)
 
 find_package(Qt6 6.2 REQUIRED COMPONENTS Core Widgets)
-find_package(Qt6 6.2 QUIET COMPONENTS Bluetooth)
+if(FLOW8_REQUIRE_BLUETOOTH)
+    find_package(Qt6 6.2 REQUIRED COMPONENTS Bluetooth)
+else()
+    find_package(Qt6 6.2 QUIET COMPONENTS Bluetooth)
+endif()
+
+if(FLOW8_REQUIRE_MINGW)
+    if(NOT TARGET Qt6::qmake)
+        message(FATAL_ERROR
+            "Qt6::qmake is required to verify that the selected Qt kit is MinGW-w64."
+        )
+    endif()
+    get_target_property(_flow8_mingw_qmake Qt6::qmake IMPORTED_LOCATION)
+    execute_process(
+        COMMAND "${_flow8_mingw_qmake}" -query QMAKE_XSPEC
+        RESULT_VARIABLE _flow8_mingw_qmake_result
+        OUTPUT_VARIABLE _flow8_qmake_xspec
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(NOT _flow8_mingw_qmake_result EQUAL 0
+       OR NOT _flow8_qmake_xspec MATCHES "^win32-g\\+\\+")
+        message(FATAL_ERROR
+            "The discovered Qt installation is not a Qt MinGW-w64 kit "
+            "(QMAKE_XSPEC=${_flow8_qmake_xspec}). Set CMAKE_PREFIX_PATH or Qt6_DIR "
+            "to the Qt mingw_64 installation."
+        )
+    endif()
+endif()
 
 set(FLOW8_LRELEASE_EXECUTABLE "" CACHE FILEPATH "Path to the Qt 6 lrelease executable")
 if(NOT FLOW8_LRELEASE_EXECUTABLE)
@@ -33,11 +77,31 @@ if(NOT FLOW8_LRELEASE_EXECUTABLE)
         get_target_property(_flow8_qmake_executable Qt6::qmake IMPORTED_LOCATION)
         get_filename_component(_flow8_qt_bin_hint "${_flow8_qmake_executable}" DIRECTORY)
     endif()
-    find_program(FLOW8_LRELEASE_EXECUTABLE
+    if(NOT _flow8_qt_bin_hint)
+        find_program(_flow8_qmake_tool NAMES qmake6 qmake)
+        if(_flow8_qmake_tool)
+            execute_process(
+                COMMAND "${_flow8_qmake_tool}" -query QT_HOST_BINS
+                OUTPUT_VARIABLE _flow8_qt_bin_hint
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+        endif()
+    endif()
+    unset(_flow8_lrelease_discovered CACHE)
+    find_program(_flow8_lrelease_discovered
         NAMES lrelease6 lrelease-qt6 lrelease
         HINTS "${_flow8_qt_bin_hint}"
-        DOC "Path to the Qt 6 lrelease executable"
+        NO_DEFAULT_PATH
     )
+    if(NOT _flow8_lrelease_discovered)
+        find_program(_flow8_lrelease_discovered
+            NAMES lrelease6 lrelease-qt6 lrelease
+        )
+    endif()
+    if(_flow8_lrelease_discovered)
+        set(FLOW8_LRELEASE_EXECUTABLE "${_flow8_lrelease_discovered}"
+            CACHE FILEPATH "Path to the Qt 6 lrelease executable" FORCE)
+    endif()
 endif()
 if(NOT FLOW8_LRELEASE_EXECUTABLE)
     message(FATAL_ERROR
@@ -99,8 +163,18 @@ endif()
 add_library(flow8_protocol STATIC
     src/protocol/apk_command_catalog.cpp
     src/protocol/apk_command_catalog.h
+    src/protocol/command_codec.cpp
+    src/protocol/command_codec.h
+    src/protocol/command_stream_decoder.cpp
+    src/protocol/command_stream_decoder.h
     src/protocol/codec.cpp
     src/protocol/codec.h
+    src/protocol/field_codec.cpp
+    src/protocol/field_codec.h
+    src/protocol/flow8_command.cpp
+    src/protocol/flow8_command.h
+    src/protocol/fragment_reassembler.cpp
+    src/protocol/fragment_reassembler.h
     src/protocol/flow8_protocol.cpp
     src/protocol/flow8_protocol.h
     src/protocol/gain_codec.cpp
@@ -128,6 +202,7 @@ add_library(flow8_core STATIC
     src/core/flow8_device.h
     src/core/flow8_state.cpp
     src/core/flow8_state.h
+    src/core/protocol_state_applier.cpp
     src/core/flow8_transport.cpp
     src/core/flow8_transport.h
     src/core/semantic_command_queue.cpp
@@ -276,6 +351,14 @@ if(FLOW8_HAS_QT_BLUETOOTH)
     target_link_libraries(flow8-ble-monitor PRIVATE flow8::ble flow8::protocol Qt6::Core)
     flow8_enable_warnings(flow8-ble-monitor)
     flow8_configure_platform(flow8-ble-monitor)
+
+    find_package(Threads REQUIRED)
+    add_executable(flow8-hardware-bringup tools/hardware_bringup/main.cpp)
+    target_link_libraries(flow8-hardware-bringup
+        PRIVATE flow8::ble flow8::protocol Qt6::Core Threads::Threads
+    )
+    flow8_enable_warnings(flow8-hardware-bringup)
+    flow8_configure_platform(flow8-hardware-bringup)
 endif()
 
 add_executable(flow8-controller src/app/main.cpp)
@@ -303,5 +386,11 @@ endif()
 message(STATUS "FLOW 8 PC Controller ${PROJECT_VERSION}")
 message(STATUS "Host platform: ${CMAKE_HOST_SYSTEM_NAME}")
 message(STATUS "Target platform: ${CMAKE_SYSTEM_NAME}")
+message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER}")
+message(STATUS "C++ compiler ID: ${CMAKE_CXX_COMPILER_ID}")
+if(FLOW8_REQUIRE_MINGW)
+    message(STATUS "Windows toolchain: Qt MinGW-w64 (required)")
+    message(STATUS "Qt mkspec: ${_flow8_qmake_xspec}")
+endif()
 message(STATUS "Qt version: ${Qt6_VERSION}")
 message(STATUS "Qt Bluetooth available: ${FLOW8_HAS_QT_BLUETOOTH}")

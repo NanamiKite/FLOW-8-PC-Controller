@@ -55,6 +55,16 @@ Flow8Transport::State BleTransport::state() const noexcept
     return state_;
 }
 
+model::EvidenceStatus BleTransport::observationEvidence() const noexcept
+{
+    return model::EvidenceStatus::VerifiedFromDevice;
+}
+
+QString BleTransport::observationSource() const
+{
+    return QStringLiteral("FLOW 8 BLE notification");
+}
+
 void BleTransport::startScan(const int timeoutMs)
 {
     if (state_ != State::Disconnected && state_ != State::Error) {
@@ -124,6 +134,23 @@ void BleTransport::connectTransport()
     createController();
 }
 
+void BleTransport::markHandshakeClientSent()
+{
+    if (notificationsEnabled_ && state_ == State::WaitingForHandshake) {
+        setState(State::WaitingForHandshakeReply);
+    }
+}
+
+void BleTransport::protocolSessionReady()
+{
+    if (notificationsEnabled_
+        && (state_ == State::WaitingForHandshake
+            || state_ == State::WaitingForHandshakeReply
+            || state_ == State::Connected)) {
+        setState(State::Connected);
+    }
+}
+
 void BleTransport::disconnectTransport()
 {
     manualDisconnect_ = true;
@@ -142,13 +169,21 @@ bool BleTransport::send(const QByteArray& payload)
         return false;
     }
     const auto properties = characteristic_.properties();
+    if (writePreference_ == WritePreference::WithResponse) {
+        return properties.testFlag(QLowEnergyCharacteristic::Write)
+            && write(payload, false);
+    }
+    if (writePreference_ == WritePreference::WithoutResponse) {
+        return properties.testFlag(QLowEnergyCharacteristic::WriteNoResponse)
+            && write(payload, true);
+    }
     if (properties.testFlag(QLowEnergyCharacteristic::Write)) {
         return write(payload, false);
     }
     if (properties.testFlag(QLowEnergyCharacteristic::WriteNoResponse)) {
         return write(payload, true);
     }
-    return write(payload, false);
+    return false;
 }
 
 bool BleTransport::read()
@@ -214,6 +249,36 @@ bool BleTransport::subscribeNotifications(const bool enabled)
     return true;
 }
 
+void BleTransport::setAutomaticNotificationSubscription(const bool enabled) noexcept
+{
+    automaticNotificationSubscription_ = enabled;
+}
+
+bool BleTransport::automaticNotificationSubscription() const noexcept
+{
+    return automaticNotificationSubscription_;
+}
+
+bool BleTransport::notificationsEnabled() const noexcept
+{
+    return notificationsEnabled_;
+}
+
+void BleTransport::setWritePreference(const WritePreference preference) noexcept
+{
+    writePreference_ = preference;
+}
+
+BleTransport::WritePreference BleTransport::writePreference() const noexcept
+{
+    return writePreference_;
+}
+
+int BleTransport::negotiatedMtu() const noexcept
+{
+    return negotiatedMtu_;
+}
+
 void BleTransport::setAutomaticReconnect(const bool enabled, const int delayMs)
 {
     automaticReconnect_ = enabled;
@@ -237,10 +302,20 @@ void BleTransport::createController()
     clearConnectionObjects();
     auto* controller = QLowEnergyController::createCentral(device_, this);
     controller_ = controller;
+    connect(controller, &QLowEnergyController::mtuChanged, this,
+            [this, controller](const int mtu) {
+                if (controller_ != controller) {
+                    return;
+                }
+                negotiatedMtu_ = mtu;
+                emit negotiatedMtuChanged(mtu);
+            });
     connect(controller, &QLowEnergyController::connected, this, [this, controller] {
         if (controller_ != controller) {
             return;
         }
+        negotiatedMtu_ = controller->mtu();
+        emit negotiatedMtuChanged(negotiatedMtu_);
         setState(State::DiscoveringServices);
         controller->discoverServices();
     });
@@ -298,6 +373,30 @@ void BleTransport::createController()
                                       characteristic.uuid(), QStringLiteral("write-ack"), value);
                     emit bytesWritten(value);
                 });
+        connect(service, &QLowEnergyService::descriptorWritten, this,
+                [this, service](const QLowEnergyDescriptor& descriptor,
+                                const QByteArray& value) {
+                    if (service_ != service) {
+                        return;
+                    }
+                    const QString operation = QStringLiteral("descriptor-write-ack:%1")
+                        .arg(descriptor.uuid().toString(QUuid::WithoutBraces));
+                    emit trafficEvent(QStringLiteral("RX"), service->serviceUuid(),
+                                      characteristic_.uuid(), operation, value);
+                    const auto cccd = characteristic_.clientCharacteristicConfiguration();
+                    if (!cccd.isValid() || descriptor.uuid() != cccd.uuid()) {
+                        return;
+                    }
+                    const bool enabled = value == QLowEnergyCharacteristic::CCCDEnableNotification
+                        || value == QLowEnergyCharacteristic::CCCDEnableIndication;
+                    const QString mode = value == QLowEnergyCharacteristic::CCCDEnableIndication
+                        ? QStringLiteral("indicate")
+                        : (enabled ? QStringLiteral("notify")
+                                   : QStringLiteral("disabled"));
+                    notificationsEnabled_ = enabled;
+                    emit notificationSubscriptionChanged(enabled, mode);
+                    setState(enabled ? State::WaitingForHandshake : State::Connected);
+                });
         connect(service, &QLowEnergyService::errorOccurred, this,
                 [this, service](QLowEnergyService::ServiceError error) {
                     if (service_ != service) {
@@ -341,6 +440,10 @@ void BleTransport::handleServiceDetails(const QLowEnergyService::ServiceState se
     }
     for (const auto& found : service_->characteristics()) {
         emit characteristicDiscovered(service_->serviceUuid(), found.uuid(), found.properties());
+        for (const auto& descriptor : found.descriptors()) {
+            emit descriptorDiscovered(service_->serviceUuid(), found.uuid(),
+                                      descriptor.uuid());
+        }
     }
     characteristic_ = service_->characteristic(flow8CharacteristicUuid());
     if (!characteristic_.isValid()) {
@@ -348,19 +451,29 @@ void BleTransport::handleServiceDetails(const QLowEnergyService::ServiceState se
                     QStringLiteral("FLOW 8 characteristic was not found"));
         return;
     }
-    if (!subscribeNotifications(true)) {
-        emit errorOccurred(QStringLiteral(
-            "GATT notification subscription is unavailable (properties or CCCD missing)"));
+    emit gattReady();
+    if (!automaticNotificationSubscription_) {
+        setState(State::Connected);
         return;
     }
-    // APK evidence confirms that notification setup is followed by a FLOW 8
-    // handshake. Its final payload is still unknown, so a generic GATT link
-    // must not be reported as a ready device connection.
-    setState(State::WaitingForHandshake);
+    if (!subscribeNotifications(true)) {
+        reportError(QStringLiteral("GATT notification subscription"),
+                    QStringLiteral("properties or CCCD missing"));
+    }
+    // WaitingForHandshake is entered only from descriptorWritten after Qt has
+    // confirmed the CCCD write. GATT discovery alone is not notification proof.
 }
 
 void BleTransport::clearConnectionObjects()
 {
+    if (notificationsEnabled_) {
+        notificationsEnabled_ = false;
+        emit notificationSubscriptionChanged(false, QStringLiteral("disconnected"));
+    }
+    if (negotiatedMtu_ != 23) {
+        negotiatedMtu_ = 23;
+        emit negotiatedMtuChanged(negotiatedMtu_);
+    }
     characteristic_ = {};
     if (service_) {
         service_->deleteLater();

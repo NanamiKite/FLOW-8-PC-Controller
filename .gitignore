@@ -166,7 +166,7 @@ ENV/
 # Rust reference project build
 # =========================
 
-reference/flow-8-midi/target/
+reference/
 # =========================
 # Local tools / downloaded dependencies
 # =========================

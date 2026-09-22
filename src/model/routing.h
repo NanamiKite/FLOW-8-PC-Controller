@@ -110,6 +110,19 @@ struct RoutingState {
     HeadphoneRoutingState headphones;
     QVector<FxOutputRouteState> fxOutputRoutes;
 
+    // Device routing/control fields carried by 0x25/0x38. These remain
+    // separate from UI-local selectedDestination.
+    StateValue<bool> bluetoothUsbSwitch;
+    StateValue<bool> footswitchFxMode;
+    StateValue<bool> muteInputs;
+    StateValue<bool> usbStreaming;
+    StateValue<bool> monitorPostFader;
+    StateValue<quint8> monitorRoutingCode;
+    StateValue<quint8> snapshotScopeBits;
+    StateValue<EndpointId> deviceSelectedOutput;
+    StateValue<bool> linkAppMixerSelection;
+    StateValue<QString> deviceName;
+
     [[nodiscard]] const FxOutputRouteState* fxOutputRoute(
         int effectIndex, FxOutputDestination destination) const noexcept
     {

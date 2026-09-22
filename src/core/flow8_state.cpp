@@ -85,6 +85,7 @@ void Flow8State::replaceChannels(QVector<model::ChannelState> channels)
             .peak = {},
             .clipping = {},
             .gainReductionDb = {},
+            .gainReductionCode = {},
         });
     }
     emit stateReset();
@@ -432,6 +433,7 @@ void Flow8State::replaceBuses(QVector<model::BusState> buses)
             .peak = {},
             .clipping = {},
             .gainReductionDb = {},
+            .gainReductionCode = {},
         });
     }
     emit stateReset();
@@ -516,7 +518,10 @@ bool Flow8State::setFxPreset(const int index, const int preset,
                              const model::EvidenceStatus evidence, const QString& source)
 {
     auto* target = mutableEffect(index);
-    if (target == nullptr || preset < 1 || preset > 16
+    // Native state/0x31 carries an unsigned preset reference. The desktop
+    // preset browser may expose a narrower catalogue, but RX must preserve 0
+    // and future raw IDs rather than reject a valid device observation.
+    if (target == nullptr || preset < 0 || preset > 255
         || !model::mergeObservedValue(target->preset, preset, evidence, source)) {
         return false;
     }

@@ -48,6 +48,9 @@ struct MixBusState {
     StateValue<QString> name;
     StateValue<double> fader;
     std::optional<StateValue<bool>> muted;
+    // Present in the compound output state. The APK exposes no confirmed
+    // atomic output-solo setter, so this is receive-side state only for now.
+    StateValue<bool> soloed;
     StateValue<double> levelDb;
     std::optional<StateValue<double>> balance;
     std::optional<StateValue<double>> limiterDb;

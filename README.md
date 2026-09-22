@@ -3,11 +3,12 @@
 An independent C++20/Qt 6 desktop controller for the Behringer FLOW 8 mixer, with BLE as
 the primary transport and USB MIDI as a secondary future transport.
 
-Current development includes a cross-platform build, protocol codecs, a unified
+Current development includes a cross-platform build, a 31-command bidirectional
+APK-equivalent protocol codec/parser, a unified
 evidence-aware state model, a Qt Bluetooth transport, BLE inspection tools, an
 official-manual-calibrated functional model, a deterministic simulator, and a Qt Widgets
-desktop mixer. Real FLOW 8 behavior is not claimed: hardware validation is currently
-**BLOCKED: NEED_HARDWARE**.
+desktop mixer. Real FLOW 8 behavior is not claimed: a retained Windows hardware session has not yet
+been executed, so real-device results remain **NOT RUN / WINDOWS_HOST_RUN_REQUIRED**.
 
 ```text
 Qt Widgets GUI → Flow8Device ↔ Flow8State
@@ -21,7 +22,7 @@ Qt Widgets GUI → Flow8Device ↔ Flow8State
 
 - CMake 3.22+
 - Ninja
-- GCC/Clang on Linux or MSVC on Windows
+- GCC/Clang on Linux or Qt MinGW-w64 (GCC) on Windows
 - Qt 6.2+ with Core, Widgets, Test, Bluetooth/Connectivity, and Linguist tools
 
 Ubuntu example:
@@ -35,26 +36,43 @@ sudo apt install qt6-base-dev qt6-base-dev-tools qt6-connectivity-dev qt6-l10n-t
 Linux:
 
 ```bash
-cmake --preset linux-debug -DFLOW8_REQUIRE_BLUETOOTH=ON
+cmake --preset linux-debug
 cmake --build --preset linux-debug
 ctest --preset linux-debug
 ./build/linux-debug/flow8-controller
 ```
 
-Use `linux-release` for Release. If Qt Connectivity is temporarily unavailable, omit
-`FLOW8_REQUIRE_BLUETOOTH=ON`; the simulator/UI/protocol targets still build and CMake
-clearly reports that BLE targets were omitted.
+Use `linux-release` for Release. The default Linux preset permits Qt Bluetooth to be
+absent, so simulator/UI/protocol targets continue to build; pass
+`-DFLOW8_REQUIRE_BLUETOOTH=ON` only on a Linux host where Bluetooth is required.
 
-Windows, from an MSVC environment with Qt discoverable by CMake:
+Windows uses ordinary PowerShell or cmd; Visual Studio and MSVC are not required. Put
+the Qt Online Installer MinGW-w64 toolchain, the matching Qt `mingw_64` kit,
+CMake, and Ninja on `PATH`, then verify:
 
 ```powershell
-cmake --preset windows-debug -DFLOW8_REQUIRE_BLUETOOTH=ON
-cmake --build --preset windows-debug
-ctest --preset windows-debug
+where.exe gcc.exe
+where.exe g++.exe
+where.exe cmake.exe
+where.exe ninja.exe
+where.exe qmake.exe
+g++.exe --version
+qmake.exe -query QMAKE_XSPEC
 ```
 
-Use `windows-release` for Release. No Qt, compiler, user-directory, adapter, or device
-address path is hard-coded.
+`QMAKE_XSPEC` must be `win32-g++`. If Qt is not discovered, provide the matching
+`mingw_64` kit through `CMAKE_PREFIX_PATH` or `Qt6_DIR`; no machine-specific absolute
+path is stored in the repository. Build both configurations independently:
+
+```powershell
+cmake --preset windows-mingw-debug
+cmake --build --preset windows-mingw-debug
+ctest --preset windows-mingw-debug
+
+cmake --preset windows-mingw-release
+cmake --build --preset windows-mingw-release
+ctest --preset windows-mingw-release
+```
 
 ## Simulator
 
@@ -88,8 +106,29 @@ The simulator models channel names/icons/hide-show, Gain/Phase/Low Cut, phantom 
 applicable, MON pre/post sends, two independent USB Audio endpoints,
 USB/FX/headphone routing, physical outputs, and the MON1/MON2 stereo-link relationship,
 app-snapshot store/load/rename/delete, Assisted Setup, EZ-GAIN, global Tap Tempo, and
-output preferences. Hardware commands for these additions remain
-`UNKNOWN / BLOCKED: NEED_HARDWARE`; the simulator never emits guessed packets.
+output preferences. Simulator behavior remains `SYNTHETIC`; it never serves as device
+evidence and does not emit a guessed hardware response.
+
+## Bidirectional APK protocol implementation
+
+The protocol registry implements exact TX and typed RX for the 31 requested native
+commands, including Pan/Solo/Gain, input PEQ, output GEQ, HPF, Route/Master, Mute,
+Compressor amount, Limiter, Phantom, FX, meter, settings, snapshots, output selection,
+delay, and compound state. Each requested command has at least one exact APK-native byte
+vector test. The full native descriptor catalog records 51 non-empty schemas; companion
+commands without an established PC workflow are not given speculative product APIs.
+
+`0x38` reassembly handles the retained 388-byte payload as 251/147-byte raw frames,
+rejects incomplete or inconsistent sequences, then atomically applies 7 input states,
+3 output states, 2 FX states, and the routing/control tail. Atomic notifications and
+compound state update the same confirmed model. Outbound control values remain pending
+until RX confirms them; a conflicting RX value wins. On `0x36`, the device layer queues
+the exact `0x37` state request and waits for complete `0x38` before Ready.
+
+These are `VERIFIED_FROM_APK` codec/parser facts and `IMPLEMENTED` PC behavior. No BLE
+packet has been accepted by a physical FLOW 8 in this project yet. The mixer is now
+available to the Windows host, but Windows BLE execution remains
+`NOT RUN / WINDOWS_HOST_RUN_REQUIRED` until a retained capture exists.
 
 The desktop UI uses custom HiDPI-aware faders (drag, wheel, Shift fine adjustment,
 keyboard and double-click reset), smooth meters, EQ graphs, and responsive layouts while
@@ -136,6 +175,14 @@ When Qt Bluetooth is installed:
 ./build/linux-debug/flow8-ble-monitor --json --decode
 ```
 
+On the Windows 11 host, first hardware bring-up uses the manual-by-default logger:
+
+```powershell
+.\build\windows-mingw-debug\flow8-hardware-bringup.exe `
+  --output captures\hardware\bringup-001.jsonl `
+  --capture-dir captures\hardware\mixer-state
+```
+
 The monitor preserves every payload byte and does not automatically send the unverified
 FLOW 8 handshake.
 
@@ -154,6 +201,7 @@ The state-dump decoder reports input SHA-256 and keeps all extracted offsets mar
 
 - [Architecture](docs/architecture.md)
 - [BLE](docs/ble.md)
+- [Windows hardware validation](docs/hardware-validation.md)
 - [Protocol](docs/protocol.md)
 - [Conservative SysEx offset catalog](docs/sysex-offsets.md)
 - [USB MIDI and SysEx](docs/midi.md)

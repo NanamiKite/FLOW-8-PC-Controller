@@ -1,4 +1,5 @@
 #include "core/flow8_device.h"
+#include "protocol/command_codec.h"
 #include "simulator/fake_transport.h"
 
 #include <QTest>
@@ -13,6 +14,14 @@ public:
 
     [[nodiscard]] QString displayName() const override { return QStringLiteral("test transport"); }
     [[nodiscard]] State state() const noexcept override { return state_; }
+    [[nodiscard]] flow8::model::EvidenceStatus observationEvidence() const noexcept override
+    {
+        return flow8::model::EvidenceStatus::VerifiedOffline;
+    }
+    [[nodiscard]] QString observationSource() const override
+    {
+        return QStringLiteral("offline transport fixture");
+    }
     void connectTransport() override
     {
         state_ = State::Connected;
@@ -23,11 +32,39 @@ public:
         state_ = State::Disconnected;
         emit stateChanged(state_);
     }
-    bool send(const QByteArray&) override { return state_ == State::Connected; }
+    bool send(const QByteArray& payload) override
+    {
+        if (state_ != State::Connected || payload.isEmpty()) return false;
+        sent_.append(payload);
+        emit bytesWritten(payload);
+        return true;
+    }
+    void protocolSessionReady() override { sessionReady_ = true; }
+    void simulateIncoming(const QByteArray& payload) { emit bytesReceived(payload); }
+    [[nodiscard]] const QVector<QByteArray>& sent() const noexcept { return sent_; }
+    [[nodiscard]] bool sessionReady() const noexcept { return sessionReady_; }
 
 private:
     State state_ {State::Disconnected};
+    QVector<QByteArray> sent_;
+    bool sessionReady_ {};
 };
+
+flow8::protocol::MixerStateCommand validOfflineMixerState()
+{
+    flow8::protocol::MixerStateCommand state;
+    for (std::size_t index = 0; index < state.inputs.size(); ++index) {
+        state.inputs[index].id = static_cast<quint8>(index);
+        state.inputs[index].label.endpoint = static_cast<quint8>(index);
+    }
+    state.outputs[0].id = 0x0f;
+    state.outputs[1].id = 0x0a;
+    state.outputs[2].id = 0x0b;
+    state.effects[0].id = 0x0c;
+    state.effects[1].id = 0x0d;
+    state.selectedOutput = 0x0f;
+    return state;
+}
 
 } // namespace
 
@@ -42,6 +79,8 @@ private slots:
     void monitorStereoLinkMirrorsSimulatorFaders();
     void usbAndPhysicalOutputRoutingRemainIndependent();
     void realTransportDoesNotClaimReadyBeforeHandshake();
+    void manualStateRecoveryCanBeStepped();
+    void offlineTransportSynchronizesThenWritesQueuedCommands();
 };
 
 void Flow8DeviceTest::simulatorConnectsAndCreatesProfile()
@@ -444,6 +483,92 @@ void Flow8DeviceTest::realTransportDoesNotClaimReadyBeforeHandshake()
     QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Connected);
     QVERIFY(!device.isControlAvailable(flow8::Flow8Device::Control::ChannelFader));
     QVERIFY(!device.setChannelFader(0, 0.5));
+}
+
+void Flow8DeviceTest::manualStateRecoveryCanBeStepped()
+{
+    flow8::Flow8Device device;
+    device.setAutomaticStateRecovery(false);
+    auto transport = std::make_unique<NonSimulatorTransport>();
+    auto* rawTransport = transport.get();
+    device.setTransport(std::move(transport));
+    device.connectDevice();
+
+    rawTransport->simulateIncoming(QByteArray::fromHex("360137"));
+    QTest::qWait(1);
+    QCOMPARE(rawTransport->sent().size(), 0);
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Connected);
+
+    QVERIFY(device.requestMixerState());
+    QTRY_COMPARE(rawTransport->sent().size(), 1);
+    QCOMPARE(rawTransport->sent().constFirst(), QByteArray::fromHex("370138"));
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Synchronizing);
+
+    const auto mixerFrames = flow8::protocol::encodeCommand(
+        flow8::protocol::Flow8Command {validOfflineMixerState()});
+    QVERIFY(mixerFrames.ok());
+    for (const auto& frame : mixerFrames.packets) {
+        rawTransport->simulateIncoming(frame);
+    }
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Ready);
+    QVERIFY(rawTransport->sessionReady());
+}
+
+void Flow8DeviceTest::offlineTransportSynchronizesThenWritesQueuedCommands()
+{
+    flow8::Flow8Device device;
+    auto transport = std::make_unique<NonSimulatorTransport>();
+    auto* rawTransport = transport.get();
+    device.setTransport(std::move(transport));
+    device.connectDevice();
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Connected);
+
+    // 0x36 triggers the APK-confirmed full-state request, but it does not make
+    // the control surface Ready until the complete 0x38 has arrived.
+    rawTransport->simulateIncoming(QByteArray::fromHex("360137"));
+    QTRY_COMPARE(rawTransport->sent().size(), 1);
+    QCOMPARE(rawTransport->sent().constFirst(), QByteArray::fromHex("370138"));
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Synchronizing);
+
+    const auto mixerFrames = flow8::protocol::encodeCommand(
+        flow8::protocol::Flow8Command {validOfflineMixerState()});
+    QVERIFY(mixerFrames.ok());
+    QCOMPARE(mixerFrames.packets.size(), 2);
+    rawTransport->simulateIncoming(mixerFrames.packets[0]);
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Synchronizing);
+    rawTransport->simulateIncoming(mixerFrames.packets[1]);
+    QCOMPARE(device.state().connectionState(), flow8::ConnectionState::Ready);
+    QCOMPARE(device.state().channel(0)->gainDb.evidence,
+             flow8::model::EvidenceStatus::VerifiedOffline);
+
+    QVERIFY(device.setChannelGain(0, 0.25)); // UI -20..60 maps to 0 dB.
+    QTRY_COMPARE(rawTransport->sent().size(), 2);
+    QCOMPARE(rawTransport->sent().at(1), QByteArray::fromHex("020100787b"));
+    QCOMPARE(device.state().channel(0)->gainDb.pending, std::optional(0.0));
+    rawTransport->simulateIncoming(QByteArray::fromHex("0201008c8f"));
+    QCOMPARE(device.state().channel(0)->gainDb.value, std::optional(10.0));
+    QVERIFY(!device.state().channel(0)->gainDb.pending.has_value());
+
+    QVERIFY(device.setRouteLevel(0, flow8::model::RoutingDestination::Main, 0.5));
+    QTRY_COMPARE(rawTransport->sent().size(), 3);
+    QCOMPARE(rawTransport->sent().at(2), QByteArray::fromHex("0601000f7f95"));
+    QVERIFY(device.state().routeLevel(
+        0, flow8::model::RoutingDestination::Main)->pending.has_value());
+
+    // RX is authoritative and clears a conflicting local intent.
+    rawTransport->simulateIncoming(QByteArray::fromHex("0601000f0016"));
+    const auto* route = device.state().routeLevel(
+        0, flow8::model::RoutingDestination::Main);
+    QVERIFY(route != nullptr);
+    QVERIFY(!route->pending.has_value());
+    QCOMPARE(route->confirmed.evidence,
+             flow8::model::EvidenceStatus::VerifiedOffline);
+
+    QVERIFY(device.setChannelGain(0, 0.5));
+    QVERIFY(device.state().channel(0)->gainDb.pending.has_value());
+    device.disconnectDevice();
+    QVERIFY(!device.state().channel(0)->gainDb.pending.has_value());
+    QVERIFY(!device.state().channel(0)->gainDb.error.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(Flow8DeviceTest)

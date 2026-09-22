@@ -17,6 +17,8 @@ private slots:
     void representsDestinationMasterWithEqualEndpoints();
     void writesOnlySuccessfulCodecPacketsToTransport();
     void preservesDiscreteActionsAndOneInFlightRule();
+    void genericCommandsCoalesceByFullSemanticTarget();
+    void genericDiscreteCommandsAreNeverDropped();
 };
 
 void SemanticCommandQueueTest::coalescesOnlyMatchingRouteFaders()
@@ -185,6 +187,71 @@ void SemanticCommandQueueTest::preservesDiscreteActionsAndOneInFlightRule()
     QVERIFY(!queue.inFlight()->encodePacket().has_value());
     QVERIFY(queue.completeInFlight());
     QVERIFY(!queue.completeInFlight());
+}
+
+void SemanticCommandQueueTest::genericCommandsCoalesceByFullSemanticTarget()
+{
+    using namespace flow8::protocol;
+    flow8::SemanticCommandQueue queue;
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {ParametricEqCommand {0, 1, 500, 1.0, -2.0}},
+        flow8::SemanticCommandQueue::Coalescing::Continuous));
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {ParametricEqCommand {0, 1, 500, 1.0, 3.0}},
+        flow8::SemanticCommandQueue::Coalescing::Continuous));
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {ParametricEqCommand {0, 2, 1000, 1.0, 4.0}},
+        flow8::SemanticCommandQueue::Coalescing::Continuous));
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {PanCommand {0, 0.25}},
+        flow8::SemanticCommandQueue::Coalescing::Continuous));
+    QCOMPARE(queue.pendingCount(), 3);
+
+    auto next = queue.beginNext();
+    QVERIFY(next.has_value());
+    const auto* eq = std::get_if<ParametricEqCommand>(&*next->protocolCommand);
+    QVERIFY(eq != nullptr);
+    QCOMPARE(eq->band, 1);
+    QCOMPARE(eq->gainDb, 3.0);
+    QVERIFY(next->encodePackets().ok());
+    QVERIFY(queue.completeInFlight());
+
+    next = queue.beginNext();
+    QVERIFY(next.has_value());
+    eq = std::get_if<ParametricEqCommand>(&*next->protocolCommand);
+    QVERIFY(eq != nullptr);
+    QCOMPARE(eq->band, 2);
+    QVERIFY(queue.completeInFlight());
+
+    next = queue.beginNext();
+    QVERIFY(next.has_value());
+    QVERIFY(std::holds_alternative<PanCommand>(*next->protocolCommand));
+}
+
+void SemanticCommandQueueTest::genericDiscreteCommandsAreNeverDropped()
+{
+    using namespace flow8::protocol;
+    flow8::SemanticCommandQueue queue;
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {MuteCommand {0, true}}));
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {MuteCommand {0, false}}));
+    QVERIFY(queue.enqueueProtocolCommand(
+        Flow8Command {SnapshotLoadCommand {3}}));
+    QCOMPARE(queue.pendingCount(), 3);
+
+    auto command = queue.beginNext();
+    QVERIFY(command.has_value());
+    QCOMPARE(command->encodePackets().packets.constFirst(),
+             QByteArray::fromHex("080100010a"));
+    QVERIFY(queue.completeInFlight());
+    command = queue.beginNext();
+    QCOMPARE(command->encodePackets().packets.constFirst(),
+             QByteArray::fromHex("0801000009"));
+    QVERIFY(queue.completeInFlight());
+    command = queue.beginNext();
+    QCOMPARE(command->encodePackets().packets.constFirst(),
+             QByteArray::fromHex("20010324"));
 }
 
 QTEST_GUILESS_MAIN(SemanticCommandQueueTest)

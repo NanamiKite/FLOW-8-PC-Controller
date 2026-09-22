@@ -24,6 +24,16 @@ bool FakeTransport::isSimulator() const noexcept
     return true;
 }
 
+model::EvidenceStatus FakeTransport::observationEvidence() const noexcept
+{
+    return model::EvidenceStatus::Synthetic;
+}
+
+QString FakeTransport::observationSource() const
+{
+    return QStringLiteral("SYNTHETIC FakeTransport RX");
+}
+
 void FakeTransport::connectTransport()
 {
     if (state_ != State::Disconnected && state_ != State::Error) {

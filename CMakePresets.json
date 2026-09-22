@@ -43,8 +43,8 @@
       }
     },
     {
-      "name": "windows-debug",
-      "displayName": "Windows MSVC Debug",
+      "name": "windows-mingw-debug",
+      "displayName": "Windows Qt MinGW-w64 Debug",
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -52,12 +52,15 @@
         "rhs": "Windows"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "g++.exe",
+        "FLOW8_REQUIRE_MINGW": "ON",
+        "FLOW8_REQUIRE_BLUETOOTH": "ON"
       }
     },
     {
-      "name": "windows-release",
-      "displayName": "Windows MSVC Release",
+      "name": "windows-mingw-release",
+      "displayName": "Windows Qt MinGW-w64 Release",
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -65,7 +68,10 @@
         "rhs": "Windows"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++.exe",
+        "FLOW8_REQUIRE_MINGW": "ON",
+        "FLOW8_REQUIRE_BLUETOOTH": "ON"
       }
     }
   ],
@@ -79,12 +85,12 @@
       "configurePreset": "linux-release"
     },
     {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug"
+      "name": "windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug"
     },
     {
-      "name": "windows-release",
-      "configurePreset": "windows-release"
+      "name": "windows-mingw-release",
+      "configurePreset": "windows-mingw-release"
     }
   ],
   "testPresets": [
@@ -103,15 +109,15 @@
       }
     },
     {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug",
+      "name": "windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug",
       "output": {
         "outputOnFailure": true
       }
     },
     {
-      "name": "windows-release",
-      "configurePreset": "windows-release",
+      "name": "windows-mingw-release",
+      "configurePreset": "windows-mingw-release",
       "output": {
         "outputOnFailure": true
       }

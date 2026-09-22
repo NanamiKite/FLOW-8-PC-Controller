@@ -27,12 +27,14 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          arch: win64_msvc2022_64
+          arch: win64_mingw
+          tools: tools_mingw1310
+          add-tools-to-path: true
           modules: qtconnectivity
           cache: true
       - name: Configure
-        run: cmake --preset windows-debug -DFLOW8_REQUIRE_BLUETOOTH=ON
+        run: cmake --preset windows-mingw-debug
       - name: Build
-        run: cmake --build --preset windows-debug
+        run: cmake --build --preset windows-mingw-debug
       - name: Test
-        run: ctest --preset windows-debug
+        run: ctest --preset windows-mingw-debug

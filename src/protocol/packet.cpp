@@ -34,22 +34,31 @@ std::optional<PacketType> knownPacketType(const quint8 value) noexcept
     case 0x23: return PacketType::GetChannelLabels;
     case 0x24: return PacketType::ChannelLabels;
     case 0x25: return PacketType::Setting;
-    case 0x26: return PacketType::ReferenceParameterQuery;
+    case 0x26: return PacketType::GetSetting;
     case 0x27: return PacketType::SnapshotNames;
     case 0x29: return PacketType::FactoryReset;
     case 0x30: return PacketType::FxState;
     case 0x31: return PacketType::FxPreset;
     case 0x32: return PacketType::SnapshotRename;
-    case 0x33: return PacketType::ConnectionState;
-    case 0x35: return PacketType::Identity;
-    case 0x36: return PacketType::AuthenticationAck;
+    case 0x33: return PacketType::ChannelConnectionState;
+    case 0x34: return PacketType::ChannelSimulateConnectionState;
+    case 0x35: return PacketType::HandshakeHost;
+    case 0x36: return PacketType::HandshakeReply;
     case 0x37: return PacketType::GetMixerState;
     case 0x38: return PacketType::MixerState;
-    case 0x39: return PacketType::Authentication;
+    case 0x39: return PacketType::HandshakeClient;
     case 0x40: return PacketType::FxTempo;
     case 0x41: return PacketType::SelectOutput;
+    case 0x42: return PacketType::RequestData;
+    case 0x43: return PacketType::TransferData;
+    case 0x44: return PacketType::AckData;
+    case 0x45: return PacketType::SetMidi;
+    case 0x46: return PacketType::GetMidi;
+    case 0x47: return PacketType::SetFxPresetDescription;
+    case 0x48: return PacketType::SetFxPresetDescriptionAck;
+    case 0x49: return PacketType::ChannelReserved;
     case 0x4A: return PacketType::ChannelDelay;
-    case 0x4B: return PacketType::DumpTrigger;
+    case 0x4B: return PacketType::SysExMidiDump;
     default: return std::nullopt;
     }
 }
@@ -87,23 +96,31 @@ QString packetTypeName(const quint8 value)
     case PacketType::GetChannelLabels: return QStringLiteral("get-channel-labels");
     case PacketType::ChannelLabels: return QStringLiteral("channel-labels");
     case PacketType::Setting: return QStringLiteral("setting");
-    case PacketType::ReferenceParameterQuery:
-        return QStringLiteral("reference-parameter-query");
+    case PacketType::GetSetting: return QStringLiteral("get-setting");
     case PacketType::SnapshotNames: return QStringLiteral("snapshot-names");
     case PacketType::FactoryReset: return QStringLiteral("factory-reset");
     case PacketType::FxState: return QStringLiteral("fx-state");
     case PacketType::FxPreset: return QStringLiteral("fx-preset");
     case PacketType::SnapshotRename: return QStringLiteral("snapshot-rename");
-    case PacketType::ConnectionState: return QStringLiteral("connection-state");
-    case PacketType::Identity: return QStringLiteral("identity");
-    case PacketType::AuthenticationAck: return QStringLiteral("authentication-ack");
+    case PacketType::ChannelConnectionState: return QStringLiteral("channel-connection-state");
+    case PacketType::ChannelSimulateConnectionState: return QStringLiteral("channel-simulate-connection-state");
+    case PacketType::HandshakeHost: return QStringLiteral("handshake-host");
+    case PacketType::HandshakeReply: return QStringLiteral("handshake-reply");
     case PacketType::GetMixerState: return QStringLiteral("get-mixer-state");
     case PacketType::MixerState: return QStringLiteral("mixer-state-raw");
-    case PacketType::Authentication: return QStringLiteral("authentication");
+    case PacketType::HandshakeClient: return QStringLiteral("handshake-client");
     case PacketType::FxTempo: return QStringLiteral("fx-tempo");
     case PacketType::SelectOutput: return QStringLiteral("select-output");
+    case PacketType::RequestData: return QStringLiteral("request-data");
+    case PacketType::TransferData: return QStringLiteral("transfer-data");
+    case PacketType::AckData: return QStringLiteral("ack-data");
+    case PacketType::SetMidi: return QStringLiteral("set-midi");
+    case PacketType::GetMidi: return QStringLiteral("get-midi");
+    case PacketType::SetFxPresetDescription: return QStringLiteral("set-fx-preset-description");
+    case PacketType::SetFxPresetDescriptionAck: return QStringLiteral("set-fx-preset-description-ack");
+    case PacketType::ChannelReserved: return QStringLiteral("channel-reserved");
     case PacketType::ChannelDelay: return QStringLiteral("channel-delay");
-    case PacketType::DumpTrigger: return QStringLiteral("dump-trigger");
+    case PacketType::SysExMidiDump: return QStringLiteral("sysex-midi-dump");
     }
     return QStringLiteral("unknown");
 }
@@ -126,6 +143,45 @@ QByteArray frameSingleFragment(const quint8 type, const QByteArrayView payload)
     packet.append(payload.data(), payload.size());
     packet.append(static_cast<char>(checksum(packet)));
     return packet;
+}
+
+QVector<QByteArray> frameCommand(
+    const quint8 type, const QByteArrayView payload,
+    const qsizetype maxRawPacketSize, const quint8 sequenceId)
+{
+    if (maxRawPacketSize < 3 || payload.size() >= 500) {
+        return {};
+    }
+    const qsizetype singleCapacity = maxRawPacketSize - 3;
+    if (payload.size() <= singleCapacity) {
+        return {frameSingleFragment(type, payload)};
+    }
+    if (maxRawPacketSize < 6) {
+        return {};
+    }
+
+    const qsizetype chunkSize = maxRawPacketSize - 5;
+    const qsizetype count = (payload.size() + chunkSize - 1) / chunkSize;
+    if (count <= 1 || count >= 34 || count > 255) {
+        return {};
+    }
+
+    QVector<QByteArray> frames;
+    frames.reserve(static_cast<int>(count));
+    for (qsizetype index = 0; index < count; ++index) {
+        const qsizetype offset = index * chunkSize;
+        const qsizetype size = qMin(chunkSize, payload.size() - offset);
+        QByteArray frame;
+        frame.reserve(size + 5);
+        frame.append(static_cast<char>(type));
+        frame.append(static_cast<char>(count));
+        frame.append(static_cast<char>(sequenceId));
+        frame.append(static_cast<char>(index));
+        frame.append(payload.data() + offset, size);
+        frame.append(static_cast<char>(checksum(frame)));
+        frames.append(std::move(frame));
+    }
+    return frames;
 }
 
 PacketParseResult parsePacket(const QByteArrayView raw)
@@ -153,6 +209,13 @@ PacketParseResult parsePacket(const QByteArrayView raw)
             .message = QStringLiteral("packet fragment count is zero"),
         };
     }
+    if (fragmentCount >= 34) {
+        return {
+            .packet = std::nullopt,
+            .error = PacketError::TooManyFragments,
+            .message = QStringLiteral("packet fragment count exceeds APK reassembly limit"),
+        };
+    }
     const qsizetype headerSize = fragmentCount > 1 ? 4 : 2;
     if (raw.size() < headerSize + 1) {
         return {
@@ -166,8 +229,17 @@ PacketParseResult parsePacket(const QByteArrayView raw)
     packet.type = static_cast<quint8>(raw[0]);
     packet.fragmentCount = fragmentCount;
     if (fragmentCount > 1) {
-        packet.fragmentHeaderA = static_cast<quint8>(raw[2]);
-        packet.fragmentHeaderB = static_cast<quint8>(raw[3]);
+        packet.sequenceId = static_cast<quint8>(raw[2]);
+        packet.fragmentIndex = static_cast<quint8>(raw[3]);
+        if (*packet.fragmentIndex >= fragmentCount) {
+            return {
+                .packet = std::nullopt,
+                .error = PacketError::InvalidFragmentIndex,
+                .message = QStringLiteral("packet fragment index exceeds fragment count"),
+            };
+        }
+        packet.fragmentHeaderA = packet.sequenceId;
+        packet.fragmentHeaderB = packet.fragmentIndex;
     }
     packet.payload = QByteArray(raw.data() + headerSize, raw.size() - headerSize - 1);
     packet.raw = QByteArray(raw.data(), raw.size());

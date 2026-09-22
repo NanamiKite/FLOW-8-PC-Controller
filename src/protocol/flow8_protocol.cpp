@@ -59,7 +59,7 @@ QByteArray referenceConfigRequestPacket()
 
 QByteArray referenceDumpTriggerPacket()
 {
-    return frameSingleFragment(static_cast<quint8>(PacketType::DumpTrigger));
+    return frameSingleFragment(static_cast<quint8>(PacketType::SysExMidiDump));
 }
 
 } // namespace flow8::protocol
