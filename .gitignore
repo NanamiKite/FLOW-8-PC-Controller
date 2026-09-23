@@ -173,3 +173,6 @@ reference/
 
 third_party/build/
 _vendor/
+# Rust
+target/
+*.pdb

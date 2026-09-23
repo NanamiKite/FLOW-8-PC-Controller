@@ -1,0 +1,12 @@
+[package]
+name = "flow8-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+flow8-model = { path = "../flow8-model" }
+flow8-protocol = { path = "../flow8-protocol" }
+thiserror.workspace = true
+

@@ -1,0 +1,12 @@
+[package]
+name = "flow8-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+flow8-model = { path = "../../crates/flow8-model" }
+flow8-protocol = { path = "../../crates/flow8-protocol" }
+

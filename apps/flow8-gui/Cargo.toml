@@ -1,0 +1,15 @@
+[package]
+name = "flow8-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe.workspace = true
+flow8-ble = { path = "../../crates/flow8-ble" }
+flow8-core = { path = "../../crates/flow8-core" }
+flow8-model = { path = "../../crates/flow8-model" }
+flow8-protocol = { path = "../../crates/flow8-protocol" }
+tracing.workspace = true
+tracing-subscriber.workspace = true

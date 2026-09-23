@@ -1,24 +1,59 @@
 # FLOW 8 PC Controller
 
-An independent C++20/Qt 6 desktop controller for the Behringer FLOW 8 mixer, with BLE as
-the primary transport and USB MIDI as a secondary future transport.
-
-Current development includes a cross-platform build, a 31-command bidirectional
-APK-equivalent protocol codec/parser, a unified
-evidence-aware state model, a Qt Bluetooth transport, BLE inspection tools, an
-official-manual-calibrated functional model, a deterministic simulator, and a Qt Widgets
-desktop mixer. Real FLOW 8 behavior is not claimed: a retained Windows hardware session has not yet
-been executed, so real-device results remain **NOT RUN / WINDOWS_HOST_RUN_REQUIRED**.
+Rust/egui is the active implementation of FLOW 8 PC Controller. The completed C++20/Qt 6 application remains in this repository as the UI, state-model, protocol, and exact-vector reference during migration; it is not deleted or treated as a second product. Real-device evidence shows that FLOW 8 has no CCCD and rejects standard Windows subscription with `HRESULT(0x80650003)`. The production Windows runtime therefore uses a native no-CCCD receive backend; its first complete Windows handshake run remains pending.
 
 ```text
-Qt Widgets GUI → Flow8Device ↔ Flow8State
-                       ├── FLOW 8 protocol → Flow8Transport
-                       │                        ├── FakeTransport
-                       │                        └── BLE Transport
-                       └── MidiParameterMap (official map; I/O backend future)
+egui GUI → SemanticCommand → CommandQueue → Protocol Encoder → Transport
+    ▲                                                            │
+    └──── Store / confirmed state ← Parser / reassembly ← BLE RX ┘
+
+Transport: Linux/generic = btleplug; Windows/FLOW 8 = native WinRT + Win32 GATT
 ```
 
-## Requirements
+## Rust quick start
+
+Requirements: Rust 1.95+, Cargo, eframe/winit desktop libraries, and BlueZ/D-Bus for optional Linux BLE tools.
+
+```bash
+export CARGO_TARGET_DIR=/tmp/flow8-rust-target
+cargo build --workspace
+cargo test --workspace
+cargo run -p flow8-gui
+```
+
+When the checkout is on a VMware Shared Folder, keep LLVM artifacts off that mount:
+
+```bash
+export CARGO_TARGET_DIR=/tmp/flow8-rust-target
+cargo run -p flow8-gui
+```
+
+The GUI starts in explicit `Simulator / SYNTHETIC` mode and needs no BLE adapter. Windows uses a normal Rust toolchain, Windows Runtime/Win32 Bluetooth APIs and Cargo; Rust no longer depends on Qt.
+
+## Rust workspace
+
+| Package | Responsibility |
+|---|---|
+| `flow8-model` | product model, `StateValue`, evidence, parameter specs |
+| `flow8-protocol` | 31/31 TX, typed atomic/composite RX, FIX8, framing and `0x38` reassembly |
+| `flow8-core` | Store, full semantic queue, state applier, pending/confirmed, Simulator |
+| `flow8-ble` | platform transports, native Windows no-CCCD RX, session/handshake coordinator and async GUI runtime |
+| `flow8-gui` | egui rendering and semantic intents only |
+| `flow8-cli` | offline protocol utility |
+| `flow8-hardware-bringup` | scan/GATT/notify/handshake/state/capture and safe typed controls |
+
+The Rust protocol implementation now covers all 31 requested TX schemas and their
+APK-confirmed typed RX paths. Atomic events, `0x17/0x18/0x30`, and fragmented `0x38`
+apply to the same Store. The GUI can switch between deterministic Simulator mode and the
+Tokio device runtime without blocking egui. The Qt/C++ implementation remains
+the visual/reference implementation while final parity and hardware calibration continue.
+
+## Legacy C++/Qt reference
+
+The following requirements and commands build the retained reference implementation. New product work belongs in Rust.
+
+
+### Requirements
 
 - CMake 3.22+
 - Ninja
@@ -31,7 +66,7 @@ Ubuntu example:
 sudo apt install qt6-base-dev qt6-base-dev-tools qt6-connectivity-dev qt6-l10n-tools ninja-build
 ```
 
-## Build
+### Build
 
 Linux:
 
@@ -74,13 +109,13 @@ cmake --build --preset windows-mingw-release
 ctest --preset windows-mingw-release
 ```
 
-## Simulator
+## Rust Simulator
 
-Run `flow8-controller` and choose Assisted Setup, Load Snapshot, Start New, or Continue
-Session. The bundled transport is explicitly `Simulator (SYNTHETIC)`. The mixer provides
-seven conventional input strips (`1`, `2`, `3`, `4`, `5/6`, `7/8`, `USB/BT`), three
-independent Mix Buses (MAIN/MON1/MON2), two FX engines, four physical output sinks,
-15 hardware snapshot slots, routing, animated meters, channel/bus EQ, compressor amount,
+Run `cargo run -p flow8-gui`. The application starts explicitly in
+`Simulator / SYNTHETIC` mode and provides seven conventional input strips (`1`, `2`,
+`3`, `4`, `5/6`, `7/8`, `USB/BT`), three independent Mix Buses (MAIN/MON1/MON2), two FX
+engines, four physical output sinks, 15 device-snapshot slots, a separate local simulator
+snapshot list, routing, deterministic animated meters, channel/bus EQ, compressor amount,
 and send controls. Simulator values are functional test data, not FLOW 8 captures or
 protocol evidence.
 
@@ -102,12 +137,12 @@ link, and six FX return routes are independent state. Meter state is high-rate t
 data kept outside ordinary control state. Simulator data uses explicit `SYNTHETIC`
 evidence.
 
-The simulator models channel names/icons/hide-show, Gain/Phase/Low Cut, phantom power where
-applicable, MON pre/post sends, two independent USB Audio endpoints,
-USB/FX/headphone routing, physical outputs, and the MON1/MON2 stereo-link relationship,
-app-snapshot store/load/rename/delete, Assisted Setup, EZ-GAIN, global Tap Tempo, and
-output preferences. Simulator behavior remains `SYNTHETIC`; it never serves as device
-evidence and does not emit a guessed hardware response.
+The Rust simulator models Gain/Phase/Low Cut, phantom power only where capability allows,
+PEQ/GEQ, limiter, independent USB Audio endpoints, USB/FX/headphone routing, physical
+outputs, MON1/MON2 link state, device/local snapshot presentation, and global tempo.
+It deliberately does not invent MON link propagation. Deterministic synthetic activity
+exercises meters, FX values, and snapshot indications while retaining `SYNTHETIC`
+evidence.
 
 ## Bidirectional APK protocol implementation
 
@@ -118,34 +153,45 @@ delay, and compound state. Each requested command has at least one exact APK-nat
 vector test. The full native descriptor catalog records 51 non-empty schemas; companion
 commands without an established PC workflow are not given speculative product APIs.
 
-`0x38` reassembly handles the retained 388-byte payload as 251/147-byte raw frames,
-rejects incomplete or inconsistent sequences, then atomically applies 7 input states,
-3 output states, 2 FX states, and the routing/control tail. Atomic notifications and
+`0x38` reassembly is driven by the protocol fragment header rather than a fixed MTU or
+fragment count. It handles both the retained APK 251/147-byte fixture and the real-device
+MTU-131 four-fragment shape, rejects incomplete or inconsistent sequences, then atomically
+applies 7 input states, 3 output states, 2 FX states, and the routing/control tail. Atomic notifications and
 compound state update the same confirmed model. Outbound control values remain pending
 until RX confirms them; a conflicting RX value wins. On `0x36`, the device layer queues
 the exact `0x37` state request and waits for complete `0x38` before Ready.
 
-These are `VERIFIED_FROM_APK` codec/parser facts and `IMPLEMENTED` PC behavior. No BLE
-packet has been accepted by a physical FLOW 8 in this project yet. The mixer is now
-available to the Windows host, but Windows BLE execution remains
-`NOT RUN / WINDOWS_HOST_RUN_REQUIRED` until a retained capture exists.
+These are `VERIFIED_FROM_APK` codec/parser facts and `IMPLEMENTED` PC behavior. Windows
+has verified the target service/characteristic, `WRITE | NOTIFY`, MTU 131 and successful
+`WithResponse` characteristic writes, while standard subscription fails with ATT Write
+Not Permitted. Android HCI evidence establishes that the physical characteristic has no
+CCCD and sends unsolicited ATT notifications on value handle `0x000B`. The production
+Windows transport now reads the selected device's `DeviceInstanceId`, `ContainerId` and
+parent identity, enumerates `GUID_BLUETOOTHLE_DEVICE_INTERFACE` and
+`GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE` with SetupDi, walks Configuration Manager
+parent devnodes, filters interfaces owned by other BLE devices, and opens the matching native
+service interface with `CreateFileW`, and finds the actual service/characteristic with
+`BluetoothGATTGetServices` / `BluetoothGATTGetCharacteristics` (without assuming
+`0x000B`). It registers `BluetoothGATTRegisterEvent` and
+never calls btleplug `subscribe()` or writes a synthetic CCCD. This backend is
+`IMPLEMENTED` and source-level Windows checked; successful Windows RX/handshake remains
+`NOT VERIFIED` until the next hardware run.
 
 The desktop UI uses custom HiDPI-aware faders (drag, wheel, Shift fine adjustment,
-keyboard and double-click reset), smooth meters, EQ graphs, and responsive layouts while
+keyboard and double-click reset), smooth meters, EQ graphs, a live 85–140% UI scale,
+adaptive channel widths, responsive inspector placement and scrolling long pages while
 preserving the architectural rule that Widgets call only `Flow8Device`.
 
 ## Languages
 
-The complete desktop UI supports:
-
-- 简体中文 (`zh-CN`)
-- English (`en-US`)
-
-The first launch follows the system locale (`zh_*` selects Simplified Chinese; all other
-locales select English). The language can be changed at runtime in
-**Setup → Preferences → Language** and is remembered for later launches. Qt Linguist
-`.ts` sources live in `translations/`;
-CMake compiles and deploys the corresponding `.qm` files without hard-coded Qt paths.
+The migrated Rust pages provide English and Simplified Chinese labels and can be switched
+at runtime from the top bar. egui keeps its Latin faces first and appends an installed
+system CJK face (Microsoft YaHei/DengXian/SimSun on Windows, Noto/Source Han/WenQuanYi on
+Linux) to both proportional and monospace fallback chains. No font file is bundled; a
+missing system CJK face produces a warning rather than a crash. Locale detection and
+persistence are still migration work.
+The retained Qt reference continues to use its Qt Linguist `.ts/.qm` catalogs; those Qt
+translation files are not the Rust runtime implementation.
 
 ## Official capability model
 
@@ -168,23 +214,87 @@ and [worldwide Quick Start Guide](https://mediadl.musictribe.com/media/PLM/data/
 
 ## BLE tools
 
-When Qt Bluetooth is installed:
+The real Windows application uses the production native backend. Keep build products on
+the Windows-local filesystem, enable useful transport logging, launch the GUI, select BLE
+mode and press **Connect**:
+
+```powershell
+$env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\flow8-rust-target"
+$env:RUST_LOG = "flow8_ble=debug"
+cargo run -p flow8-gui
+```
+
+Use `flow8_ble=trace` when full raw packet hex is needed. The separate bring-up tool and
+older probes remain available for evidence comparison:
+
+```powershell
+$env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\flow8-rust-target"
+cargo run -p flow8-hardware-bringup -- scan --seconds 5
+cargo run -p flow8-hardware-bringup -- inspect-gatt --output captures\hardware\gatt-inspection.log
+cargo run -p flow8-hardware-bringup -- winrt-gatt-probe --output captures\hardware\winrt-gatt-probe.log
+cargo run -p flow8-hardware-bringup -- subscribe --seconds 15
+cargo run -p flow8-hardware-bringup -- capture captures\bringup-001.log --seconds 30
+cargo run -p flow8-hardware-bringup -- handshake --seconds 20
+cargo run -p flow8-hardware-bringup -- probe-handshake-order --output captures\handshake-order.log
+cargo run -p flow8-hardware-bringup -- passive-handshake --output captures\hardware\passive-handshake.log
+cargo run -p flow8-hardware-bringup -- prearmed-handshake --output captures\hardware\prearmed-handshake.log
+```
+
+`subscribe` and `capture` without `--handshake` are observation-only. `handshake` follows
+the APK-confirmed `0x35/0x39/0x36/0x37/0x38` state machine, but real acceptance is still
+NOT RUN. Explicit `route`, `gain`, `mute`, `pan`, and `solo` subcommands are available
+only for staged manual validation; Phantom, snapshot deletion and reset are omitted.
+
+`probe-handshake-order` is a narrow Windows/GATT diagnostic for subscription failures. It
+opens a fresh connection for each of five cases, compares subscribe-only with APK-exact
+`0x35`/`0x36` writes before subscription, retains positive and negative backend outcomes,
+and never sends a mixer-control command. Its deliberate emission of normally receive-side
+handshake schemas is confined to this evidence tool and does not alter normal session
+semantics.
+
+`inspect-gatt` is strictly read-only at the GATT application boundary: it connects,
+discovers the complete public btleplug service/characteristic/descriptor hierarchy, and
+attempts safe descriptor reads. It never subscribes, writes a descriptor or
+characteristic, or sends a FLOW 8 protocol packet. The report explicitly states whether
+the target characteristic exposes the standard `0x2902` CCCD through the current backend;
+btleplug's public API does not expose Windows attribute handles or WinRT object IDs.
+
+`winrt-gatt-probe` is Windows-only and bypasses btleplug's GATT abstraction. It performs
+cached and uncached WinRT discovery, compares the target characteristic's descriptor
+lists, reports every communication status and ATT protocol error exposed by WinRT, and
+then performs one controlled standard CCCD Notify/None cycle with a `ValueChanged`
+handler attached. It sends no FLOW 8 protocol or mixer-control packet. The CCCD
+Notify/None operations are the only writes made by this diagnostic.
+
+`passive-handshake` is the hardware-correct no-CCCD path. It first opens btleplug's
+notification receiver without calling `subscribe()`. If that public stream cannot expose
+unsolicited Windows notifications, it reconnects through WinRT, attaches
+`GattCharacteristic.ValueChanged` directly, and never calls a CCCD API. A complete
+`0x35` causes the production codec to emit `0x39`; `0x36` causes production-codec `0x37`.
+All `0x38` fragments go through the normal header-driven reassembler and the session is
+reported Ready only after the complete state is atomically applied. No mixer-control
+command is permitted by this diagnostic.
+
+`prearmed-handshake` is the Windows timing experiment for the official app's immediate
+and roughly 500 ms-retried `0x35`. It uses direct WinRT, resolves only cached GATT
+objects, attaches `GattCharacteristic.ValueChanged` and logs `listener=ARMED` before it
+creates/maintains a `GattSession`. It never performs uncached discovery, subscribes, or
+writes a CCCD. Connection-status transitions and handshake milestones are timestamped
+relative to the observed Connected transition. If `FromIdAsync` or a cached lookup
+connects before the listener is armed, the run is explicitly marked compromised and a
+later timeout is not treated as evidence that Windows suppresses unsolicited values.
+Only production-codec `0x39` and `0x37` responses are eligible for transmission.
+
+The retained Qt reference tools remain available when Qt Bluetooth is installed:
 
 ```bash
 ./build/linux-debug/flow8-ble-scanner --json
 ./build/linux-debug/flow8-ble-monitor --json --decode
 ```
 
-On the Windows 11 host, first hardware bring-up uses the manual-by-default logger:
-
-```powershell
-.\build\windows-mingw-debug\flow8-hardware-bringup.exe `
-  --output captures\hardware\bringup-001.jsonl `
-  --capture-dir captures\hardware\mixer-state
-```
-
-The monitor preserves every payload byte and does not automatically send the unverified
-FLOW 8 handshake.
+The Rust capture command preserves every payload byte. Captures are evidence only after
+they come from a real device and include the test context; offline APK vectors remain
+`VERIFIED_FROM_APK`.
 
 Offline capture analysis:
 

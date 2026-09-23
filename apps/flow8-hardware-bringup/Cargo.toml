@@ -1,0 +1,28 @@
+[package]
+name = "flow8-hardware-bringup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+btleplug.workspace = true
+clap.workspace = true
+flow8-ble = { path = "../../crates/flow8-ble" }
+flow8-core = { path = "../../crates/flow8-core" }
+flow8-model = { path = "../../crates/flow8-model" }
+flow8-protocol = { path = "../../crates/flow8-protocol" }
+futures-util.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+] }
