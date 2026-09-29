@@ -3,14 +3,14 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use eframe::egui::{
     self, Align, Color32, FontId, Layout, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
 };
 use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage, SessionPhase};
-use flow8_core::{Flow8State, Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState};
+use flow8_core::{Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState};
 use flow8_model::{
     EvidenceStatus, FX_PRESET_COUNT, FxId, HeadphoneSource, InputChannelState, InputId, MixBusId,
     MixDestination, MonitorRoutingSource, ParameterSpec, TapPoint, fx_preset_info, specs,
@@ -128,12 +128,6 @@ enum Page {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunMode {
-    Simulator,
-    Ble,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlGesture {
     Linear,
     Rotary,
@@ -170,37 +164,21 @@ impl Default for AppPreferences {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct FontFallbackStatus {
-    family: Option<&'static str>,
-    path: Option<PathBuf>,
-}
-
-#[derive(Clone)]
-struct LocalSnapshot {
-    name: String,
-    state: Flow8State,
-}
-
 struct Flow8App {
     store: Flow8Store,
     page: Page,
     language: Language,
-    last_frame: Instant,
     message: String,
-    mode: RunMode,
     runtime: DeviceRuntime,
     discovered_devices: Vec<flow8_ble::DiscoveredDevice>,
     stage_layout_mode: bool,
     stage_positions: [Vec2; 7],
     phantom_confirmation: Option<InputId>,
     snapshot_delete_confirmation: Option<u8>,
-    local_snapshots: Vec<LocalSnapshot>,
     state_sync_applied: bool,
     native_stage: Option<NativeConnectionStage>,
     last_ble_error: Option<String>,
     preferences: AppPreferences,
-    font_fallback: FontFallbackStatus,
     metrics: UiMetrics,
 }
 
@@ -210,17 +188,15 @@ impl Flow8App {
     }
 
     fn from_context(context: &egui::Context) -> Self {
-        let font_fallback = configure_fonts(context);
+        configure_fonts(context);
         let metrics =
             UiMetrics::calculate(Vec2::new(1440.0, 920.0), context.pixels_per_point(), 1.0);
         configure_style(context, metrics);
         Self {
-            store: Flow8Store::simulator(),
+            store: Flow8Store::disconnected(),
             page: Page::Mixer,
             language: Language::English,
-            last_frame: Instant::now(),
-            message: "Simulator mode · Synthetic mixer data · No FLOW 8 hardware connected".into(),
-            mode: RunMode::Simulator,
+            message: "Disconnected · Connect to FLOW 8 to load the current mixer state".into(),
             runtime: DeviceRuntime::spawn(*b"FLOW8-PC-RUST001"),
             discovered_devices: Vec::new(),
             stage_layout_mode: false,
@@ -232,18 +208,16 @@ impl Flow8App {
             }),
             phantom_confirmation: None,
             snapshot_delete_confirmation: None,
-            local_snapshots: Vec::new(),
             state_sync_applied: false,
             native_stage: None,
             last_ble_error: None,
             preferences: AppPreferences::default(),
-            font_fallback,
             metrics,
         }
     }
 
     fn dispatch(&mut self, command: SemanticCommand) {
-        if self.mode == RunMode::Ble && self.store.state.session != SessionState::Ready {
+        if self.store.state.session != SessionState::Ready {
             self.message = self
                 .language
                 .tr(
@@ -267,6 +241,7 @@ impl Flow8App {
                     }
                     if phase == SessionPhase::Ready {
                         self.last_ble_error = None;
+                        self.native_stage = None;
                     }
                     if phase == SessionPhase::Ready && !self.state_sync_applied {
                         self.store.state.session = SessionState::Error;
@@ -324,29 +299,12 @@ impl Flow8App {
                         }
                     }
                 }
-                DeviceEvent::RawRx(bytes) => {
-                    self.message = format!("RX {}", bytes_to_hex(&bytes));
-                }
-                DeviceEvent::RawTx(bytes) => {
-                    self.message = format!("TX {}", bytes_to_hex(&bytes));
-                }
-                DeviceEvent::WriteMode(mode) => {
-                    self.message = format!(
-                        "{}: {mode:?}",
-                        self.language.tr("GATT write mode", "GATT 写入模式")
-                    );
-                }
-                DeviceEvent::Backend(backend) => {
-                    self.message =
-                        format!("{}: {backend}", self.language.tr("BLE backend", "BLE 后端"));
-                }
-                DeviceEvent::Mtu(mtu) => {
-                    self.message = format!(
-                        "{}: {mtu}",
-                        self.language
-                            .tr("BLE negotiated/reported PDU", "BLE 协商/报告的 PDU")
-                    );
-                }
+                // Raw transport details remain in tracing logs, not the user-facing status bar.
+                DeviceEvent::RawRx(_)
+                | DeviceEvent::RawTx(_)
+                | DeviceEvent::WriteMode(_)
+                | DeviceEvent::Backend(_)
+                | DeviceEvent::Mtu(_) => {}
                 DeviceEvent::Error(error) => {
                     self.store.state.session = SessionState::Error;
                     self.last_ble_error = Some(error.clone());
@@ -356,14 +314,12 @@ impl Flow8App {
         }
 
         while let Some(command) = self.store.queue.pop() {
-            if self.mode == RunMode::Ble {
-                if let Err(error) = self
-                    .runtime
-                    .send(DeviceCommand::Send(command.to_protocol()))
-                {
-                    self.message = error;
-                    break;
-                }
+            if let Err(error) = self
+                .runtime
+                .send(DeviceCommand::Send(command.to_protocol()))
+            {
+                self.message = error;
+                break;
             }
         }
     }
@@ -405,21 +361,17 @@ impl Flow8App {
                             } else {
                                 Language::English
                             };
-                            self.message = localized_status_message(
-                                self.mode,
-                                self.store.state.session,
-                                self.language,
-                            );
+                            self.message =
+                                localized_status_message(self.store.state.session, self.language);
                             ui.ctx().request_repaint();
                         }
                         if ui.button(self.language.tr("Disconnect", "断开")).clicked() {
                             let _ = self.runtime.send(DeviceCommand::Disconnect);
                         }
-                        let can_connect = self.mode != RunMode::Ble
-                            || matches!(
-                                self.store.state.session,
-                                SessionState::Disconnected | SessionState::Error
-                            );
+                        let can_connect = matches!(
+                            self.store.state.session,
+                            SessionState::Disconnected | SessionState::Error
+                        );
                         if ui
                             .add_enabled(
                                 can_connect,
@@ -427,10 +379,9 @@ impl Flow8App {
                             )
                             .clicked()
                         {
-                            if self.mode != RunMode::Ble {
-                                self.mode = RunMode::Ble;
-                                self.store = Flow8Store::disconnected();
-                            }
+                            // A fresh session must not expose stale values from the prior device.
+                            self.store = Flow8Store::disconnected();
+                            self.state_sync_applied = false;
                             match self.runtime.send(DeviceCommand::Connect) {
                                 Ok(()) => {
                                     self.store.state.session = SessionState::Connecting;
@@ -440,11 +391,10 @@ impl Flow8App {
                                 Err(error) => self.message = error,
                             }
                         }
-                        let can_scan = self.mode != RunMode::Ble
-                            || matches!(
-                                self.store.state.session,
-                                SessionState::Disconnected | SessionState::Error
-                            );
+                        let can_scan = matches!(
+                            self.store.state.session,
+                            SessionState::Disconnected | SessionState::Error
+                        );
                         let scan = ui
                             .add_enabled(
                                 can_scan,
@@ -455,10 +405,6 @@ impl Flow8App {
                                 "请先断开当前设备，再扫描其他设备。",
                             ));
                         if scan.clicked() {
-                            if self.mode != RunMode::Ble {
-                                self.mode = RunMode::Ble;
-                                self.store = Flow8Store::disconnected();
-                            }
                             match self.runtime.send(DeviceCommand::Scan {
                                 duration: Duration::from_secs(4),
                             }) {
@@ -470,47 +416,14 @@ impl Flow8App {
                                 Err(error) => self.message = error,
                             }
                         }
-                        if ui
-                            .selectable_label(
-                                self.mode == RunMode::Ble,
-                                self.language.tr("Direct Bluetooth", "直连蓝牙"),
-                            )
-                            .clicked()
-                            && self.mode != RunMode::Ble
-                        {
-                            self.mode = RunMode::Ble;
-                            self.store = Flow8Store::disconnected();
-                            self.message = localized_status_message(
-                                self.mode,
-                                self.store.state.session,
-                                self.language,
-                            );
-                        }
-                        if ui
-                            .selectable_label(
-                                self.mode == RunMode::Simulator,
-                                self.language.tr("Simulator", "模拟器"),
-                            )
-                            .clicked()
-                        {
-                            let _ = self.runtime.send(DeviceCommand::Disconnect);
-                            self.mode = RunMode::Simulator;
-                            self.store = Flow8Store::simulator();
-                            self.message = self
-                                .language
-                                .tr("Simulator · SYNTHETIC", "模拟器 · SYNTHETIC")
-                                .into();
-                        }
-                        let status = match self.mode {
-                            RunMode::Simulator => self
-                                .language
-                                .tr("● Ready (Simulator)", "● 已就绪（模拟器）")
-                                .to_owned(),
-                            RunMode::Ble => format!(
-                                "● {}",
-                                session_state_text(self.store.state.session, self.language)
-                            ),
-                        };
+                        ui.label(
+                            egui::RichText::new(self.language.tr("Direct Bluetooth", "直连蓝牙"))
+                                .color(SECONDARY),
+                        );
+                        let status = format!(
+                            "● {}",
+                            session_state_text(self.store.state.session, self.language)
+                        );
                         ui.label(egui::RichText::new(status).strong().color(
                             if self.store.state.session == SessionState::Error {
                                 RED
@@ -965,37 +878,33 @@ impl Flow8App {
                 let mut selected_preset = None;
                 ui.horizontal(|ui| {
                     ui.label(self.language.tr("Preset", "预设"));
-                    ui.add_enabled_ui(
-                        self.mode != RunMode::Ble
-                            || self.store.state.session == SessionState::Ready,
-                        |ui| {
-                            egui::ComboBox::from_id_salt(("fx-preset", index))
-                                .selected_text(preset_label)
-                                .width(190.0 * self.metrics.ui_scale)
-                                .show_ui(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .max_height(360.0)
-                                        .show(ui, |ui| {
-                                            for id in 0..FX_PRESET_COUNT as u8 {
-                                                let info = fx_preset_info(fx_id, id)
-                                                    .expect("preset ID in range");
-                                                if ui
-                                                    .selectable_label(
-                                                        current_preset == Some(id),
-                                                        format!("{:02} · {}", id + 1, info.name),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    if current_preset != Some(id) {
-                                                        selected_preset = Some(id);
-                                                    }
-                                                    ui.close();
+                    ui.add_enabled_ui(self.store.state.session == SessionState::Ready, |ui| {
+                        egui::ComboBox::from_id_salt(("fx-preset", index))
+                            .selected_text(preset_label)
+                            .width(190.0 * self.metrics.ui_scale)
+                            .show_ui(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .max_height(360.0)
+                                    .show(ui, |ui| {
+                                        for id in 0..FX_PRESET_COUNT as u8 {
+                                            let info = fx_preset_info(fx_id, id)
+                                                .expect("preset ID in range");
+                                            if ui
+                                                .selectable_label(
+                                                    current_preset == Some(id),
+                                                    format!("{:02} · {}", id + 1, info.name),
+                                                )
+                                                .clicked()
+                                            {
+                                                if current_preset != Some(id) {
+                                                    selected_preset = Some(id);
                                                 }
+                                                ui.close();
                                             }
-                                        });
-                                });
-                        },
-                    );
+                                        }
+                                    });
+                            });
+                    });
                 });
                 if let Some(preset) = selected_preset {
                     self.dispatch(SemanticCommand::SetFxPreset { fx: fx_id, preset });
@@ -1067,14 +976,6 @@ impl Flow8App {
                         bpm: tempo.round() as u16,
                     });
                 }
-                ui.label(
-                    egui::RichText::new(self.language.tr(
-                        "Preset-specific parameter names remain UNKNOWN.",
-                        "各预设的具体参数名称仍为 UNKNOWN。",
-                    ))
-                    .size(9.0)
-                    .color(SECONDARY),
-                );
             });
         }
         ui.add_space(8.0);
@@ -1570,108 +1471,79 @@ impl Flow8App {
         ui.horizontal(|ui| {
             ui.add_space(18.0);
             ui.vertical(|ui| {
-                ui.heading(egui::RichText::new(self.language.tr("Device Snapshots", "设备快照")).color(TEXT));
-                ui.label(egui::RichText::new(self.language.tr("Device slots are separate from future local PC snapshot files.", "设备槽位与未来的本地 PC 快照文件分离。")).color(SECONDARY));
-                ui.add_space(10.0);
-                let snapshots = self.store.state.snapshots.device_slots.clone();
-                egui::Grid::new("device-snapshots").num_columns(5).spacing([9.0, 9.0]).show(ui, |ui| {
-                    for (index, snapshot) in snapshots.into_iter().enumerate() {
-                        card(ui, |ui| {
-                            ui.set_min_width(150.0);
-                            ui.label(egui::RichText::new(format!("{:02}", snapshot.slot + 1)).strong().color(YELLOW));
-                            ui.label(snapshot.name.effective().cloned().unwrap_or_default());
-                            ui.horizontal(|ui| {
-                                if ui.small_button(self.language.tr("Load", "载入")).clicked() {
-                                    self.dispatch(SemanticCommand::LoadSnapshot { slot: snapshot.slot });
-                                }
-                                if ui.small_button(self.language.tr("Save", "保存")).clicked() {
-                                    self.dispatch(SemanticCommand::SaveSnapshot {
-                                        slot: snapshot.slot,
-                                        name: snapshot.name.effective().cloned().unwrap_or_else(|| format!("Snapshot {:02}", snapshot.slot + 1)),
-                                    });
-                                }
-                                let confirming = self.snapshot_delete_confirmation == Some(snapshot.slot);
-                                if ui.small_button(if confirming { self.language.tr("Confirm", "确认") } else { self.language.tr("Delete", "删除") }).clicked() {
-                                    if confirming {
-                                        self.dispatch(SemanticCommand::DeleteSnapshot { slot: snapshot.slot });
-                                        self.snapshot_delete_confirmation = None;
-                                    } else {
-                                        self.snapshot_delete_confirmation = Some(snapshot.slot);
-                                    }
-                                }
-                            });
-                        });
-                        if index % 5 == 4 {
-                            ui.end_row();
-                        }
-                    }
-                });
-                ui.add_space(10.0);
-                ui.separator();
                 ui.heading(
-                    egui::RichText::new(self.language.tr("Local PC Snapshots", "本地 PC 快照"))
+                    egui::RichText::new(self.language.tr("Device Snapshots", "设备快照"))
                         .color(TEXT),
                 );
                 ui.label(
                     egui::RichText::new(self.language.tr(
-                        "Local snapshots are application data, never device snapshot slots or protocol evidence.",
-                        "本地快照属于应用数据，不是设备快照槽位，也不是协议证据。",
+                        "Snapshots stored on the connected FLOW 8.",
+                        "已连接 FLOW 8 上保存的快照。",
                     ))
                     .color(SECONDARY),
                 );
-                if ui
-                    .add_enabled(
-                        self.mode == RunMode::Simulator,
-                        egui::Button::new(self.language.tr(
-                            "Save current simulator state locally",
-                            "保存当前模拟器状态到本地",
-                        )),
-                    )
-                    .clicked()
-                {
-                    self.local_snapshots.push(LocalSnapshot {
-                        name: format!("Local {:02}", self.local_snapshots.len() + 1),
-                        state: self.store.state.clone(),
-                    });
-                }
-                let local_snapshots = self.local_snapshots.clone();
-                for (index, snapshot) in local_snapshots.into_iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(&snapshot.name).strong().color(TEXT));
-                        if ui
-                            .add_enabled(
-                                self.mode == RunMode::Simulator,
-                                egui::Button::new(self.language.tr("Load", "载入")),
-                            )
-                            .clicked()
-                        {
-                            self.store.state = snapshot.state;
-                            self.store.state.session = SessionState::Ready;
-                            self.message = self
-                                .language
-                                .tr(
-                                    "Loaded local simulator snapshot (SYNTHETIC).",
-                                    "已载入本地模拟器快照（SYNTHETIC）。",
-                                )
-                                .into();
-                        }
-                        if ui.small_button(self.language.tr("Delete", "删除")).clicked() {
-                            self.local_snapshots.remove(index);
-                        }
-                    });
-                }
-                if self.mode == RunMode::Ble {
-                    ui.label(
-                        egui::RichText::new(self.language.tr(
-                            "Local restore is disabled in BLE mode so an old PC state cannot overwrite the device.",
-                            "BLE 模式下禁用本地恢复，避免旧 PC 状态覆盖设备。",
-                        ))
-                        .size(10.0)
-                        .color(SECONDARY),
-                    );
-                }
                 ui.add_space(10.0);
-                ui.label(egui::RichText::new(self.language.tr("Factory Reset is intentionally not part of automatic or one-click UI flows.", "恢复出厂设置不会进入自动流程或单击操作。" )).size(10.0).color(SECONDARY));
+                let snapshots = self.store.state.snapshots.device_slots.clone();
+                egui::Grid::new("device-snapshots")
+                    .num_columns(5)
+                    .spacing([9.0, 9.0])
+                    .show(ui, |ui| {
+                        for (index, snapshot) in snapshots.into_iter().enumerate() {
+                            card(ui, |ui| {
+                                ui.set_min_width(150.0);
+                                ui.label(
+                                    egui::RichText::new(format!("{:02}", snapshot.slot + 1))
+                                        .strong()
+                                        .color(YELLOW),
+                                );
+                                ui.label(snapshot.name.effective().cloned().unwrap_or_default());
+                                ui.horizontal(|ui| {
+                                    if ui.small_button(self.language.tr("Load", "载入")).clicked()
+                                    {
+                                        self.dispatch(SemanticCommand::LoadSnapshot {
+                                            slot: snapshot.slot,
+                                        });
+                                    }
+                                    if ui.small_button(self.language.tr("Save", "保存")).clicked()
+                                    {
+                                        self.dispatch(SemanticCommand::SaveSnapshot {
+                                            slot: snapshot.slot,
+                                            name: snapshot
+                                                .name
+                                                .effective()
+                                                .cloned()
+                                                .unwrap_or_else(|| {
+                                                    format!("Snapshot {:02}", snapshot.slot + 1)
+                                                }),
+                                        });
+                                    }
+                                    let confirming =
+                                        self.snapshot_delete_confirmation == Some(snapshot.slot);
+                                    if ui
+                                        .small_button(if confirming {
+                                            self.language.tr("Confirm", "确认")
+                                        } else {
+                                            self.language.tr("Delete", "删除")
+                                        })
+                                        .clicked()
+                                    {
+                                        if confirming {
+                                            self.dispatch(SemanticCommand::DeleteSnapshot {
+                                                slot: snapshot.slot,
+                                            });
+                                            self.snapshot_delete_confirmation = None;
+                                        } else {
+                                            self.snapshot_delete_confirmation = Some(snapshot.slot);
+                                        }
+                                    }
+                                });
+                            });
+                            if index % 5 == 4 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                ui.add_space(10.0);
             });
         });
     }
@@ -1688,687 +1560,552 @@ impl Flow8App {
                         Vec2::new(content_width, 0.0),
                         Layout::top_down(Align::Min),
                         |ui| {
-                        ui.heading(
-                            egui::RichText::new(
-                                self.language.tr("Preferences", "偏好设置"),
-                            )
-                            .color(TEXT),
-                        );
-                        ui.label(
-                            egui::RichText::new(self.language.tr(
-                                "Application preferences and evidence-backed device settings",
-                                "应用偏好与有证据支持的设备设置",
-                            ))
-                            .color(SECONDARY),
-                        );
-                        ui.add_space(10.0);
-                        let settings = self.store.state.routing.settings.clone();
+                            ui.heading(
+                                egui::RichText::new(self.language.tr("Preferences", "偏好设置"))
+                                    .color(TEXT),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    self.language
+                                        .tr("Application and device settings", "应用与设备设置"),
+                                )
+                                .color(SECONDARY),
+                            );
+                            ui.add_space(10.0);
+                            let settings = self.store.state.routing.settings.clone();
 
-                        ui.columns(2, |columns| {
-                            card(&mut columns[0], |ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("APPLICATION", "应用"),
-                                    )
-                                    .strong()
-                                    .color(BLUE),
-                                );
-                                ui.horizontal(|ui| {
-                                    ui.label(self.language.tr("Language", "语言"));
-                                    if ui
-                                        .selectable_label(
-                                            self.language == Language::English,
-                                            "English",
-                                        )
-                                        .clicked()
-                                    {
-                                        self.language = Language::English;
-                                        self.message = localized_status_message(
-                                            self.mode,
-                                            self.store.state.session,
-                                            self.language,
-                                        );
-                                        ui.ctx().request_repaint();
-                                    }
-                                    if ui
-                                        .selectable_label(
-                                            self.language == Language::Chinese,
-                                            "简体中文",
-                                        )
-                                        .clicked()
-                                    {
-                                        self.language = Language::Chinese;
-                                        self.message = localized_status_message(
-                                            self.mode,
-                                            self.store.state.session,
-                                            self.language,
-                                        );
-                                        ui.ctx().request_repaint();
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label(self.language.tr("UI Scale", "界面缩放"));
-                                    let response = ui.add(
-                                        egui::Slider::new(
-                                            &mut self.preferences.ui_scale,
-                                            UI_SCALE_MIN..=UI_SCALE_MAX,
-                                        )
-                                        .step_by(0.05)
-                                        .custom_formatter(|value, _| {
-                                            format!("{:.0}%", value * 100.0)
-                                        })
-                                        .show_value(true),
-                                    );
-                                    if response.changed() {
-                                        ui.ctx().request_repaint();
-                                    }
-                                });
-                                ui.label(format!(
-                                    "{}: {}",
-                                    self.language.tr("CJK font fallback", "中文字体回退"),
-                                    self.font_fallback
-                                        .family
-                                        .unwrap_or_else(|| self.language.tr(
-                                            "not found",
-                                            "未找到"
-                                        ))
-                                ));
-                                if let Some(path) = &self.font_fallback.path {
+                            ui.columns(2, |columns| {
+                                card(&mut columns[0], |ui| {
                                     ui.label(
-                                        egui::RichText::new(path.display().to_string())
-                                            .size(9.0)
-                                            .color(SECONDARY),
+                                        egui::RichText::new(
+                                            self.language.tr("APPLICATION", "应用"),
+                                        )
+                                        .strong()
+                                        .color(BLUE),
                                     );
-                                }
-                                ui.separator();
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("CONNECTION", "连接"),
-                                    )
-                                    .strong()
-                                    .color(BLUE),
-                                );
-                                ui.label(format!(
-                                    "{}: {}",
-                                    self.language.tr("Mode", "模式"),
-                                    match self.mode {
-                                        RunMode::Simulator => {
-                                            self.language.tr("Simulator", "模拟器")
+                                    ui.horizontal(|ui| {
+                                        ui.label(self.language.tr("Language", "语言"));
+                                        if ui
+                                            .selectable_label(
+                                                self.language == Language::English,
+                                                "English",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.language = Language::English;
+                                            self.message = localized_status_message(
+                                                self.store.state.session,
+                                                self.language,
+                                            );
+                                            ui.ctx().request_repaint();
                                         }
-                                        RunMode::Ble => {
-                                            self.language.tr("Direct Bluetooth", "直连蓝牙")
-                                        },
-                                    }
-                                ));
-                                ui.label(format!(
-                                    "{}: {}",
-                                    self.language.tr("Status", "状态"),
-                                    session_state_text(
-                                        self.store.state.session,
-                                        self.language,
-                                    )
-                                ));
-                                if let Some(stage) = self.native_stage {
+                                        if ui
+                                            .selectable_label(
+                                                self.language == Language::Chinese,
+                                                "简体中文",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.language = Language::Chinese;
+                                            self.message = localized_status_message(
+                                                self.store.state.session,
+                                                self.language,
+                                            );
+                                            ui.ctx().request_repaint();
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label(self.language.tr("UI Scale", "界面缩放"));
+                                        let response = ui.add(
+                                            egui::Slider::new(
+                                                &mut self.preferences.ui_scale,
+                                                UI_SCALE_MIN..=UI_SCALE_MAX,
+                                            )
+                                            .step_by(0.05)
+                                            .custom_formatter(|value, _| {
+                                                format!("{:.0}%", value * 100.0)
+                                            })
+                                            .show_value(true),
+                                        );
+                                        if response.changed() {
+                                            ui.ctx().request_repaint();
+                                        }
+                                    });
+                                    ui.separator();
+                                    ui.label(
+                                        egui::RichText::new(self.language.tr("CONNECTION", "连接"))
+                                            .strong()
+                                            .color(BLUE),
+                                    );
                                     ui.label(format!(
                                         "{}: {}",
-                                        self.language.tr("Native stage", "原生连接阶段"),
-                                        native_stage_text(stage, self.language)
+                                        self.language.tr("Mode", "模式"),
+                                        self.language.tr("Direct Bluetooth", "直连蓝牙")
                                     ));
-                                }
-                                if let Some(error) = &self.last_ble_error {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{}: {}",
-                                            self.language.tr(
-                                                "Last BLE error",
-                                                "最近 BLE 错误"
-                                            ),
-                                            error
-                                        ))
-                                        .color(RED),
-                                    );
-                                }
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(self.language.tr(
-                                        "Automatic reconnect · Not implemented",
-                                        "自动重连 · 尚未实现",
-                                    )),
-                                );
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(self.language.tr(
-                                        "MIDI transport · Not implemented",
-                                        "MIDI 传输 · 尚未实现",
-                                    )),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!(
+                                    ui.label(format!(
                                         "{}: {}",
-                                        self.language.tr("Logging", "日志"),
-                                        std::env::var("RUST_LOG")
-                                            .unwrap_or_else(|_| "flow8_ble=info".into())
-                                    ))
-                                    .size(10.0)
-                                    .color(SECONDARY),
-                                );
-                            });
-
-                            card(&mut columns[1], |ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("MIXER DISPLAY", "混音器显示"),
-                                    )
-                                    .strong()
-                                    .color(YELLOW),
-                                );
-                                ui.checkbox(
-                                    &mut self.preferences.show_mute_buttons,
-                                    self.language.tr(
-                                        "Show Mute Buttons",
-                                        "显示静音按钮",
-                                    ),
-                                );
-                                ui.checkbox(
-                                    &mut self.preferences.show_channel_icons,
-                                    self.language.tr(
-                                        "Show Channel Icons",
-                                        "显示通道图标",
-                                    ),
-                                );
-                                ui.checkbox(
-                                    &mut self.preferences.show_output_delay_indicator,
-                                    self.language.tr(
-                                        "Show Output Delay Indicator",
-                                        "显示输出延迟指示",
-                                    ),
-                                );
-                                ui.separator();
-                                ui.label(self.language.tr(
-                                    "Visible mixer inputs",
-                                    "可见混音输入",
-                                ));
-                                for input in InputId::ALL {
-                                    ui.checkbox(
-                                        &mut self.preferences.channel_visible[input.index()],
-                                        display_name(input, self.language),
-                                    );
-                                }
-                            });
-                        });
-
-                        ui.add_space(8.0);
-                        ui.columns(2, |columns| {
-                            card(&mut columns[0], |ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("DEVICE / CONTROL", "设备 / 控制"),
-                                    )
-                                    .strong()
-                                    .color(BLUE),
-                                );
-                                let mut name = settings
-                                    .device_name
-                                    .effective()
-                                    .cloned()
-                                    .unwrap_or_else(|| "FLOW 8".into());
-                                ui.horizontal(|ui| {
-                                    ui.label(self.language.tr(
-                                        "Device Name",
-                                        "设备名称",
+                                        self.language.tr("Status", "状态"),
+                                        session_state_text(self.store.state.session, self.language,)
                                     ));
-                                    if ui.text_edit_singleline(&mut name).changed() {
-                                        self.dispatch(SemanticCommand::SetSetting(
-                                            KnownSetting::DeviceName(name.clone()),
+                                    if let Some(stage) = self.native_stage {
+                                        ui.label(format!(
+                                            "{}: {}",
+                                            self.language.tr("Connection progress", "连接进度"),
+                                            native_stage_text(stage, self.language)
                                         ));
                                     }
+                                    if let Some(error) = &self.last_ble_error {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}: {}",
+                                                self.language
+                                                    .tr("Last connection error", "最近连接错误"),
+                                                error
+                                            ))
+                                            .color(RED),
+                                        );
+                                    }
                                 });
-                                let footswitch = settings
-                                    .footswitch_fx_mode
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                ui.horizontal(|ui| {
+
+                                card(&mut columns[1], |ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            self.language.tr("MIXER DISPLAY", "混音器显示"),
+                                        )
+                                        .strong()
+                                        .color(YELLOW),
+                                    );
+                                    ui.checkbox(
+                                        &mut self.preferences.show_mute_buttons,
+                                        self.language.tr("Show Mute Buttons", "显示静音按钮"),
+                                    );
+                                    ui.checkbox(
+                                        &mut self.preferences.show_channel_icons,
+                                        self.language.tr("Show Channel Icons", "显示通道图标"),
+                                    );
+                                    ui.checkbox(
+                                        &mut self.preferences.show_output_delay_indicator,
+                                        self.language
+                                            .tr("Show Output Delay Indicator", "显示输出延迟指示"),
+                                    );
+                                    ui.separator();
+                                    ui.label(
+                                        self.language.tr("Visible mixer inputs", "可见混音输入"),
+                                    );
+                                    for input in InputId::ALL {
+                                        ui.checkbox(
+                                            &mut self.preferences.channel_visible[input.index()],
+                                            display_name(input, self.language),
+                                        );
+                                    }
+                                });
+                            });
+
+                            let device_ready = self.store.state.session == SessionState::Ready;
+                            if !device_ready {
+                                ui.add_space(8.0);
+                                card(ui, |ui| {
                                     ui.label(self.language.tr(
-                                        "Footswitch Mode",
-                                        "脚踏开关模式",
+                                        "Connect to FLOW 8 to view and change device settings.",
+                                        "连接 FLOW 8 后即可查看和调整设备设置。",
                                     ));
-                                    for (fx_mode, label) in [
-                                        (true, "FX"),
-                                        (
-                                            false,
-                                            self.language.tr("Snapshot", "快照"),
-                                        ),
-                                    ] {
+                                });
+                            }
+                            ui.add_enabled_ui(device_ready, |ui| {
+                                ui.add_space(8.0);
+                                ui.columns(2, |columns| {
+                                    card(&mut columns[0], |ui| {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                self.language.tr("DEVICE / CONTROL", "设备 / 控制"),
+                                            )
+                                            .strong()
+                                            .color(BLUE),
+                                        );
+                                        let mut name = settings
+                                            .device_name
+                                            .effective()
+                                            .cloned()
+                                            .unwrap_or_else(|| "FLOW 8".into());
+                                        ui.horizontal(|ui| {
+                                            ui.label(self.language.tr("Device Name", "设备名称"));
+                                            if ui.text_edit_singleline(&mut name).changed() {
+                                                self.dispatch(SemanticCommand::SetSetting(
+                                                    KnownSetting::DeviceName(name.clone()),
+                                                ));
+                                            }
+                                        });
+                                        let footswitch = settings
+                                            .footswitch_fx_mode
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(false);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                self.language.tr("Footswitch Mode", "脚踏开关模式"),
+                                            );
+                                            for (fx_mode, label) in [
+                                                (true, "FX"),
+                                                (false, self.language.tr("Snapshot", "快照")),
+                                            ] {
+                                                if state_button(
+                                                    ui,
+                                                    footswitch == fx_mode,
+                                                    label,
+                                                    BLUE,
+                                                )
+                                                .clicked()
+                                                {
+                                                    self.dispatch(SemanticCommand::SetSetting(
+                                                        KnownSetting::FootswitchFxMode(fx_mode),
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                        let linked = settings
+                                            .device_linked_selection
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(false);
                                         if state_button(
                                             ui,
-                                            footswitch == fx_mode,
-                                            label,
+                                            linked,
+                                            self.language.tr(
+                                                "Device-linked Output Selection",
+                                                "设备联动输出选择",
+                                            ),
                                             BLUE,
                                         )
                                         .clicked()
                                         {
-                                            self.dispatch(
-                                                SemanticCommand::SetSetting(
-                                                    KnownSetting::FootswitchFxMode(
-                                                        fx_mode,
+                                            self.dispatch(SemanticCommand::SetSetting(
+                                                KnownSetting::DeviceLinkedSelection(!linked),
+                                            ));
+                                        }
+                                        ui.add_enabled_ui(false, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    self.language.tr("Control Gesture", "控制手势"),
+                                                );
+                                                for (mode, label) in [
+                                                    (
+                                                        ControlGesture::Linear,
+                                                        self.language.tr("Linear", "线性"),
                                                     ),
-                                                ),
-                                            );
-                                        }
-                                    }
-                                });
-                                let linked = settings
-                                    .device_linked_selection
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                if state_button(
-                                    ui,
-                                    linked,
-                                    self.language.tr(
-                                        "Device-linked Output Selection",
-                                        "设备联动输出选择",
-                                    ),
-                                    BLUE,
-                                )
-                                .clicked()
-                                {
-                                    self.dispatch(SemanticCommand::SetSetting(
-                                        KnownSetting::DeviceLinkedSelection(!linked),
-                                    ));
-                                }
-                                ui.add_enabled_ui(false, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(self.language.tr(
-                                            "Control Gesture",
-                                            "控制手势",
-                                        ));
-                                        for (mode, label) in [
-                                            (
-                                                ControlGesture::Linear,
-                                                self.language.tr("Linear", "线性"),
-                                            ),
-                                            (
-                                                ControlGesture::Rotary,
-                                                self.language.tr("Rotary", "旋转"),
-                                            ),
-                                        ] {
-                                            let _ = ui.selectable_label(
-                                                self.preferences.control_gesture == mode,
-                                                label,
-                                            );
-                                        }
+                                                    (
+                                                        ControlGesture::Rotary,
+                                                        self.language.tr("Rotary", "旋转"),
+                                                    ),
+                                                ] {
+                                                    let _ = ui.selectable_label(
+                                                        self.preferences.control_gesture == mode,
+                                                        label,
+                                                    );
+                                                }
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    self.language
+                                                        .tr("EQ Editing Mode", "EQ 编辑模式"),
+                                                );
+                                                for (mode, label) in [
+                                                    (
+                                                        EqEditingMode::Standard,
+                                                        self.language.tr("Standard", "标准"),
+                                                    ),
+                                                    (
+                                                        EqEditingMode::Parametric,
+                                                        self.language.tr("Parametric", "参数"),
+                                                    ),
+                                                ] {
+                                                    let _ = ui.selectable_label(
+                                                        self.preferences.eq_editing_mode == mode,
+                                                        label,
+                                                    );
+                                                }
+                                            });
+                                        });
                                     });
-                                    ui.horizontal(|ui| {
-                                        ui.label(self.language.tr(
-                                            "EQ Editing Mode",
-                                            "EQ 编辑模式",
-                                        ));
-                                        for (mode, label) in [
-                                            (
-                                                EqEditingMode::Standard,
-                                                self.language.tr("Standard", "标准"),
-                                            ),
-                                            (
-                                                EqEditingMode::Parametric,
-                                                self.language.tr("Parametric", "参数"),
-                                            ),
+
+                                    card(&mut columns[1], |ui| {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                self.language.tr("MONITOR ROUTING", "监听路由"),
+                                            )
+                                            .strong()
+                                            .color(GREEN),
+                                        );
+                                        let current = settings
+                                            .monitor_routing
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(MonitorRoutingSource::MonitorMix);
+                                        for (candidate, label, raw) in [
+                                            (MonitorRoutingSource::MonitorMix, "MON", 0),
+                                            (MonitorRoutingSource::Usb12, "USB 1/2", 1),
+                                            (MonitorRoutingSource::Usb34, "USB 3/4", 2),
                                         ] {
-                                            let _ = ui.selectable_label(
-                                                self.preferences.eq_editing_mode == mode,
-                                                label,
-                                            );
+                                            if state_button(ui, current == candidate, label, GREEN)
+                                                .clicked()
+                                            {
+                                                self.dispatch(SemanticCommand::SetSetting(
+                                                    KnownSetting::MonitorRouting(raw),
+                                                ));
+                                            }
                                         }
-                                    });
-                                });
-                                ui.label(
-                                    egui::RichText::new(self.language.tr(
-                                        "Gesture and alternate EQ modes remain visible for layout parity, but are disabled until the egui interaction modes are implemented.",
-                                        "为保持现有界面一致性，控制手势和另一种 EQ 模式仍会显示；在 egui 交互模式实现前保持禁用。",
-                                    ))
-                                    .size(9.0)
-                                    .color(SECONDARY),
-                                );
-                            });
-
-                            card(&mut columns[1], |ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("MONITOR ROUTING", "监听路由"),
-                                    )
-                                    .strong()
-                                    .color(GREEN),
-                                );
-                                let current = settings
-                                    .monitor_routing
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(MonitorRoutingSource::MonitorMix);
-                                for (candidate, label, raw) in [
-                                    (MonitorRoutingSource::MonitorMix, "MON", 0),
-                                    (MonitorRoutingSource::Usb12, "USB 1/2", 1),
-                                    (MonitorRoutingSource::Usb34, "USB 3/4", 2),
-                                ] {
-                                    if state_button(
-                                        ui,
-                                        current == candidate,
-                                        label,
-                                        GREEN,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.dispatch(SemanticCommand::SetSetting(
-                                            KnownSetting::MonitorRouting(raw),
-                                        ));
-                                    }
-                                }
-                                let post = settings
-                                    .monitor_post_fader
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                if state_button(
-                                    ui,
-                                    post,
-                                    if post { "POST" } else { "PRE" },
-                                    GREEN,
-                                )
-                                .clicked()
-                                {
-                                    self.dispatch(SemanticCommand::SetSetting(
-                                        KnownSetting::MonitorPostFader(!post),
-                                    ));
-                                }
-                                let linked = self
-                                    .store
-                                    .state
-                                    .routing
-                                    .monitor_link
-                                    .stereo_linked
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                if state_button(
-                                    ui,
-                                    linked,
-                                    self.language.tr(
-                                        "MON1/2 Stereo Link",
-                                        "MON1/2 立体声链接",
-                                    ),
-                                    GREEN,
-                                )
-                                .clicked()
-                                {
-                                    self.dispatch(SemanticCommand::SetSetting(
-                                        KnownSetting::MonitorStereoLink(!linked),
-                                    ));
-                                }
-                                ui.label(
-                                    egui::RichText::new(self.language.tr(
-                                        "Link propagation remains UNKNOWN until hardware validation.",
-                                        "链接后的参数传播仍需真机验证。",
-                                    ))
-                                    .size(9.0)
-                                    .color(SECONDARY),
-                                );
-                            });
-                        });
-
-                        ui.add_space(8.0);
-                        ui.columns(2, |columns| {
-                            card(&mut columns[0], |ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("USB / HEADPHONES", "USB / 耳机"),
-                                    )
-                                    .strong()
-                                    .color(GREEN),
-                                );
-                                for (active, label, command) in [
-                                    (
-                                        settings
-                                            .usb_streaming
+                                        let post = settings
+                                            .monitor_post_fader
                                             .effective()
                                             .copied()
-                                            .unwrap_or(false),
-                                        self.language.tr(
-                                            "USB Streaming",
-                                            "USB 推流",
-                                        ),
-                                        0_u8,
-                                    ),
-                                    (
-                                        settings
-                                            .input56_from_usb12
-                                            .effective()
-                                            .copied()
-                                            .unwrap_or(false),
-                                        self.language.tr(
-                                            "USB 1/2 → Input 5/6",
-                                            "USB 1/2 → 输入 5/6",
-                                        ),
-                                        1_u8,
-                                    ),
-                                    (
-                                        settings
-                                            .input78_from_usb34
-                                            .effective()
-                                            .copied()
-                                            .unwrap_or(false),
-                                        self.language.tr(
-                                            "USB 3/4 → Input 7/8",
-                                            "USB 3/4 → 输入 7/8",
-                                        ),
-                                        2_u8,
-                                    ),
-                                    (
-                                        settings
-                                            .phones_only
-                                            .effective()
-                                            .copied()
-                                            .unwrap_or(false),
-                                        self.language.tr(
-                                            "Bluetooth / USB to Headphones Only",
-                                            "蓝牙 / USB 仅送耳机",
-                                        ),
-                                        3_u8,
-                                    ),
-                                ] {
-                                    if state_button(ui, active, label, GREEN).clicked() {
-                                        let setting = match command {
-                                            0 => KnownSetting::UsbStreaming(!active),
-                                            1 => {
-                                                KnownSetting::Input56FromUsb12(!active)
-                                            }
-                                            2 => {
-                                                KnownSetting::Input78FromUsb34(!active)
-                                            }
-                                            _ => KnownSetting::PhonesOnly(!active),
-                                        };
-                                        self.dispatch(SemanticCommand::SetSetting(setting));
-                                    }
-                                }
-                                let bt_usb_switch = settings
-                                    .bt_usb_switch
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                if state_button(
-                                    ui,
-                                    bt_usb_switch,
-                                    self.language.tr(
-                                        "Bluetooth / USB source switch",
-                                        "蓝牙 / USB 信号源切换",
-                                    ),
-                                    GREEN,
-                                )
-                                .clicked()
-                                {
-                                    self.dispatch(SemanticCommand::SetSetting(
-                                        KnownSetting::BtUsbSwitch(!bt_usb_switch),
-                                    ));
-                                }
-                                let headphone_source = self
-                                    .store
-                                    .state
-                                    .routing
-                                    .headphones
-                                    .source
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(HeadphoneSource::Main);
-                                ui.horizontal(|ui| {
-                                    ui.label(self.language.tr(
-                                        "Headphone Source",
-                                        "耳机信号源",
-                                    ));
-                                    for (source, label) in [
-                                        (HeadphoneSource::Main, "MAIN"),
-                                        (HeadphoneSource::Monitor, "MON"),
-                                    ] {
+                                            .unwrap_or(false);
                                         if state_button(
                                             ui,
-                                            headphone_source == source,
-                                            label,
+                                            post,
+                                            if post { "POST" } else { "PRE" },
                                             GREEN,
                                         )
                                         .clicked()
                                         {
                                             self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::HeadphonesUseMonitor(
-                                                    source == HeadphoneSource::Monitor,
-                                                ),
+                                                KnownSetting::MonitorPostFader(!post),
                                             ));
                                         }
-                                    }
-                                });
-                                let headphone_tap = self
-                                    .store
-                                    .state
-                                    .routing
-                                    .headphones
-                                    .tap_point
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(TapPoint::PostFader);
-                                ui.horizontal(|ui| {
-                                    ui.label(self.language.tr(
-                                        "Headphone Tap",
-                                        "耳机取样点",
-                                    ));
-                                    for (tap, label) in [
-                                        (TapPoint::PreFader, "PRE"),
-                                        (TapPoint::PostFader, "POST"),
-                                    ] {
+                                        let linked = self
+                                            .store
+                                            .state
+                                            .routing
+                                            .monitor_link
+                                            .stereo_linked
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(false);
                                         if state_button(
                                             ui,
-                                            headphone_tap == tap,
-                                            label,
+                                            linked,
+                                            self.language
+                                                .tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
                                             GREEN,
                                         )
                                         .clicked()
                                         {
                                             self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::HeadphonesPostFader(
-                                                    tap == TapPoint::PostFader,
-                                                ),
+                                                KnownSetting::MonitorStereoLink(!linked),
                                             ));
                                         }
-                                    }
+                                    });
+                                });
+
+                                ui.add_space(8.0);
+                                ui.columns(2, |columns| {
+                                    card(&mut columns[0], |ui| {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                self.language.tr("USB / HEADPHONES", "USB / 耳机"),
+                                            )
+                                            .strong()
+                                            .color(GREEN),
+                                        );
+                                        for (active, label, command) in [
+                                            (
+                                                settings
+                                                    .usb_streaming
+                                                    .effective()
+                                                    .copied()
+                                                    .unwrap_or(false),
+                                                self.language.tr("USB Streaming", "USB 推流"),
+                                                0_u8,
+                                            ),
+                                            (
+                                                settings
+                                                    .input56_from_usb12
+                                                    .effective()
+                                                    .copied()
+                                                    .unwrap_or(false),
+                                                self.language.tr(
+                                                    "USB 1/2 → Input 5/6",
+                                                    "USB 1/2 → 输入 5/6",
+                                                ),
+                                                1_u8,
+                                            ),
+                                            (
+                                                settings
+                                                    .input78_from_usb34
+                                                    .effective()
+                                                    .copied()
+                                                    .unwrap_or(false),
+                                                self.language.tr(
+                                                    "USB 3/4 → Input 7/8",
+                                                    "USB 3/4 → 输入 7/8",
+                                                ),
+                                                2_u8,
+                                            ),
+                                            (
+                                                settings
+                                                    .phones_only
+                                                    .effective()
+                                                    .copied()
+                                                    .unwrap_or(false),
+                                                self.language.tr(
+                                                    "Bluetooth / USB to Headphones Only",
+                                                    "蓝牙 / USB 仅送耳机",
+                                                ),
+                                                3_u8,
+                                            ),
+                                        ] {
+                                            if state_button(ui, active, label, GREEN).clicked() {
+                                                let setting = match command {
+                                                    0 => KnownSetting::UsbStreaming(!active),
+                                                    1 => KnownSetting::Input56FromUsb12(!active),
+                                                    2 => KnownSetting::Input78FromUsb34(!active),
+                                                    _ => KnownSetting::PhonesOnly(!active),
+                                                };
+                                                self.dispatch(SemanticCommand::SetSetting(setting));
+                                            }
+                                        }
+                                        let bt_usb_switch = settings
+                                            .bt_usb_switch
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(false);
+                                        if state_button(
+                                            ui,
+                                            bt_usb_switch,
+                                            self.language.tr(
+                                                "Bluetooth / USB source switch",
+                                                "蓝牙 / USB 信号源切换",
+                                            ),
+                                            GREEN,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.dispatch(SemanticCommand::SetSetting(
+                                                KnownSetting::BtUsbSwitch(!bt_usb_switch),
+                                            ));
+                                        }
+                                        let headphone_source = self
+                                            .store
+                                            .state
+                                            .routing
+                                            .headphones
+                                            .source
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(HeadphoneSource::Main);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                self.language.tr("Headphone Source", "耳机信号源"),
+                                            );
+                                            for (source, label) in [
+                                                (HeadphoneSource::Main, "MAIN"),
+                                                (HeadphoneSource::Monitor, "MON"),
+                                            ] {
+                                                if state_button(
+                                                    ui,
+                                                    headphone_source == source,
+                                                    label,
+                                                    GREEN,
+                                                )
+                                                .clicked()
+                                                {
+                                                    self.dispatch(SemanticCommand::SetSetting(
+                                                        KnownSetting::HeadphonesUseMonitor(
+                                                            source == HeadphoneSource::Monitor,
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                        let headphone_tap = self
+                                            .store
+                                            .state
+                                            .routing
+                                            .headphones
+                                            .tap_point
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(TapPoint::PostFader);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                self.language.tr("Headphone Tap", "耳机取样点"),
+                                            );
+                                            for (tap, label) in [
+                                                (TapPoint::PreFader, "PRE"),
+                                                (TapPoint::PostFader, "POST"),
+                                            ] {
+                                                if state_button(
+                                                    ui,
+                                                    headphone_tap == tap,
+                                                    label,
+                                                    GREEN,
+                                                )
+                                                .clicked()
+                                                {
+                                                    self.dispatch(SemanticCommand::SetSetting(
+                                                        KnownSetting::HeadphonesPostFader(
+                                                            tap == TapPoint::PostFader,
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    });
+
+                                    card(&mut columns[1], |ui| {
+                                        ui.label(
+                                            egui::RichText::new(self.language.tr("OUTPUT", "输出"))
+                                                .strong()
+                                                .color(TEXT),
+                                        );
+                                        let main_pad = settings
+                                            .main_minus_10_dbv
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(false);
+                                        if state_button(ui, main_pad, "MAIN -10 dBV", TEXT)
+                                            .clicked()
+                                        {
+                                            self.dispatch(SemanticCommand::SetSetting(
+                                                KnownSetting::MainMinus10Dbv(!main_pad),
+                                            ));
+                                        }
+                                        let monitor_pad = settings
+                                            .monitor_minus_10_dbv
+                                            .effective()
+                                            .copied()
+                                            .unwrap_or(false);
+                                        if state_button(ui, monitor_pad, "MON -10 dBV", TEXT)
+                                            .clicked()
+                                        {
+                                            self.dispatch(SemanticCommand::SetSetting(
+                                                KnownSetting::MonitorMinus10Dbv(!monitor_pad),
+                                            ));
+                                        }
+                                    });
                                 });
                             });
 
-                            card(&mut columns[1], |ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        self.language.tr("OUTPUT / DIAGNOSTICS", "输出 / 诊断"),
-                                    )
-                                    .strong()
-                                    .color(TEXT),
-                                );
-                                let main_pad = settings
-                                    .main_minus_10_dbv
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                if state_button(
-                                    ui,
-                                    main_pad,
-                                    "MAIN -10 dBV",
-                                    TEXT,
-                                )
-                                .clicked()
-                                {
-                                    self.dispatch(SemanticCommand::SetSetting(
-                                        KnownSetting::MainMinus10Dbv(!main_pad),
-                                    ));
-                                }
-                                let monitor_pad = settings
-                                    .monitor_minus_10_dbv
-                                    .effective()
-                                    .copied()
-                                    .unwrap_or(false);
-                                if state_button(
-                                    ui,
-                                    monitor_pad,
-                                    "MON -10 dBV",
-                                    TEXT,
-                                )
-                                .clicked()
-                                {
-                                    self.dispatch(SemanticCommand::SetSetting(
-                                        KnownSetting::MonitorMinus10Dbv(!monitor_pad),
-                                    ));
-                                }
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(self.language.tr(
-                                        "Request / Save MIDI SysEx Dump · Unavailable",
-                                        "请求 / 保存 MIDI SysEx 转储 · 不可用",
-                                    )),
-                                );
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(self.language.tr(
-                                        "Unknown device settings · Unavailable",
-                                        "未识别设备设置 · 不可用",
-                                    )),
-                                );
-                                ui.label(
-                                    egui::RichText::new(self.language.tr(
-                                        "Setting IDs 0x04 and 0x06 remain UNKNOWN; no protocol write is attached.",
-                                        "Setting ID 0x04 与 0x06 仍为 UNKNOWN；此处不会触发协议写入。",
-                                    ))
-                                    .size(9.0)
-                                    .color(SECONDARY),
-                                );
-                            });
-                        });
-
-                        if !self.discovered_devices.is_empty() {
-                            ui.add_space(8.0);
-                            card(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(self.language.tr(
-                                        "Last BLE Scan",
-                                        "最近一次 BLE 扫描",
-                                    ))
-                                    .strong()
-                                    .color(BLUE),
-                                );
-                                for device in &self.discovered_devices {
-                                    ui.label(format!(
-                                        "{} · {} · RSSI {:?}",
-                                        device.name.as_deref().unwrap_or_else(|| {
-                                            self.language.tr("Unknown", "未知")
-                                        }),
-                                        device.address,
-                                        device.rssi
-                                    ));
-                                }
-                            });
-                        }
+                            if !self.discovered_devices.is_empty() {
+                                ui.add_space(8.0);
+                                card(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            self.language.tr("Last BLE Scan", "最近一次 BLE 扫描"),
+                                        )
+                                        .strong()
+                                        .color(BLUE),
+                                    );
+                                    for device in &self.discovered_devices {
+                                        ui.label(format!(
+                                            "{} · {} · RSSI {:?}",
+                                            device.name.as_deref().unwrap_or_else(|| {
+                                                self.language.tr("Unknown", "未知")
+                                            }),
+                                            device.address,
+                                            device.rssi
+                                        ));
+                                    }
+                                });
+                            }
                         },
                     );
                 });
@@ -2594,14 +2331,6 @@ impl Flow8App {
                                 }
                             }
                         });
-                        ui.label(
-                            egui::RichText::new(self.language.tr(
-                                "Link propagation remains UNKNOWN until hardware validation.",
-                                "链接后的参数传播仍需真机验证。",
-                            ))
-                            .size(10.0)
-                            .color(SECONDARY),
-                        );
                     });
                 });
                 ui.add_space(8.0);
@@ -2707,12 +2436,6 @@ impl eframe::App for Flow8App {
             configure_style(ui.ctx(), metrics);
         }
         self.poll_runtime();
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
-        self.last_frame = now;
-        if self.mode == RunMode::Simulator {
-            self.store.tick_simulator(dt);
-        }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
 
@@ -2723,31 +2446,45 @@ impl eframe::App for Flow8App {
             self.connection_bar(ui);
             self.layer_bar(ui);
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            let device_ready = self.store.state.session == SessionState::Ready;
+            if !device_ready && self.page != Page::Settings {
+                device_unsynced_notice(ui, self.store.state.session, self.language);
+            }
             match self.page {
                 Page::Mixer
                 | Page::Fx1
                 | Page::Fx2
                 | Page::Monitor1
                 | Page::Monitor2
-                | Page::Main => self.mixer(ui),
-                Page::Stage => self.stage_page(ui),
+                | Page::Main => {
+                    ui.add_enabled_ui(device_ready, |ui| self.mixer(ui));
+                }
+                Page::Stage => {
+                    ui.add_enabled_ui(device_ready, |ui| self.stage_page(ui));
+                }
                 Page::MainOut => {
                     egui::ScrollArea::vertical()
                         .id_salt("main-out-scroll")
                         .auto_shrink([false, false])
-                        .show(ui, |ui| self.main_out_page(ui));
+                        .show(ui, |ui| {
+                            ui.add_enabled_ui(device_ready, |ui| self.main_out_page(ui));
+                        });
                 }
                 Page::Routing => {
                     egui::ScrollArea::vertical()
                         .id_salt("routing-scroll")
                         .auto_shrink([false, false])
-                        .show(ui, |ui| self.routing_page(ui));
+                        .show(ui, |ui| {
+                            ui.add_enabled_ui(device_ready, |ui| self.routing_page(ui));
+                        });
                 }
                 Page::Snapshots => {
                     egui::ScrollArea::both()
                         .id_salt("snapshots-scroll")
                         .auto_shrink([false, false])
-                        .show(ui, |ui| self.snapshots_page(ui));
+                        .show(ui, |ui| {
+                            ui.add_enabled_ui(device_ready, |ui| self.snapshots_page(ui));
+                        });
                 }
                 Page::Settings => self.settings_page(ui),
             }
@@ -3439,9 +3176,9 @@ fn session_phase_text(phase: SessionPhase, language: Language) -> &'static str {
         SessionPhase::Disconnected => language.tr("Disconnected", "已断开"),
         SessionPhase::Scanning => language.tr("Scanning", "正在扫描"),
         SessionPhase::Connecting => language.tr("Connecting", "正在连接"),
-        SessionPhase::GattReady => language.tr("GATT ready", "GATT 已就绪"),
-        SessionPhase::RxArming => language.tr("Arming receive path", "正在启用接收通道"),
-        SessionPhase::Handshaking => language.tr("Handshaking", "正在握手"),
+        SessionPhase::GattReady => language.tr("Device connected", "设备已连接"),
+        SessionPhase::RxArming => language.tr("Preparing device updates", "正在准备设备更新"),
+        SessionPhase::Handshaking => language.tr("Completing connection", "正在完成连接"),
         SessionPhase::StateSyncing => language.tr("Synchronizing state", "正在同步状态"),
         SessionPhase::Ready => language.tr("Ready", "已就绪"),
         SessionPhase::Error => language.tr("Error", "错误"),
@@ -3453,9 +3190,9 @@ fn session_state_text(state: SessionState, language: Language) -> &'static str {
         SessionState::Disconnected => language.tr("Disconnected", "已断开"),
         SessionState::Scanning => language.tr("Scanning", "正在扫描"),
         SessionState::Connecting => language.tr("Connecting", "正在连接"),
-        SessionState::GattReady => language.tr("GATT ready", "GATT 已就绪"),
-        SessionState::RxArming => language.tr("Arming receive path", "正在启用接收通道"),
-        SessionState::Handshaking => language.tr("Handshaking", "正在握手"),
+        SessionState::GattReady => language.tr("Device connected", "设备已连接"),
+        SessionState::RxArming => language.tr("Preparing device updates", "正在准备设备更新"),
+        SessionState::Handshaking => language.tr("Completing connection", "正在完成连接"),
         SessionState::StateSyncing => language.tr("Synchronizing state", "正在同步状态"),
         SessionState::Ready => language.tr("Ready", "已就绪"),
         SessionState::Error => language.tr("Error", "错误"),
@@ -3469,58 +3206,69 @@ fn native_stage_text(stage: NativeConnectionStage, language: Language) -> &'stat
             language.tr("FLOW 8 device found", "已找到 FLOW 8 设备")
         }
         NativeConnectionStage::DeviceObjectCreated => {
-            language.tr("FLOW 8 device object created", "已创建 FLOW 8 设备对象")
+            language.tr("Connecting to FLOW 8", "正在连接 FLOW 8")
         }
         NativeConnectionStage::NativeInterfaceEnumerating => {
-            language.tr("Enumerating native BLE interfaces", "正在枚举原生 BLE 接口")
+            language.tr("Connecting to FLOW 8", "正在连接 FLOW 8")
         }
         NativeConnectionStage::FlowServiceSelected => {
-            language.tr("FLOW service selected", "已选择 FLOW 服务")
+            language.tr("Preparing FLOW 8 controls", "正在准备 FLOW 8 控制")
         }
         NativeConnectionStage::NativeServiceHandleOpened => {
-            language.tr("Native service handle opened", "已打开原生服务句柄")
+            language.tr("Preparing FLOW 8 controls", "正在准备 FLOW 8 控制")
         }
         NativeConnectionStage::CharacteristicsEnumerated => {
-            language.tr("GATT characteristics enumerated", "已枚举 GATT 特征")
+            language.tr("Preparing FLOW 8 controls", "正在准备 FLOW 8 控制")
         }
-        NativeConnectionStage::TargetCharacteristicFound => language.tr(
-            "FLOW transport characteristic found",
-            "已找到 FLOW 传输特征",
-        ),
+        NativeConnectionStage::TargetCharacteristicFound => {
+            language.tr("FLOW 8 controls available", "FLOW 8 控制已就绪")
+        }
         NativeConnectionStage::NativeRxRegistering => {
-            language.tr("Registering native receive path", "正在注册原生接收通道")
+            language.tr("Preparing device updates", "正在准备设备更新")
         }
         NativeConnectionStage::NativeRxArmed => {
-            language.tr("Native receive path armed", "原生接收通道已启用")
+            language.tr("Waiting for FLOW 8", "正在等待 FLOW 8 响应")
         }
-        NativeConnectionStage::Handshaking => {
-            language.tr("Waiting for FLOW 8 handshake", "正在等待 FLOW 8 握手")
-        }
+        NativeConnectionStage::Handshaking => language.tr("Completing connection", "正在完成连接"),
     }
 }
 
-fn localized_status_message(mode: RunMode, state: SessionState, language: Language) -> String {
-    match mode {
-        RunMode::Simulator => language
-            .tr(
-                "Simulator mode · Synthetic mixer data · No FLOW 8 hardware connected",
-                "模拟器模式 · 合成混音数据 · 未连接 FLOW 8 硬件",
-            )
-            .into(),
-        RunMode::Ble => format!(
-            "{}: {}",
-            language.tr("Direct Bluetooth", "直连蓝牙"),
-            session_state_text(state, language)
-        ),
-    }
+fn device_unsynced_notice(ui: &mut egui::Ui, state: SessionState, language: Language) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        egui::Frame::new()
+            .fill(SURFACE)
+            .stroke(Stroke::new(1.0, BORDER))
+            .corner_radius(8)
+            .inner_margin(egui::Margin::same(18))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(language.tr(
+                        "Connect to FLOW 8 to enable controls.",
+                        "连接 FLOW 8 后即可使用控制功能。",
+                    ))
+                    .strong(),
+                );
+                ui.label(language.tr(
+                    "Current settings will appear after synchronization.",
+                    "同步完成后将显示当前设备设置。",
+                ));
+                ui.label(format!(
+                    "{}: {}",
+                    language.tr("Status", "状态"),
+                    session_state_text(state, language)
+                ));
+            });
+    });
 }
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|value| format!("{value:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+fn localized_status_message(state: SessionState, language: Language) -> String {
+    format!(
+        "{}: {}",
+        language.tr("Direct Bluetooth", "直连蓝牙"),
+        session_state_text(state, language)
+    )
 }
 
 fn configure_style(context: &egui::Context, metrics: UiMetrics) {
@@ -3572,12 +3320,12 @@ struct SystemFontCandidate {
     collection_index: u32,
 }
 
-fn configure_fonts(context: &egui::Context) -> FontFallbackStatus {
+fn configure_fonts(context: &egui::Context) {
     let Some((candidate, path, bytes)) = load_system_cjk_font() else {
         tracing::warn!(
             "no supported system CJK font was found; Simplified Chinese glyphs may be missing"
         );
-        return FontFallbackStatus::default();
+        return;
     };
 
     let mut fonts = egui::FontDefinitions::default();
@@ -3601,10 +3349,6 @@ fn configure_fonts(context: &egui::Context) -> FontFallbackStatus {
         path = %path.display(),
         "registered system CJK font fallback"
     );
-    FontFallbackStatus {
-        family: Some(candidate.family),
-        path: Some(path),
-    }
 }
 
 fn load_system_cjk_font() -> Option<(SystemFontCandidate, PathBuf, Vec<u8>)> {
@@ -3736,12 +3480,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn production_gui_starts_disconnected_without_simulator_source() {
+        let context = egui::Context::default();
+        let mut app = Flow8App::from_context(&context);
+        assert!(!app.store.is_simulator());
+        assert_eq!(app.store.state.session, SessionState::Disconnected);
+        assert!(app.store.queue.is_empty());
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 920.0))),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(raw, |ui| {
+            device_unsynced_notice(ui, app.store.state.session, app.language);
+            ui.add_enabled_ui(false, |ui| app.mixer(ui));
+        });
+        assert!(!output.shapes.is_empty());
+        output.textures_delta.clear();
+        app.dispatch(SemanticCommand::SetMute {
+            input: InputId::Input1,
+            enabled: true,
+        });
+        assert!(app.store.queue.is_empty());
+        assert_eq!(app.store.state.channels[0].muted.pending, None);
+    }
+
+    #[test]
     fn idle_mixer_never_echoes_received_pan_to_tx_queue() {
         let context = egui::Context::default();
         let mut app = Flow8App::from_context(&context);
         app.store = Flow8Store::disconnected();
         app.store.state.session = SessionState::Ready;
-        app.mode = RunMode::Ble;
         for (endpoint, value) in [(0, 1.0 / 127.0), (6, 0.0), (15, 0.0)] {
             app.store
                 .apply_rx(
@@ -3904,11 +3672,7 @@ mod tests {
     #[test]
     fn system_cjk_fallback_initialization_never_panics() {
         let context = egui::Context::default();
-        let status = configure_fonts(&context);
-        if let Some(path) = status.path {
-            assert!(path.is_file());
-            assert!(status.family.is_some());
-        }
+        configure_fonts(&context);
     }
 
     #[test]

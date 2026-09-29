@@ -7,7 +7,7 @@ egui → semantic command → Flow8Store/queue → protocol encoder → BLE tran
 egui ← confirmed Store ← typed parser/reassembly ← raw BLE notifications ← FLOW 8
 ```
 
-The device is authoritative: a device notification updates confirmed state even when it differs from a pending UI value. Simulator state is explicitly `SYNTHETIC`. Protocol evidence and real-hardware results remain separate in [the protocol record](docs/protocol.md) and [hardware ledger](docs/hardware-validation.md).
+The device is authoritative: a device notification updates confirmed state even when it differs from a pending UI value. The production GUI has no Simulator data source; deterministic synthetic fixtures remain for offline tests only. Protocol evidence and real-hardware results remain separate in [the protocol record](docs/protocol.md) and [hardware ledger](docs/hardware-validation.md).
 
 ## Development
 
@@ -22,7 +22,7 @@ cargo build --workspace
 cargo run -p flow8-gui
 ```
 
-The GUI starts in Simulator mode and does not need a Bluetooth adapter. Linux BLE uses btleplug/BlueZ. The Windows FLOW 8 path uses the external DirectHCI runtime through its Rust SDK; it does not need Qt or a C++ toolchain.
+The GUI starts disconnected and displays the full mixer interface immediately. Device controls remain disabled and their placeholder values are not device readings until a complete FLOW 8 state sync. It can open without a Bluetooth adapter, but cannot control a mixer until connected. Linux BLE uses btleplug/BlueZ. The Windows FLOW 8 path uses the external DirectHCI runtime through its Rust SDK; it does not need Qt or a C++ toolchain.
 
 For Windows PowerShell, keep build artifacts off the shared folder:
 
@@ -43,7 +43,7 @@ The workspace currently depends on the independent DirectHCI repository at `../D
 |---|---|
 | `flow8-model` | Mixer model, evidence levels, parameter specifications |
 | `flow8-protocol` | Packet framing, 31 target TX commands, typed RX, FIX8, `0x38` reassembly |
-| `flow8-core` | Store, pending/confirmed reconciliation, semantic queue, Simulator |
+| `flow8-core` | Store, pending/confirmed reconciliation, semantic queue, offline synthetic fixtures |
 | `flow8-directhci` | FLOW-specific device/UUID selection and passive-listen adapter over the generic SDK |
 | `flow8-ble` | Platform transport boundary, session/handshake coordination, Tokio GUI channels |
 | `flow8-gui` | egui desktop app; renders Store state and emits semantic intent |

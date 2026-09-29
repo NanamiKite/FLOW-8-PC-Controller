@@ -439,6 +439,10 @@ impl Flow8Session {
         }
         match decoded {
             Ok(None) => Vec::new(),
+            Err(flow8_protocol::ProtocolError::UnsupportedCommand(command)) => {
+                warn!(command, phase = ?self.phase, "ignoring unsupported FLOW 8 RX command without ending the session");
+                Vec::new()
+            }
             Err(error) => vec![SessionAction::Error(error.to_string())],
             Ok(Some(command)) => {
                 let mut actions = vec![SessionAction::Received(command.clone())];
@@ -1846,6 +1850,31 @@ mod tests {
         let actions = session.notification(&[0x36, 0x01, 0x00]);
         assert_eq!(session.phase(), SessionPhase::StateSyncing);
         assert!(matches!(actions.as_slice(), [SessionAction::Error(_)]));
+    }
+
+    #[test]
+    fn unsupported_fragmented_rx_does_not_disable_ready_session() {
+        let mut session = Flow8Session::new(*b"FLOW8-PC-RUST001");
+        session.transition(SessionPhase::Ready);
+        let frames = flow8_protocol::frame_command(0x45, &[0; 130], 128, 2).unwrap();
+        assert_eq!(frames.len(), 2);
+        for frame in frames {
+            assert!(session.notification(&frame).is_empty());
+            assert_eq!(session.phase(), SessionPhase::Ready);
+        }
+        assert!(matches!(
+            session
+                .notification(&frame_single(0x31, &[0x0c, 0x00]))
+                .as_slice(),
+            [SessionAction::Received(RxCommand::FxPreset { .. })]
+        ));
+        assert!(matches!(
+            session
+                .notification(&frame_single(0x11, &[0x0c, 0x12, 0, 0, 1]))
+                .as_slice(),
+            [SessionAction::Received(RxCommand::FxSetup { .. })]
+        ));
+        assert_eq!(session.phase(), SessionPhase::Ready);
     }
 
     #[test]

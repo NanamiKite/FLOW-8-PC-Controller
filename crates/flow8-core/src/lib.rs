@@ -683,6 +683,90 @@ impl Flow8State {
         }
     }
 
+    /// Preserve the product topology for disconnected UI navigation, but expose
+    /// no synthetic device values as confirmed data in a production session.
+    pub fn unconfirmed() -> Self {
+        let mut state = Self::synthetic();
+        state.session = SessionState::Disconnected;
+        for channel in &mut state.channels {
+            unknown(&mut channel.name);
+            unknown(&mut channel.icon);
+            unknown(&mut channel.visible);
+            unknown(&mut channel.gain_db);
+            unknown(&mut channel.pan);
+            unknown(&mut channel.muted);
+            unknown(&mut channel.soloed);
+            unknown(&mut channel.phase_inverted);
+            unknown(&mut channel.phantom_48v);
+            unknown(&mut channel.left_connected);
+            unknown(&mut channel.right_connected);
+            unknown(&mut channel.high_pass_enabled);
+            unknown(&mut channel.high_pass_hz);
+            unknown(&mut channel.compressor.amount);
+            unknown_eq(&mut channel.eq);
+            for level in &mut channel.route_levels {
+                unknown(level);
+            }
+            unknown_meter(&mut channel.meter);
+        }
+        for bus in &mut state.buses {
+            unknown(&mut bus.master_level);
+            unknown(&mut bus.muted);
+            unknown(&mut bus.soloed);
+            if let Some(balance) = &mut bus.balance {
+                unknown(balance);
+            }
+            unknown_eq(&mut bus.eq);
+            unknown(&mut bus.limiter.threshold_db);
+            unknown(&mut bus.delay_ticks);
+            unknown_meter(&mut bus.meter);
+        }
+        for effect in &mut state.effects {
+            unknown(&mut effect.preset);
+            for parameter in &mut effect.parameters {
+                unknown(parameter);
+            }
+            unknown(&mut effect.master_level);
+            unknown(&mut effect.pan);
+            unknown(&mut effect.muted);
+            unknown(&mut effect.return_to_main);
+            unknown(&mut effect.return_to_mon1);
+            unknown(&mut effect.return_to_mon2);
+            unknown_meter(&mut effect.meter);
+            for gain in &mut effect.aux_gains_db {
+                unknown(gain);
+            }
+        }
+        for endpoint in &mut state.routing.usb_audio {
+            unknown(&mut endpoint.active);
+        }
+        unknown(&mut state.routing.headphones.source);
+        unknown(&mut state.routing.headphones.tap_point);
+        unknown(&mut state.routing.monitor_link.stereo_linked);
+        let settings = &mut state.routing.settings;
+        unknown(&mut settings.bt_usb_switch);
+        unknown(&mut settings.phones_only);
+        unknown(&mut settings.footswitch_fx_mode);
+        unknown(&mut settings.device_name);
+        unknown(&mut settings.usb_streaming);
+        unknown(&mut settings.monitor_routing);
+        unknown(&mut settings.input56_from_usb12);
+        unknown(&mut settings.input78_from_usb34);
+        unknown(&mut settings.main_minus_10_dbv);
+        unknown(&mut settings.monitor_minus_10_dbv);
+        unknown(&mut settings.snapshot_scope_bits);
+        unknown(&mut settings.monitor_post_fader);
+        unknown(&mut settings.device_linked_selection);
+        for slot in &mut state.snapshots.device_slots {
+            unknown(&mut slot.name);
+        }
+        unknown(&mut state.snapshots.last_loaded);
+        unknown(&mut state.headphone_volume_db);
+        unknown(&mut state.device_selected_output);
+        unknown(&mut state.global_tempo_bpm);
+        state
+    }
+
     pub fn bus_for_destination(&self, destination: MixDestination) -> Option<&MixBusState> {
         match destination {
             MixDestination::Main => self.buses.first(),
@@ -701,6 +785,26 @@ impl Flow8State {
             MixDestination::Monitor2 => self.buses.get_mut(2),
             _ => None,
         }
+    }
+}
+
+fn unknown<T>(value: &mut StateValue<T>) {
+    *value = StateValue::unknown();
+}
+
+fn unknown_meter(meter: &mut MeterState) {
+    unknown(&mut meter.level_db);
+    unknown(&mut meter.peak_db);
+    unknown(&mut meter.gain_reduction_db);
+    unknown(&mut meter.clipping);
+}
+
+fn unknown_eq(eq: &mut EqState) {
+    unknown(&mut eq.enabled);
+    for band in &mut eq.bands {
+        unknown(&mut band.frequency_hz);
+        unknown(&mut band.gain_db);
+        unknown(&mut band.q);
     }
 }
 
@@ -725,7 +829,7 @@ pub struct Flow8Store {
 
 impl Default for Flow8Store {
     fn default() -> Self {
-        Self::simulator()
+        Self::disconnected()
     }
 }
 
@@ -741,8 +845,7 @@ impl Flow8Store {
     }
 
     pub fn disconnected() -> Self {
-        let mut state = Flow8State::synthetic();
-        state.session = SessionState::Disconnected;
+        let state = Flow8State::unconfirmed();
         Self {
             state,
             queue: SemanticCommandQueue::default(),
@@ -2134,6 +2237,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disconnected_store_has_topology_but_no_synthetic_confirmed_state() {
+        let store = Flow8Store::default();
+        assert!(!store.is_simulator());
+        assert_eq!(store.state.session, SessionState::Disconnected);
+        assert_eq!(store.state.channels.len(), 7);
+        assert_eq!(store.state.buses.len(), 3);
+        assert_eq!(store.state.effects.len(), 2);
+        assert!(store.state.channels.iter().all(|channel| {
+            channel.name.confirmed.is_none()
+                && channel.gain_db.confirmed.is_none()
+                && channel
+                    .route_levels
+                    .iter()
+                    .all(|route| route.confirmed.is_none())
+                && channel.meter.level_db.confirmed.is_none()
+        }));
+        assert!(
+            store
+                .state
+                .buses
+                .iter()
+                .all(|bus| bus.master_level.confirmed.is_none())
+        );
+        assert!(
+            store
+                .state
+                .effects
+                .iter()
+                .all(|effect| effect.preset.confirmed.is_none())
+        );
+        assert!(store.state.routing.settings.device_name.confirmed.is_none());
+        assert!(store.state.global_tempo_bpm.confirmed.is_none());
+    }
+
+    #[test]
     fn continuous_commands_coalesce_by_full_semantic_key() {
         let mut queue = SemanticCommandQueue::default();
         queue.push(SemanticCommand::SetGain {
@@ -2376,6 +2514,29 @@ mod tests {
         assert_eq!(
             store.state.channels[0].gain_db.evidence,
             EvidenceStatus::VerifiedFromDevice
+        );
+    }
+
+    #[test]
+    fn initial_device_snapshot_populates_unconfirmed_store_without_synthetic_fallback() {
+        let mut store = Flow8Store::disconnected();
+        assert_eq!(store.state.channels[0].gain_db.confirmed, None);
+        store
+            .apply_rx(
+                RxCommand::MixerState(Box::new(mixer_state())),
+                EvidenceStatus::VerifiedFromDevice,
+            )
+            .unwrap();
+        assert_eq!(store.state.channels[0].gain_db.confirmed, Some(12.5));
+        assert_eq!(
+            store.state.channels[0].gain_db.evidence,
+            EvidenceStatus::VerifiedFromDevice
+        );
+        assert_eq!(store.state.effects[1].preset.confirmed, Some(0));
+        assert_eq!(store.state.routing.settings.device_name.confirmed, None);
+        assert_eq!(
+            store.state.routing.settings.device_name.evidence,
+            EvidenceStatus::Unknown
         );
     }
 
