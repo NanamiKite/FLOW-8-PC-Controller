@@ -65,6 +65,20 @@ impl DirectHciSession {
             while let Some(event) = direct_events.recv().await {
                 match event {
                     Flow8DirectHciEvent::Notification(value) => {
+                        if value.first() == Some(&0x38) {
+                            match flow8_protocol::parse_packet(&value) {
+                                Ok(packet) => info!(
+                                    generation,
+                                    sequence = ?packet.sequence,
+                                    fragment_index = ?packet.fragment_index,
+                                    fragment_count = packet.fragment_count,
+                                    bytes = value.len(),
+                                    "FLOW 0x38 DirectHCI bridge received"
+                                ),
+                                Err(error) => warn!(generation, bytes = value.len(), %error,
+                                    "FLOW 0x38 DirectHCI bridge received invalid frame"),
+                            }
+                        }
                         debug!(
                             backend = "directhci",
                             bytes = value.len(),

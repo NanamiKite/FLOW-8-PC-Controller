@@ -422,7 +422,7 @@ impl WindowsNativeSession {
         self.handshake_observed.store(true, Ordering::Release);
     }
 
-    pub(super) async fn write(&self, frame: &[u8]) -> Result<(), BleError> {
+    pub(super) async fn write(&mut self, frame: &[u8]) -> Result<(), BleError> {
         if frame.len() > MAX_FLOW_FRAME_BYTES {
             return Err(native_failure(
                 NativeConnectionStage::Handshaking,

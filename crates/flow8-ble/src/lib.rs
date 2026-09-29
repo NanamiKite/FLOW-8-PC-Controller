@@ -26,9 +26,9 @@ use futures_util::Stream;
 #[cfg(not(target_os = "windows"))]
 use futures_util::StreamExt;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
@@ -87,14 +87,37 @@ impl RxIngress {
 
     fn forward(&self, source: &[u8]) -> bool {
         if !self.active.load(Ordering::Acquire) {
+            if source.first() == Some(&0x38) {
+                warn!(
+                    generation = self.generation,
+                    "FLOW 0x38 ingress rejected: inactive session"
+                );
+            }
             return false;
         }
-        self.tx
+        let forwarded = self
+            .tx
             .send(TransportRx::Packet {
                 generation: self.generation,
                 bytes: source.to_vec(),
             })
-            .is_ok()
+            .is_ok();
+        if source.first() == Some(&0x38) {
+            match flow8_protocol::parse_packet(source) {
+                Ok(packet) => info!(
+                    generation = self.generation,
+                    sequence = ?packet.sequence,
+                    fragment_index = ?packet.fragment_index,
+                    fragment_count = packet.fragment_count,
+                    bytes = source.len(),
+                    forwarded,
+                    "FLOW 0x38 transport RX channel"
+                ),
+                Err(error) => warn!(generation = self.generation, bytes = source.len(), %error,
+                    forwarded, "FLOW 0x38 transport RX channel: invalid frame"),
+            }
+        }
+        forwarded
     }
 
     #[cfg(target_os = "windows")]
@@ -267,7 +290,7 @@ impl DeviceRuntime {
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .worker_threads(1)
+                    .worker_threads(2)
                     .build();
                 match runtime {
                     Ok(runtime) => runtime.block_on(device_actor(command_rx, event_tx, client_id)),
@@ -368,21 +391,63 @@ impl Flow8Session {
     }
 
     pub fn notification(&mut self, raw: &[u8]) -> Vec<SessionAction> {
-        match self.decoder.accept(raw) {
+        let state_fragment = if raw.first() == Some(&0x38) {
+            flow8_protocol::parse_packet(raw).ok()
+        } else {
+            None
+        };
+        let decoded = self.decoder.accept(raw);
+        if let Some(packet) = state_fragment {
+            match &decoded {
+                Ok(None) => info!(
+                    sequence = ?packet.sequence,
+                    fragment_index = ?packet.fragment_index,
+                    fragment_count = packet.fragment_count,
+                    pending_slots = self.decoder.pending_count(),
+                    "FLOW 0x38 reassembler accepted fragment; state incomplete"
+                ),
+                Ok(Some(_)) => info!(
+                    sequence = ?packet.sequence,
+                    fragment_index = ?packet.fragment_index,
+                    fragment_count = packet.fragment_count,
+                    "FLOW 0x38 decoder completed state"
+                ),
+                Err(flow8_protocol::ProtocolError::InvalidPayload(0x38)) => warn!(
+                    sequence = ?packet.sequence,
+                    fragment_index = ?packet.fragment_index,
+                    fragment_count = packet.fragment_count,
+                    "FLOW 0x38 reassembly completed but MixerState payload parser rejected it"
+                ),
+                Err(error) => warn!(
+                    sequence = ?packet.sequence,
+                    fragment_index = ?packet.fragment_index,
+                    fragment_count = packet.fragment_count,
+                    pending_slots = self.decoder.pending_count(),
+                    %error,
+                    "FLOW 0x38 frame or reassembler rejected fragment"
+                ),
+            }
+        }
+        match decoded {
             Ok(None) => Vec::new(),
             Err(error) => vec![SessionAction::Error(error.to_string())],
             Ok(Some(command)) => {
                 let mut actions = vec![SessionAction::Received(command.clone())];
                 match command {
                     RxCommand::HandshakeHost { .. } => {
-                        if self.phase != SessionPhase::Handshaking {
+                        if self.phase != SessionPhase::Handshaking
+                            && !(self.phase == SessionPhase::StateSyncing
+                                && self.received_host_hello)
+                        {
                             return vec![SessionAction::Error(format!(
                                 "ignored FLOW 8 0x35 while RX was not armed (phase={:?})",
                                 self.phase
                             ))];
                         }
                         self.received_host_hello = true;
-                        actions.push(self.transition(SessionPhase::Handshaking));
+                        if self.phase != SessionPhase::StateSyncing {
+                            actions.push(self.transition(SessionPhase::StateSyncing));
+                        }
                         match self.encode_command(&TxCommand::HandshakeClient {
                             client_id: self.client_id,
                         }) {
@@ -391,13 +456,13 @@ impl Flow8Session {
                         }
                     }
                     RxCommand::HandshakeReply => {
-                        if self.phase != SessionPhase::Handshaking || !self.received_host_hello {
+                        if self.phase != SessionPhase::StateSyncing || !self.received_host_hello {
                             return vec![SessionAction::Error(format!(
                                 "ignored FLOW 8 0x36 before a valid 0x35 (phase={:?})",
                                 self.phase
                             ))];
                         }
-                        actions.push(self.transition(SessionPhase::StateSyncing));
+                        info!(source = "rx_0x36", phase = ?self.phase, "FLOW 0x37 action source");
                         match self.encode_command(&TxCommand::GetMixerState) {
                             Ok(mut sends) => actions.append(&mut sends),
                             Err(error) => actions.push(SessionAction::Error(error.to_string())),
@@ -406,7 +471,13 @@ impl Flow8Session {
                     RxCommand::MixerState(_) => {
                         self.awaiting_state_apply = true;
                     }
-                    RxCommand::SnapshotLoad { .. } | RxCommand::FactoryReset => {
+                    event @ (RxCommand::SnapshotLoad { .. } | RxCommand::FactoryReset) => {
+                        let source = if matches!(event, RxCommand::FactoryReset) {
+                            "rx_factory_reset"
+                        } else {
+                            "rx_snapshot_load"
+                        };
+                        info!(source, phase = ?self.phase, "FLOW 0x37 action source");
                         actions.push(self.transition(SessionPhase::StateSyncing));
                         match self.encode_command(&TxCommand::GetMixerState) {
                             Ok(mut sends) => actions.append(&mut sends),
@@ -700,7 +771,7 @@ impl RuntimeSession {
         WriteType::WithResponse
     }
 
-    async fn write(&self, frame: &[u8]) -> Result<(), BleError> {
+    async fn write(&mut self, frame: &[u8]) -> Result<(), BleError> {
         match self {
             Self::WindowsNative(session) => session.write(frame).await,
             Self::DirectHci(session) => session.write(frame).await,
@@ -758,9 +829,138 @@ fn directhci_client_id() -> Result<[u8; 16], String> {
     Ok(client_id)
 }
 
-async fn execute_actions(
+enum WriterCommand {
+    Write(Vec<u8>),
+    MarkHandshakeRx,
+}
+
+struct ActiveSession {
+    backend: &'static str,
+    mtu: u16,
+    write_type: WriteType,
+    writer_tx: mpsc::UnboundedSender<WriterCommand>,
+    shutdown_tx: Option<oneshot::Sender<&'static str>>,
+    writer: tokio::task::JoinHandle<()>,
+}
+
+impl ActiveSession {
+    async fn new(
+        session: RuntimeSession,
+        events: mpsc::UnboundedSender<DeviceEvent>,
+    ) -> Result<Self, BleError> {
+        let backend = session.backend_name();
+        let mtu = session.mtu();
+        let write_type = session.write_type();
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (started_tx, started_rx) = oneshot::channel();
+        // A dedicated Tokio task owns the one active BLE session. The RX actor
+        // never awaits GATT writes and all frames use this one FIFO sender.
+        let writer = tokio::spawn(run_writer(
+            session,
+            writer_rx,
+            shutdown_rx,
+            started_tx,
+            events,
+        ));
+        started_rx
+            .await
+            .map_err(|_| BleError::Transport("FLOW 8 TX writer exited before startup".into()))?;
+        Ok(Self {
+            backend,
+            mtu,
+            write_type,
+            writer_tx,
+            shutdown_tx: Some(shutdown_tx),
+            writer,
+        })
+    }
+
+    fn queue(&self, frame: Vec<u8>) -> Result<(), BleError> {
+        self.writer_tx
+            .send(WriterCommand::Write(frame))
+            .map_err(|_| BleError::Transport("FLOW 8 TX writer stopped".into()))
+    }
+
+    fn mark_handshake_rx(&self) {
+        let _ = self.writer_tx.send(WriterCommand::MarkHandshakeRx);
+    }
+
+    async fn disconnect(mut self, source: &'static str) {
+        if let Some(shutdown) = self.shutdown_tx.take() {
+            let _ = shutdown.send(source);
+        }
+        let _ = self.writer.await;
+    }
+}
+
+async fn run_writer(
+    mut session: RuntimeSession,
+    mut rx: mpsc::UnboundedReceiver<WriterCommand>,
+    mut shutdown: oneshot::Receiver<&'static str>,
+    started: oneshot::Sender<()>,
+    events: mpsc::UnboundedSender<DeviceEvent>,
+) {
+    info!(backend = session.backend_name(), "FLOW TX writer started");
+    let _ = started.send(());
+    let reason = loop {
+        let request = tokio::select! {
+            biased;
+            reason = &mut shutdown => break reason.unwrap_or("runtime_session_drop"),
+            request = rx.recv() => request,
+        };
+        match request {
+            Some(WriterCommand::MarkHandshakeRx) => session.mark_handshake_rx(),
+            Some(WriterCommand::Write(frame)) => {
+                let command = frame.first().copied().unwrap_or_default();
+                info!(
+                    backend = session.backend_name(),
+                    command, "FLOW TX writer received"
+                );
+                info!(
+                    backend = session.backend_name(),
+                    command,
+                    bytes = frame.len(),
+                    "FLOW TX begin"
+                );
+                let result = tokio::select! {
+                    biased;
+                    reason = &mut shutdown => break reason.unwrap_or("runtime_session_drop"),
+                    result = session.write(&frame) => result,
+                };
+                match result {
+                    Ok(()) => {
+                        info!(
+                            backend = session.backend_name(),
+                            command, "FLOW TX complete"
+                        );
+                        let _ = events.send(DeviceEvent::RawTx(frame));
+                    }
+                    Err(error) => {
+                        let _ = events.send(DeviceEvent::Error(error.to_string()));
+                    }
+                }
+            }
+            None => break "tx_channel_closed",
+        }
+    };
+    info!(
+        backend = session.backend_name(),
+        reason, "FLOW TX writer shutdown"
+    );
+    if matches!(reason, "tx_channel_closed" | "runtime_session_drop") {
+        let _ = events.send(DeviceEvent::Error(format!(
+            "FLOW 8 TX writer stopped unexpectedly: {reason}"
+        )));
+    }
+    if let Err(error) = session.disconnect(reason).await {
+        let _ = events.send(DeviceEvent::Error(error.to_string()));
+    }
+}
+
+fn execute_actions(
     actions: Vec<SessionAction>,
-    session: Option<&RuntimeSession>,
+    session: Option<&ActiveSession>,
     events: &mpsc::UnboundedSender<DeviceEvent>,
 ) {
     for action in actions {
@@ -775,27 +975,24 @@ async fn execute_actions(
                 let _ = events.send(DeviceEvent::Error(error));
             }
             SessionAction::Send(frame) => {
+                let command = frame.first().copied().unwrap_or_default();
+                info!(command, "FLOW TX action generated");
                 let Some(session) = session else {
                     let _ = events.send(DeviceEvent::Error(
                         "protocol requested a write without a GATT session".into(),
                     ));
                     continue;
                 };
-                info!(
-                    backend = session.backend_name(),
-                    command = frame.first().copied().unwrap_or_default(),
-                    bytes = frame.len(),
-                    "FLOW TX"
-                );
+                let bytes = frame.len();
                 trace!(raw = %hex_bytes(&frame), "FLOW TX raw packet");
-                match frame.first().copied() {
-                    Some(0x39) => info!("sending FLOW 8 handshake response 0x39"),
-                    Some(0x37) => info!("requesting FLOW 8 full mixer state with 0x37"),
-                    _ => {}
-                }
-                match session.write(&frame).await {
+                match session.queue(frame) {
                     Ok(()) => {
-                        let _ = events.send(DeviceEvent::RawTx(frame));
+                        info!(backend = session.backend, command, bytes, "FLOW TX queued");
+                        match command {
+                            0x39 => info!("sending FLOW 8 handshake response 0x39"),
+                            0x37 => info!("requesting FLOW 8 full mixer state with 0x37"),
+                            _ => {}
+                        }
                     }
                     Err(error) => {
                         let _ = events.send(DeviceEvent::Error(error.to_string()));
@@ -808,7 +1005,7 @@ async fn execute_actions(
 
 async fn handle_device_command(
     command: DeviceCommand,
-    session: &mut Option<RuntimeSession>,
+    session: &mut Option<ActiveSession>,
     transport_rx: &mut Option<mpsc::UnboundedReceiver<TransportRx>>,
     coordinator: &mut Flow8Session,
     generation: &mut u64,
@@ -816,10 +1013,8 @@ async fn handle_device_command(
 ) -> bool {
     match command {
         DeviceCommand::Shutdown => {
-            if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect("runtime_shutdown").await
-            {
-                let _ = events.send(DeviceEvent::Error(error.to_string()));
+            if let Some(active) = session.take() {
+                active.disconnect("runtime_shutdown").await;
             }
             *transport_rx = None;
             coordinator.transition(SessionPhase::Disconnected);
@@ -855,10 +1050,8 @@ async fn handle_device_command(
                     }
                 }
             }
-            if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect("connection_replaced").await
-            {
-                let _ = events.send(DeviceEvent::Error(error.to_string()));
+            if let Some(active) = session.take() {
+                active.disconnect("connection_replaced").await;
             }
             *transport_rx = None;
             coordinator.transition(SessionPhase::Disconnected);
@@ -867,23 +1060,32 @@ async fn handle_device_command(
             coordinator.transition(SessionPhase::Connecting);
             match RuntimeSession::connect(*generation, events.clone()).await {
                 Ok((connected, rx)) => {
+                    let connected = match ActiveSession::new(connected, events.clone()).await {
+                        Ok(connected) => connected,
+                        Err(error) => {
+                            coordinator.transition(SessionPhase::Error);
+                            let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
+                            let _ = events.send(DeviceEvent::Error(error.to_string()));
+                            return true;
+                        }
+                    };
                     coordinator.transition(SessionPhase::GattReady);
                     let _ = events.send(DeviceEvent::Phase(SessionPhase::GattReady));
-                    let _ = events.send(DeviceEvent::Backend(connected.backend_name()));
-                    let _ = events.send(DeviceEvent::Mtu(connected.mtu()));
-                    let _ = events.send(DeviceEvent::WriteMode(connected.write_type()));
+                    let _ = events.send(DeviceEvent::Backend(connected.backend));
+                    let _ = events.send(DeviceEvent::Mtu(connected.mtu));
+                    let _ = events.send(DeviceEvent::WriteMode(connected.write_type));
                     coordinator.transition(SessionPhase::RxArming);
                     let _ = events.send(DeviceEvent::Phase(SessionPhase::RxArming));
                     info!(
-                        backend = connected.backend_name(),
-                        mtu = connected.mtu(),
-                        write_type = ?connected.write_type(),
+                        backend = connected.backend,
+                        mtu = connected.mtu,
+                        write_type = ?connected.write_type,
                         "FLOW 8 RX path armed"
                     );
                     *transport_rx = Some(rx);
                     *session = Some(connected);
                     let action = coordinator.rx_armed();
-                    execute_actions(vec![action], session.as_ref(), events).await;
+                    execute_actions(vec![action], session.as_ref(), events);
                 }
                 Err(error) => {
                     tracing::error!(
@@ -897,26 +1099,28 @@ async fn handle_device_command(
             }
         }
         DeviceCommand::Disconnect => {
-            if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect("explicit_user_disconnect").await
-            {
-                let _ = events.send(DeviceEvent::Error(error.to_string()));
+            if let Some(active) = session.take() {
+                active.disconnect("explicit_user_disconnect").await;
             }
             *transport_rx = None;
             let action = coordinator.transition(SessionPhase::Disconnected);
-            execute_actions(vec![action], None, events).await;
+            execute_actions(vec![action], None, events);
         }
         DeviceCommand::Send(command) => {
             if coordinator.phase() != SessionPhase::Ready {
+                warn!(command = ?command, phase = ?coordinator.phase(), "FLOW user command ignored before Ready");
                 let _ = events.send(DeviceEvent::Error(format!(
                     "FLOW 8 command rejected while session is {:?}; wait for Ready",
                     coordinator.phase()
                 )));
                 return true;
             }
+            if matches!(command, TxCommand::GetMixerState) {
+                info!(source = "user_semantic_request", phase = ?coordinator.phase(), "FLOW 0x37 action source");
+            }
             match coordinator.encode_command(&command) {
                 Ok(actions) => {
-                    execute_actions(actions, session.as_ref(), events).await;
+                    execute_actions(actions, session.as_ref(), events);
                 }
                 Err(error) => {
                     let _ = events.send(DeviceEvent::Error(error.to_string()));
@@ -926,7 +1130,7 @@ async fn handle_device_command(
         DeviceCommand::StateApplied => match coordinator.state_applied() {
             Ok(action) => {
                 info!("FLOW 8 Store apply acknowledged; session reached Ready");
-                execute_actions(vec![action], session.as_ref(), events).await;
+                execute_actions(vec![action], session.as_ref(), events);
             }
             Err(error) => {
                 let _ = events.send(DeviceEvent::Error(error.to_string()));
@@ -939,7 +1143,7 @@ async fn handle_device_command(
 async fn handle_transport_rx(
     event: TransportRx,
     active_generation: u64,
-    session: &mut Option<RuntimeSession>,
+    session: &mut Option<ActiveSession>,
     transport_rx: &mut Option<mpsc::UnboundedReceiver<TransportRx>>,
     coordinator: &mut Flow8Session,
     events: &mpsc::UnboundedSender<DeviceEvent>,
@@ -964,6 +1168,13 @@ async fn handle_transport_rx(
     match event {
         TransportRx::Packet { bytes, .. } => {
             trace!(raw = %hex_bytes(&bytes), "FLOW RX raw packet");
+            if bytes.first() == Some(&0x38) {
+                info!(
+                    generation = active_generation,
+                    bytes = bytes.len(),
+                    "FLOW 0x38 runtime ingress"
+                );
+            }
             if let Ok(packet) = flow8_protocol::parse_packet(&bytes) {
                 info!(
                     command = packet.command,
@@ -994,7 +1205,11 @@ async fn handle_transport_rx(
                     _ => {}
                 }
             }
-            execute_actions(actions, session.as_ref(), events).await;
+            execute_actions(actions, session.as_ref(), events);
+            debug!(
+                command = bytes.first().copied().unwrap_or_default(),
+                "FLOW RX processed"
+            );
         }
         #[cfg(target_os = "windows")]
         TransportRx::Connected { .. } => {
@@ -1002,14 +1217,12 @@ async fn handle_transport_rx(
         }
         TransportRx::Disconnected { .. } => {
             info!("FLOW 8 disconnected; invalidating session state");
-            if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect("transport_rx_disconnected").await
-            {
-                let _ = events.send(DeviceEvent::Error(error.to_string()));
+            if let Some(active) = session.take() {
+                active.disconnect("transport_rx_disconnected").await;
             }
             *transport_rx = None;
             let action = coordinator.transition(SessionPhase::Disconnected);
-            execute_actions(vec![action], None, events).await;
+            execute_actions(vec![action], None, events);
         }
         #[cfg(target_os = "windows")]
         TransportRx::Error { message, .. } => {
@@ -1044,7 +1257,7 @@ async fn device_actor(
     client_id: [u8; 16],
 ) {
     let mut coordinator = Flow8Session::new(client_id);
-    let mut session: Option<RuntimeSession> = None;
+    let mut session: Option<ActiveSession> = None;
     let mut transport_rx: Option<mpsc::UnboundedReceiver<TransportRx>> = None;
     let mut generation = 0u64;
 
@@ -1078,8 +1291,11 @@ async fn device_actor(
                         }
                         None => {
                             transport_rx = None;
+                            if let Some(active) = session.take() {
+                                active.disconnect("rx_channel_closed").await;
+                            }
                             let action = coordinator.transition(SessionPhase::Disconnected);
-                            execute_actions(vec![action], None, &events).await;
+                            execute_actions(vec![action], None, &events);
                         }
                     }
                 }
@@ -1101,6 +1317,9 @@ async fn device_actor(
                 break;
             }
         }
+    }
+    if let Some(active) = session.take() {
+        active.disconnect("runtime_actor_exit").await;
     }
 }
 

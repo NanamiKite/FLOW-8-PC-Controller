@@ -383,16 +383,30 @@ async fn transport_loop(
             received = notifications.recv() => {
                 match received {
                     Ok(Some(event)) if event.handle == characteristic.value_handle => {
+                        let state_fragment = event.value.first() == Some(&0x38);
+                        if state_fragment {
+                            info!(
+                                handle = event.handle,
+                                fragment_count_byte = ?event.value.get(1),
+                                sequence_byte = ?event.value.get(2),
+                                fragment_index_byte = ?event.value.get(3),
+                                bytes = event.value.len(),
+                                "FLOW 0x38 SDK stream ingress"
+                            );
+                        }
                         debug!(
                             handle = event.handle,
                             bytes = event.value.len(),
                             "forwarding FLOW 8 characteristic value"
                         );
-                        if events
+                        let forwarded = events
                             .send(Flow8DirectHciEvent::Notification(event.value))
                             .await
-                            .is_err()
-                        {
+                            .is_ok();
+                        if state_fragment {
+                            info!(forwarded, "FLOW 0x38 adapter forwarding result");
+                        }
+                        if !forwarded {
                             let source = "rx_event_consumer_closed";
                             let _ = close_and_disconnect(notifications, connection, source).await;
                             return;
