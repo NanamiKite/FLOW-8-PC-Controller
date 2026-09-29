@@ -166,11 +166,11 @@ has verified the target service/characteristic, `WRITE | NOTIFY`, MTU 131 and su
 `WithResponse` characteristic writes, while standard subscription fails with ATT Write
 Not Permitted. Android HCI evidence establishes that the physical characteristic has no
 CCCD and sends unsolicited ATT notifications on value handle `0x000B`. The production
-Windows transport now reads the selected device's `DeviceInstanceId`, `ContainerId` and
-parent identity, enumerates `GUID_BLUETOOTHLE_DEVICE_INTERFACE` and
-`GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE` with SetupDi, walks Configuration Manager
-parent devnodes, filters interfaces owned by other BLE devices, and opens the matching native
-service interface with `CreateFileW`, and finds the actual service/characteristic with
+Windows transport reads the selected device's optional `DeviceInstanceId`, `ContainerId`,
+parent identity and Bluetooth address for diagnostics only. Service discovery is scoped to
+the selected `BluetoothLEDevice`: its `BluetoothDeviceId` and the FLOW service UUID build a
+`GattDeviceService` device selector. The sole returned service `DeviceInformation.Id` is
+forwarded verbatim to `CreateFileW`; the resulting native handle is verified with
 `BluetoothGATTGetServices` / `BluetoothGATTGetCharacteristics` (without assuming
 `0x000B`). It registers `BluetoothGATTRegisterEvent` and
 never calls btleplug `subscribe()` or writes a synthetic CCCD. This backend is
@@ -214,7 +214,19 @@ and [worldwide Quick Start Guide](https://mediadl.musictribe.com/media/PLM/data/
 
 ## BLE tools
 
-The real Windows application uses the production native backend. Keep build products on
+The Windows runtime can select either the retained native GATT backend or the DirectHCI backend. DirectHCI owns the controller and exposes generic raw-HCI/TrouBLE GATT capability; the FLOW service name, UUIDs, passive-listen policy, protocol codec and session state machine remain in `flow8-ble`. Select it explicitly and provide the paired 16-byte client UUID (this is semantic identity data, not a prebuilt packet):
+
+```powershell
+$env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\flow8-rust-target"
+$env:FLOW8_BLE_BACKEND = "directhci"
+$env:FLOW8_CLIENT_UUID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+$env:RUST_LOG = "flow8_ble=trace"
+cargo run -p flow8-gui
+```
+
+For this first integration stage, the DirectHCI service/runtime must already be available. The application connects through `directhci-client`, acquires the selected controller (`DIRECTHCI_CONTROLLER_ID` is required only when more than one exists), scans for `FLOW 8 LE`, discovers the exact FLOW service/characteristic, arms generic passive listening without CCCD, then lets the existing `Flow8Session` perform `0x35 -> 0x39 -> 0x36 -> 0x37 -> 0x38 -> Ready`. The previous ASCII `FLOW8-PC-RUST001` value is not used by this backend. Automatic DirectHCI service startup is a later lifecycle task after the first production Ready run.
+
+The retained native GATT backend remains the default when `FLOW8_BLE_BACKEND` is unset. Keep build products on
 the Windows-local filesystem, enable useful transport logging, launch the GUI, select BLE
 mode and press **Connect**:
 
@@ -224,7 +236,9 @@ $env:RUST_LOG = "flow8_ble=debug"
 cargo run -p flow8-gui
 ```
 
-Use `flow8_ble=trace` when full raw packet hex is needed. The separate bring-up tool and
+With `flow8_ble=debug` or `flow8_ble=trace`, the same production lifecycle log is also
+written to `captures/hardware/windows-production-connection.log`. Use `flow8_ble=trace`
+when full raw packet hex is needed. The separate bring-up tool and
 older probes remain available for evidence comparison:
 
 ```powershell

@@ -1,5 +1,8 @@
 use std::{
+    fs::{self, File},
+    io::{self, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -3319,6 +3322,9 @@ fn native_stage_text(stage: NativeConnectionStage, language: Language) -> &'stat
         NativeConnectionStage::NativeInterfaceEnumerating => {
             language.tr("Enumerating native BLE interfaces", "正在枚举原生 BLE 接口")
         }
+        NativeConnectionStage::FlowServiceSelected => {
+            language.tr("FLOW service selected", "已选择 FLOW 服务")
+        }
         NativeConnectionStage::NativeServiceHandleOpened => {
             language.tr("Native service handle opened", "已打开原生服务句柄")
         }
@@ -3721,15 +3727,90 @@ mod tests {
         assert!(app.store.queue.is_empty());
         output.textures_delta.clear();
     }
+
+    #[test]
+    fn verbose_flow8_ble_filter_enables_production_log_capture() {
+        assert!(flow8_ble_verbose_logging("flow8_ble=debug,flow8_gui=info"));
+        assert!(flow8_ble_verbose_logging("flow8_ble=trace"));
+        assert!(!flow8_ble_verbose_logging("flow8_ble=info"));
+        assert!(!flow8_ble_verbose_logging("flow8_gui=debug"));
+    }
+}
+
+#[derive(Clone)]
+struct ProductionLogWriter {
+    file: Arc<Mutex<File>>,
+}
+
+struct ProductionLogSink {
+    file: Arc<Mutex<File>>,
+    stdout: io::Stdout,
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for ProductionLogWriter {
+    type Writer = ProductionLogSink;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        ProductionLogSink {
+            file: Arc::clone(&self.file),
+            stdout: io::stdout(),
+        }
+    }
+}
+
+impl Write for ProductionLogSink {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.file
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .write_all(buffer)?;
+        let _ = self.stdout.write_all(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .flush()?;
+        let _ = self.stdout.flush();
+        Ok(())
+    }
+}
+
+fn flow8_ble_verbose_logging(filter: &str) -> bool {
+    filter.split(',').any(|directive| {
+        let directive = directive.trim().to_ascii_lowercase();
+        directive == "flow8_ble=debug" || directive == "flow8_ble=trace"
+    })
+}
+
+fn init_tracing() {
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "flow8_ble=info".into());
+    let filter = tracing_subscriber::EnvFilter::try_new(&rust_log)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("flow8_ble=info"));
+    if flow8_ble_verbose_logging(&rust_log) {
+        let path = Path::new("captures/hardware/windows-production-connection.log");
+        let writer = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
+            .and_then(|()| File::create(path));
+        match writer {
+            Ok(file) => {
+                let _ = tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_writer(ProductionLogWriter {
+                        file: Arc::new(Mutex::new(file)),
+                    })
+                    .try_init();
+                return;
+            }
+            Err(error) => eprintln!("warning: could not create {}: {error}", path.display()),
+        }
+    }
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 fn main() -> eframe::Result {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "flow8_ble=info".into()),
-        )
-        .try_init();
+    init_tracing();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FLOW 8 PC Controller")

@@ -32,6 +32,8 @@ use tracing::{debug, info, trace};
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
+mod directhci_backend;
+#[cfg(target_os = "windows")]
 mod windows_native;
 
 pub const SERVICE_UUID: Uuid = Uuid::from_u128(0x14839ad4_8d7e_415c_9a42_167340cf2339);
@@ -57,6 +59,10 @@ enum TransportRx {
     Error {
         generation: u64,
         message: String,
+    },
+    #[cfg(target_os = "windows")]
+    HandshakeTimeout {
+        generation: u64,
     },
 }
 
@@ -112,6 +118,13 @@ impl RxIngress {
         })
     }
 
+    #[cfg(target_os = "windows")]
+    fn handshake_timeout(&self) -> bool {
+        self.send(TransportRx::HandshakeTimeout {
+            generation: self.generation,
+        })
+    }
+
     fn send(&self, event: TransportRx) -> bool {
         self.active.load(Ordering::Acquire) && self.tx.send(event).is_ok()
     }
@@ -143,6 +156,7 @@ pub enum NativeConnectionStage {
     DeviceFound,
     DeviceObjectCreated,
     NativeInterfaceEnumerating,
+    FlowServiceSelected,
     NativeServiceHandleOpened,
     CharacteristicsEnumerated,
     TargetCharacteristicFound,
@@ -158,6 +172,7 @@ impl NativeConnectionStage {
             Self::DeviceFound => "DeviceFound",
             Self::DeviceObjectCreated => "DeviceObjectCreated",
             Self::NativeInterfaceEnumerating => "NativeInterfaceEnumerating",
+            Self::FlowServiceSelected => "FlowServiceSelected",
             Self::NativeServiceHandleOpened => "NativeServiceHandleOpened",
             Self::CharacteristicsEnumerated => "CharacteristicsEnumerated",
             Self::TargetCharacteristicFound => "TargetCharacteristicFound",
@@ -288,6 +303,7 @@ pub struct Flow8Session {
     sequence: u8,
     decoder: CommandStreamDecoder,
     awaiting_state_apply: bool,
+    received_host_hello: bool,
 }
 
 impl Flow8Session {
@@ -298,11 +314,17 @@ impl Flow8Session {
             sequence: 0,
             decoder: CommandStreamDecoder::default(),
             awaiting_state_apply: false,
+            received_host_hello: false,
         }
     }
 
     pub fn phase(&self) -> SessionPhase {
         self.phase
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_client_id(&mut self, client_id: [u8; 16]) {
+        self.client_id = client_id;
     }
 
     pub fn transition(&mut self, phase: SessionPhase) -> SessionAction {
@@ -311,6 +333,7 @@ impl Flow8Session {
             self.decoder.clear();
             self.sequence = 0;
             self.awaiting_state_apply = false;
+            self.received_host_hello = false;
         } else if phase == SessionPhase::StateSyncing {
             self.awaiting_state_apply = false;
         }
@@ -321,6 +344,7 @@ impl Flow8Session {
     /// follows subscription; on FLOW 8/Windows it follows native event
     /// registration and never implies a CCCD write.
     pub fn rx_armed(&mut self) -> SessionAction {
+        self.received_host_hello = false;
         self.transition(SessionPhase::Handshaking)
     }
 
@@ -351,6 +375,13 @@ impl Flow8Session {
                 let mut actions = vec![SessionAction::Received(command.clone())];
                 match command {
                     RxCommand::HandshakeHost { .. } => {
+                        if self.phase != SessionPhase::Handshaking {
+                            return vec![SessionAction::Error(format!(
+                                "ignored FLOW 8 0x35 while RX was not armed (phase={:?})",
+                                self.phase
+                            ))];
+                        }
+                        self.received_host_hello = true;
                         actions.push(self.transition(SessionPhase::Handshaking));
                         match self.encode_command(&TxCommand::HandshakeClient {
                             client_id: self.client_id,
@@ -360,6 +391,12 @@ impl Flow8Session {
                         }
                     }
                     RxCommand::HandshakeReply => {
+                        if self.phase != SessionPhase::Handshaking || !self.received_host_hello {
+                            return vec![SessionAction::Error(format!(
+                                "ignored FLOW 8 0x36 before a valid 0x35 (phase={:?})",
+                                self.phase
+                            ))];
+                        }
                         actions.push(self.transition(SessionPhase::StateSyncing));
                         match self.encode_command(&TxCommand::GetMixerState) {
                             Ok(mut sends) => actions.append(&mut sends),
@@ -394,6 +431,8 @@ pub enum BleError {
     DeviceNotFound,
     #[error("the FLOW 8 characteristic was not discovered")]
     CharacteristicNotFound,
+    #[error("FLOW 8 transport failed: {0}")]
+    Transport(String),
     #[error("Windows native FLOW 8 transport failed: {0}")]
     NativeWindows(#[from] NativeConnectionError),
     #[error("unexpected FLOW 8 session state: {0}")]
@@ -406,6 +445,10 @@ pub enum BleError {
 /// public so integration tests and frontends can verify that Windows runtime
 /// policy never regresses to standard subscription.
 pub const WINDOWS_FLOW8_USES_STANDARD_SUBSCRIBE: bool = false;
+/// A failed production connection remains in Error until the user explicitly
+/// requests another connection attempt. This keeps the first native failure
+/// and its logs intact instead of hiding it behind a scan/reconnect loop.
+pub const AUTO_RECONNECT_AFTER_FAILURE: bool = false;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {
@@ -607,6 +650,8 @@ impl RuntimeSession {
         self.session.write(frame, self.write_type).await
     }
 
+    fn mark_handshake_rx(&self) {}
+
     async fn disconnect(&mut self) -> Result<(), BleError> {
         self.ingress.invalidate();
         self.reader.abort();
@@ -615,8 +660,9 @@ impl RuntimeSession {
 }
 
 #[cfg(target_os = "windows")]
-struct RuntimeSession {
-    session: windows_native::WindowsNativeSession,
+enum RuntimeSession {
+    WindowsNative(windows_native::WindowsNativeSession),
+    DirectHci(directhci_backend::DirectHciSession),
 }
 
 #[cfg(target_os = "windows")]
@@ -625,17 +671,29 @@ impl RuntimeSession {
         generation: u64,
         events: mpsc::UnboundedSender<DeviceEvent>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportRx>), BleError> {
-        let (session, rx) =
-            windows_native::WindowsNativeSession::connect(generation, events).await?;
-        Ok((Self { session }, rx))
+        if directhci_requested() {
+            let (session, rx) =
+                directhci_backend::DirectHciSession::connect(generation, events).await?;
+            Ok((Self::DirectHci(session), rx))
+        } else {
+            let (session, rx) =
+                windows_native::WindowsNativeSession::connect(generation, events).await?;
+            Ok((Self::WindowsNative(session), rx))
+        }
     }
 
     fn backend_name(&self) -> &'static str {
-        "windows-native-gatt"
+        match self {
+            Self::WindowsNative(_) => "windows-native-gatt",
+            Self::DirectHci(_) => "directhci",
+        }
     }
 
     fn mtu(&self) -> u16 {
-        self.session.mtu()
+        match self {
+            Self::WindowsNative(session) => session.mtu(),
+            Self::DirectHci(session) => session.mtu(),
+        }
     }
 
     fn write_type(&self) -> WriteType {
@@ -643,13 +701,57 @@ impl RuntimeSession {
     }
 
     async fn write(&self, frame: &[u8]) -> Result<(), BleError> {
-        self.session.write(frame).await
+        match self {
+            Self::WindowsNative(session) => session.write(frame).await,
+            Self::DirectHci(session) => session.write(frame).await,
+        }
+    }
+
+    fn mark_handshake_rx(&self) {
+        match self {
+            Self::WindowsNative(session) => session.mark_handshake_rx(),
+            Self::DirectHci(session) => session.mark_handshake_rx(),
+        }
     }
 
     async fn disconnect(&mut self) -> Result<(), BleError> {
-        self.session.disconnect();
-        Ok(())
+        match self {
+            Self::WindowsNative(session) => {
+                session.disconnect();
+                Ok(())
+            }
+            Self::DirectHci(session) => session.disconnect().await,
+        }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn directhci_requested() -> bool {
+    std::env::var("FLOW8_BLE_BACKEND").is_ok_and(|value| value.eq_ignore_ascii_case("directhci"))
+}
+
+#[cfg(target_os = "windows")]
+fn directhci_client_id() -> Result<[u8; 16], String> {
+    let value = std::env::var("FLOW8_CLIENT_UUID").map_err(|_| {
+        "DirectHCI requires FLOW8_CLIENT_UUID (the paired 16-byte client UUID; canonical UUID or 32 hex digits)".to_owned()
+    })?;
+    let compact: String = value
+        .chars()
+        .filter(|character| *character != '-')
+        .collect();
+    if compact.len() != 32 || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "FLOW8_CLIENT_UUID must contain exactly 16 bytes (canonical UUID or 32 hex digits)"
+                .to_owned(),
+        );
+    }
+    let mut client_id = [0_u8; 16];
+    for (index, byte) in client_id.iter_mut().enumerate() {
+        let offset = index * 2;
+        *byte = u8::from_str_radix(&compact[offset..offset + 2], 16)
+            .map_err(|_| "FLOW8_CLIENT_UUID contains invalid hexadecimal data".to_owned())?;
+    }
+    Ok(client_id)
 }
 
 async fn execute_actions(
@@ -675,7 +777,7 @@ async fn execute_actions(
                     ));
                     continue;
                 };
-                debug!(
+                info!(
                     backend = session.backend_name(),
                     command = frame.first().copied().unwrap_or_default(),
                     bytes = frame.len(),
@@ -737,6 +839,18 @@ async fn handle_device_command(
             }
         }
         DeviceCommand::Connect => {
+            #[cfg(target_os = "windows")]
+            if directhci_requested() {
+                match directhci_client_id() {
+                    Ok(client_id) => coordinator.set_client_id(client_id),
+                    Err(error) => {
+                        coordinator.transition(SessionPhase::Error);
+                        let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
+                        let _ = events.send(DeviceEvent::Error(error));
+                        return true;
+                    }
+                }
+            }
             if let Some(mut active) = session.take()
                 && let Err(error) = active.disconnect().await
             {
@@ -831,9 +945,9 @@ async fn handle_transport_rx(
             *generation
         }
         #[cfg(target_os = "windows")]
-        TransportRx::Connected { generation } | TransportRx::Error { generation, .. } => {
-            *generation
-        }
+        TransportRx::Connected { generation }
+        | TransportRx::Error { generation, .. }
+        | TransportRx::HandshakeTimeout { generation } => *generation,
     };
     if generation != active_generation {
         debug!(
@@ -847,13 +961,18 @@ async fn handle_transport_rx(
         TransportRx::Packet { bytes, .. } => {
             trace!(raw = %hex_bytes(&bytes), "FLOW RX raw packet");
             if let Ok(packet) = flow8_protocol::parse_packet(&bytes) {
-                debug!(
+                info!(
                     command = packet.command,
                     fragment_index = ?packet.fragment_index,
                     fragment_count = packet.fragment_count,
                     bytes = bytes.len(),
                     "FLOW RX"
                 );
+                if packet.command == 0x35
+                    && let Some(active) = session.as_ref()
+                {
+                    active.mark_handshake_rx();
+                }
             }
             let _ = events.send(DeviceEvent::RawRx(bytes.clone()));
             let actions = coordinator.notification(&bytes);
@@ -891,6 +1010,18 @@ async fn handle_transport_rx(
         #[cfg(target_os = "windows")]
         TransportRx::Error { message, .. } => {
             let _ = events.send(DeviceEvent::Error(message));
+        }
+        #[cfg(target_os = "windows")]
+        TransportRx::HandshakeTimeout { .. } => {
+            let message = "FLOW 8 RX timeout: native RX remains armed, but no 0x35 was observed; the connection is being kept open for a hardware retransmission";
+            tracing::warn!(
+                stage = NativeConnectionStage::Handshaking.as_str(),
+                api = "BluetoothGATTRegisterEvent callback",
+                logical_code = "handshake_rx_timeout",
+                retry = false,
+                "{message}"
+            );
+            let _ = events.send(DeviceEvent::Error(message.into()));
         }
     }
 }
@@ -972,6 +1103,8 @@ async fn device_actor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flow8_core::Flow8Store;
+    use flow8_model::EvidenceStatus;
     use flow8_protocol::{
         ChannelLabel, FxState, InputState, MixerState, OutputState, frame_single,
     };
@@ -1039,6 +1172,40 @@ mod tests {
     }
 
     #[test]
+    fn captured_host_hello_uses_the_configured_client_uuid_verbatim() {
+        let client_id = [
+            0x83, 0x76, 0xf6, 0xa4, 0xb8, 0x55, 0x78, 0xd1, 0xc7, 0x76, 0xf2, 0x7a, 0xc9, 0xd3,
+            0xb4, 0x76,
+        ];
+        let captured_hello = [
+            0x35, 0x01, 0xf4, 0x89, 0x52, 0xf2, 0xf3, 0x30, 0xac, 0x22, 0x38, 0xc8, 0xba, 0x48,
+            0x70, 0x44, 0x13, 0x7c, 0x00, 0x00, 0x09, 0x2d, 0xe5, 0x48,
+        ];
+        let mut session = Flow8Session::new(client_id);
+        session.rx_armed();
+        let actions = session.notification(&captured_hello);
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            SessionAction::Received(RxCommand::HandshakeHost {
+                device_id,
+                pairing_any: false,
+                protocol_version: 9,
+                firmware_build: 0x2de5,
+            }) if *device_id == [
+                0xf4, 0x89, 0x52, 0xf2, 0xf3, 0x30, 0xac, 0x22,
+                0x38, 0xc8, 0xba, 0x48, 0x70, 0x44, 0x13, 0x7c,
+            ]
+        )));
+        let expected = flow8_protocol::encode(&TxCommand::HandshakeClient { client_id }).unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Send(frame) if frame == &expected))
+        );
+    }
+
+    #[test]
     fn apk_handshake_progresses_to_state_syncing() {
         let client_id = *b"FLOW8-PC-RUST001";
         let mut session = Flow8Session::new(client_id);
@@ -1061,6 +1228,41 @@ mod tests {
     }
 
     #[test]
+    fn handshake_responses_are_gated_by_rx_arm_and_received_order() {
+        let mut session = Flow8Session::new(*b"FLOW8-PC-RUST001");
+        let mut hello = vec![0x11; 16];
+        hello.extend([0, 0, 1, 0, 2]);
+
+        let before_arm = session.notification(&frame_single(0x35, &hello));
+        assert!(
+            !before_arm
+                .iter()
+                .any(|action| matches!(action, SessionAction::Send(frame) if frame[0] == 0x39))
+        );
+
+        session.rx_armed();
+        let reply_before_hello = session.notification(&frame_single(0x36, &[]));
+        assert!(
+            !reply_before_hello
+                .iter()
+                .any(|action| matches!(action, SessionAction::Send(frame) if frame[0] == 0x37))
+        );
+
+        let hello_actions = session.notification(&frame_single(0x35, &hello));
+        assert!(
+            hello_actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Send(frame) if frame[0] == 0x39))
+        );
+        let reply_actions = session.notification(&frame_single(0x36, &[]));
+        assert!(
+            reply_actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Send(frame) if frame[0] == 0x37))
+        );
+    }
+
+    #[test]
     fn complete_fragmented_mixer_state_is_the_ready_gate() {
         let mut session = Flow8Session::new(*b"FLOW8-PC-RUST001");
         session.transition(SessionPhase::StateSyncing);
@@ -1077,6 +1279,37 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, SessionAction::Received(RxCommand::MixerState(_))))
         );
+        assert_eq!(
+            session.state_applied().unwrap(),
+            SessionAction::Phase(SessionPhase::Ready)
+        );
+        assert_eq!(session.phase(), SessionPhase::Ready);
+    }
+
+    #[test]
+    fn four_fragment_state_is_atomically_applied_before_ready() {
+        let mut session = Flow8Session::new(*b"FLOW8-PC-RUST001");
+        let mut store = Flow8Store::disconnected();
+        session.transition(SessionPhase::StateSyncing);
+        let frames = encode_frames(&TxCommand::MixerState(Box::new(mixer())), 128, 3).unwrap();
+        assert_eq!(frames.len(), 4);
+
+        for frame in &frames[..3] {
+            assert!(session.notification(frame).is_empty());
+            assert_eq!(session.phase(), SessionPhase::StateSyncing);
+        }
+        let actions = session.notification(&frames[3]);
+        let command = actions.into_iter().find_map(|action| match action {
+            SessionAction::Received(command @ RxCommand::MixerState(_)) => Some(command),
+            _ => None,
+        });
+        store
+            .apply_rx(
+                command.expect("complete four-fragment MixerState"),
+                EvidenceStatus::VerifiedFromDevice,
+            )
+            .unwrap();
+
         assert_eq!(
             session.state_applied().unwrap(),
             SessionAction::Phase(SessionPhase::Ready)
@@ -1193,6 +1426,11 @@ mod tests {
     #[test]
     fn windows_flow8_policy_never_uses_standard_subscription() {
         assert!(!WINDOWS_FLOW8_USES_STANDARD_SUBSCRIBE);
+    }
+
+    #[test]
+    fn connection_failure_requires_an_explicit_manual_retry() {
+        assert!(!AUTO_RECONNECT_AFTER_FAILURE);
     }
 
     #[test]

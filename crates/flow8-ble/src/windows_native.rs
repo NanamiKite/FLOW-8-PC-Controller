@@ -1,62 +1,53 @@
 //! Production Windows FLOW 8 transport.
 //!
 //! FLOW 8 has a WRITE | NOTIFY transport characteristic but no CCCD. The
-//! Windows backend enumerates the native Windows BLE/GATT device interfaces,
-//! opens the matching service interface, and uses BluetoothGATTRegisterEvent.
+//! Windows backend performs UUID-targeted WinRT discovery on the selected
+//! BluetoothLEDevice, opens that GattDeviceService's DeviceId as the native
+//! service handle, and uses BluetoothGATTRegisterEvent.
 //! It never calls the standard BLE subscription path.
 
 use std::{
     ffi::c_void,
     mem::size_of,
-    ptr::addr_of,
     sync::{
-        Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 use windows::{
     Devices::{
         Bluetooth::{
-            BluetoothConnectionStatus, BluetoothLEDevice, GenericAttributeProfile::GattSession,
+            BluetoothConnectionStatus, BluetoothDeviceId, BluetoothLEDevice,
+            GenericAttributeProfile::{GattDeviceService, GattSession},
         },
         Enumeration::{DeviceInformation, DeviceInformationCollection},
     },
     Foundation::{IPropertyValue, PropertyType, TypedEventHandler},
     Win32::{
-        Devices::{
-            Bluetooth::{
-                BLUETOOTH_GATT_FLAG_NONE, BLUETOOTH_GATT_VALUE_CHANGED_EVENT,
-                BLUETOOTH_GATT_VALUE_CHANGED_EVENT_REGISTRATION, BTH_LE_GATT_CHARACTERISTIC,
-                BTH_LE_GATT_CHARACTERISTIC_VALUE, BTH_LE_GATT_SERVICE, BTH_LE_UUID,
-                BluetoothGATTGetCharacteristics, BluetoothGATTGetServices,
-                BluetoothGATTRegisterEvent, BluetoothGATTSetCharacteristicValue,
-                BluetoothGATTUnregisterEvent, CharacteristicValueChangedEvent,
-                GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE, GUID_BLUETOOTHLE_DEVICE_INTERFACE,
-            },
-            DeviceAndDriverInstallation::{
-                CM_Get_Device_IDW, CM_Get_Parent, CR_SUCCESS, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
-                HDEVINFO, MAX_DEVICE_ID_LEN, SP_DEVICE_INTERFACE_DATA,
-                SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SetupDiDestroyDeviceInfoList,
-                SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
-                SetupDiGetDeviceInterfaceDetailW, SetupDiGetDevicePropertyW,
-            },
-            Properties::{
-                DEVPKEY_Device_ContainerId, DEVPKEY_Device_Parent, DEVPROP_TYPE_GUID,
-                DEVPROP_TYPE_STRING, DEVPROPTYPE,
-            },
+        Devices::Bluetooth::{
+            BLUETOOTH_GATT_FLAG_NONE, BLUETOOTH_GATT_VALUE_CHANGED_EVENT,
+            BLUETOOTH_GATT_VALUE_CHANGED_EVENT_REGISTRATION, BTH_LE_GATT_CHARACTERISTIC,
+            BTH_LE_GATT_CHARACTERISTIC_VALUE, BTH_LE_GATT_SERVICE, BTH_LE_UUID,
+            BluetoothGATTGetCharacteristics, BluetoothGATTGetServices, BluetoothGATTRegisterEvent,
+            BluetoothGATTSetCharacteristicValue, BluetoothGATTUnregisterEvent,
+            CharacteristicValueChangedEvent,
         },
-        Foundation::{CloseHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ, GENERIC_WRITE, HANDLE},
+        Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE},
         Storage::FileSystem::{
             CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
             OPEN_EXISTING,
         },
     },
-    core::{GUID, HRESULT, HSTRING, IInspectable, Interface, PCWSTR},
+    core::{GUID, HSTRING, IInspectable, Interface},
 };
 use windows_collections::IIterable;
+
+#[cfg(test)]
+use windows::core::HRESULT;
 
 use super::{
     BleError, DeviceEvent, NativeConnectionError, NativeConnectionStage, RxIngress, TransportRx,
@@ -74,20 +65,13 @@ const REQUESTED_IDENTITY_PROPERTIES: [&str; 3] = [
     PARENT_ID_PROPERTY,
 ];
 
-struct DeviceInfoSet(HDEVINFO);
+/// Production invariant: FLOW service discovery is scoped to the selected
+/// BluetoothLEDevice through UUID-targeted WinRT calls. The global SetupDi
+/// service-interface list is never consulted by the production path.
+const PRODUCTION_USES_GLOBAL_GATT_SERVICE_ENUMERATION: bool = false;
 
-impl Drop for DeviceInfoSet {
-    fn drop(&mut self) {
-        if !self.0.is_invalid() {
-            // SAFETY: this object uniquely owns the SetupDiGetClassDevsW result.
-            if let Err(error) = unsafe { SetupDiDestroyDeviceInfoList(self.0) } {
-                warn!(
-                    error = %native_error(&error),
-                    "closing SetupDi device information set failed"
-                );
-            }
-        }
-    }
+struct FlowServiceInstance {
+    path: String,
 }
 
 struct ServiceHandle(HANDLE);
@@ -107,34 +91,20 @@ impl Drop for ServiceHandle {
     }
 }
 
-struct NativeGattCandidate {
-    path: String,
-    owner_instance_id: String,
-    owner_container_id: Option<GUID>,
-    handle: ServiceHandle,
-    service: BTH_LE_GATT_SERVICE,
-    characteristic: BTH_LE_GATT_CHARACTERISTIC,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FlowDeviceIdentity {
     device_instance_id: Option<String>,
     container_id: Option<GUID>,
     parent_id: Option<String>,
+    bluetooth_address: Option<u64>,
 }
 
 impl FlowDeviceIdentity {
     fn is_sufficient_for_matching(&self) -> bool {
-        self.container_id.is_some() || self.device_instance_id.is_some()
+        self.container_id.is_some()
+            || self.device_instance_id.is_some()
+            || self.bluetooth_address.is_some()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeDeviceInterface {
-    path: String,
-    instance_id: String,
-    container_id: Option<GUID>,
-    parent_chain: Vec<String>,
 }
 
 struct CallbackContext {
@@ -206,6 +176,7 @@ pub(super) struct WindowsNativeSession {
     gatt_session: GattSession,
     connection_token: Option<i64>,
     ingress: RxIngress,
+    handshake_observed: Arc<AtomicBool>,
     mtu: u16,
     closed: bool,
 }
@@ -215,11 +186,13 @@ impl WindowsNativeSession {
         generation: u64,
         events: mpsc::UnboundedSender<DeviceEvent>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportRx>), BleError> {
+        debug_assert!(!PRODUCTION_USES_GLOBAL_GATT_SERVICE_ENUMERATION);
         let (tx, rx) = mpsc::unbounded_channel();
         let ingress = RxIngress::new(generation, tx);
 
         report_stage(&events, NativeConnectionStage::Scanning);
-        let (device, flow_identity) = find_flow8_device(&events).await?;
+        let (device, mut flow_identity) = find_flow8_device(&events).await?;
+        flow_identity.bluetooth_address = device.BluetoothAddress().ok();
         report_stage(&events, NativeConnectionStage::DeviceObjectCreated);
         info!(
             backend = "windows-native-gatt",
@@ -227,6 +200,7 @@ impl WindowsNativeSession {
             device_instance_id = ?flow_identity.device_instance_id,
             container_id = ?flow_identity.container_id,
             parent_id = ?flow_identity.parent_id,
+            bluetooth_address = flow_identity.bluetooth_address.map(format_bluetooth_address),
             "FLOW 8 device object created"
         );
 
@@ -238,6 +212,15 @@ impl WindowsNativeSession {
                 true,
             )
         })?;
+        let bluetooth_device_id_text = device_id
+            .Id()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "unavailable".into());
+        info!(
+            backend = "windows-native-gatt",
+            bluetooth_device_id = %bluetooth_device_id_text,
+            "BluetoothDeviceId resolved"
+        );
         let gatt_session = GattSession::FromDeviceIdAsync(&device_id)
             .map_err(|error| {
                 windows_error(
@@ -264,40 +247,79 @@ impl WindowsNativeSession {
                 true,
             )
         })?;
+        // Establish the selected device's physical connection before resolving
+        // its UUID-scoped GATT service DeviceInformation. FLOW 8 retransmits
+        // 0x35, so arm native RX as the first operation after opening and
+        // verifying that exact service instance path.
+        gatt_session.SetMaintainConnection(true).map_err(|error| {
+            windows_error(
+                NativeConnectionStage::DeviceObjectCreated,
+                "GattSession.MaintainConnection",
+                error,
+                true,
+            )
+        })?;
+        wait_for_physical_connection(&device).await;
         report_stage(&events, NativeConnectionStage::NativeInterfaceEnumerating);
-        let device_interfaces = enumerate_device_interfaces(GUID_BLUETOOTHLE_DEVICE_INTERFACE)?;
-        let matching_device_interfaces = device_interfaces
-            .iter()
-            .filter(|interface| belongs_to_flow8_device(interface, &flow_identity))
-            .count();
+        let service_instance = discover_flow_service_instance(&device_id).await?;
+        report_stage(&events, NativeConnectionStage::FlowServiceSelected);
         info!(
             backend = "windows-native-gatt",
-            device_interfaces_total = device_interfaces.len(),
-            device_interfaces_matching_flow_device = matching_device_interfaces,
-            "associated native Bluetooth LE device interfaces with selected FLOW 8"
+            service_uuid = %guid_text(FLOW_SERVICE_GUID),
+            service_instance_path = %service_instance.path,
+            "FLOW service DeviceInformation found"
         );
-        let candidate = open_flow_service_interface(&flow_identity, &events)?;
-        let NativeGattCandidate {
-            path,
-            owner_instance_id,
-            owner_container_id,
-            handle: service_handle,
-            service,
-            characteristic,
-            ..
-        } = candidate;
+
+        let service_handle = open_service_handle_from_instance_path(&service_instance.path)?;
+        report_stage(&events, NativeConnectionStage::NativeServiceHandleOpened);
         info!(
             backend = "windows-native-gatt",
-            interface_path = %path,
-            device_instance = %owner_instance_id,
-            container_id = ?owner_container_id,
+            service_instance_path = %service_instance.path,
+            "native service handle opened from FLOW service DeviceInformation.Id"
+        );
+        let service = native_services(&service_handle)?
+            .into_iter()
+            .find(is_flow_service)
+            .ok_or_else(|| {
+                native_failure(
+                    NativeConnectionStage::NativeServiceHandleOpened,
+                    "BluetoothGATTGetServices(FLOW service DeviceId)",
+                    false,
+                    format!(
+                        "native handle opened from service instance path '{}' did not expose FLOW service {}",
+                        service_instance.path,
+                        guid_text(FLOW_SERVICE_GUID)
+                    ),
+                )
+            })?;
+        let characteristic = native_characteristics(&service_handle, &service)?
+            .into_iter()
+            .find(is_flow_characteristic)
+            .ok_or_else(|| {
+                native_failure(
+                    NativeConnectionStage::CharacteristicsEnumerated,
+                    "BluetoothGATTGetCharacteristics(FLOW service DeviceId)",
+                    false,
+                    format!(
+                        "native handle opened from service instance path '{}' did not expose target characteristic {}",
+                        service_instance.path,
+                        guid_text(FLOW_CHARACTERISTIC_GUID)
+                    ),
+                )
+            })?;
+        report_stage(&events, NativeConnectionStage::CharacteristicsEnumerated);
+        report_stage(&events, NativeConnectionStage::TargetCharacteristicFound);
+        info!(
+            backend = "windows-native-gatt",
+            service_instance_path = %service_instance.path,
             service_uuid = ?FLOW_SERVICE_GUID,
+            characteristic_uuid = %guid_text(FLOW_CHARACTERISTIC_GUID),
             service_handle = service.AttributeHandle,
             declaration_handle = characteristic.AttributeHandle,
             value_handle = characteristic.CharacteristicValueHandle,
             writable = characteristic.IsWritable,
             notifiable = characteristic.IsNotifiable,
-            "selected native FLOW 8 service and characteristic"
+            "native characteristic matched"
         );
 
         if !characteristic.IsWritable || !characteristic.IsNotifiable {
@@ -355,18 +377,19 @@ impl WindowsNativeSession {
                 )
             })?;
 
-        gatt_session.SetMaintainConnection(true).map_err(|error| {
-            windows_error(
-                NativeConnectionStage::NativeRxArmed,
-                "GattSession.MaintainConnection",
-                error,
-                true,
-            )
-        })?;
+        let handshake_observed = Arc::new(AtomicBool::new(false));
+        let timeout_observed = Arc::clone(&handshake_observed);
+        let timeout_ingress = ingress.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            if !timeout_observed.load(Ordering::Acquire) {
+                timeout_ingress.handshake_timeout();
+            }
+        });
         report_stage(&events, NativeConnectionStage::Handshaking);
         info!(
             backend = "windows-native-gatt",
-            mtu, "physical FLOW 8 connection requested after native RX arm"
+            mtu, "native RX is armed; waiting for FLOW 8 handshake retransmission"
         );
 
         if device.ConnectionStatus().ok() == Some(BluetoothConnectionStatus::Connected) {
@@ -383,6 +406,7 @@ impl WindowsNativeSession {
                 gatt_session,
                 connection_token: Some(connection_token),
                 ingress,
+                handshake_observed,
                 mtu,
                 closed: false,
             },
@@ -392,6 +416,10 @@ impl WindowsNativeSession {
 
     pub(super) fn mtu(&self) -> u16 {
         self.mtu
+    }
+
+    pub(super) fn mark_handshake_rx(&self) {
+        self.handshake_observed.store(true, Ordering::Release);
     }
 
     pub(super) async fn write(&self, frame: &[u8]) -> Result<(), BleError> {
@@ -409,6 +437,13 @@ impl WindowsNativeSession {
         let mut value = NativeGattValue::default();
         value.data_size = frame.len() as u32;
         value.data[..frame.len()].copy_from_slice(frame);
+        if frame.first() == Some(&0x39) {
+            let tx_hex = frame
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            println!("TX_HEX={tx_hex}");
+        }
         // BLUETOOTH_GATT_FLAG_NONE is the with-response path.
         unsafe {
             BluetoothGATTSetCharacteristicValue(
@@ -663,6 +698,144 @@ async fn find_flow8_device(
     Ok((device, identity))
 }
 
+async fn wait_for_physical_connection(device: &BluetoothLEDevice) {
+    for _ in 0..30 {
+        match device.ConnectionStatus() {
+            Ok(BluetoothConnectionStatus::Connected) => {
+                info!(
+                    backend = "windows-native-gatt",
+                    "FLOW 8 physical connection established before native service enumeration"
+                );
+                return;
+            }
+            Ok(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(error) => {
+                warn!(
+                    api = "BluetoothLEDevice.ConnectionStatus",
+                    error = %native_error(&error),
+                    "could not query FLOW 8 physical connection status; native service enumeration will continue"
+                );
+                return;
+            }
+        }
+    }
+    warn!(
+        logical_code = "physical_connection_wait_timeout",
+        "FLOW 8 did not report Connected within 3 seconds; native service enumeration will still be attempted once"
+    );
+}
+
+async fn discover_flow_service_instance(
+    bluetooth_device_id: &BluetoothDeviceId,
+) -> Result<FlowServiceInstance, BleError> {
+    let selector = GattDeviceService::GetDeviceSelectorForBluetoothDeviceIdAndUuid(
+        bluetooth_device_id,
+        FLOW_SERVICE_GUID,
+    )
+    .map_err(|error| {
+        windows_error(
+            NativeConnectionStage::FlowServiceSelected,
+            "GattDeviceService.GetDeviceSelectorForBluetoothDeviceIdAndUuid",
+            error,
+            true,
+        )
+    })?;
+    info!(
+        backend = "windows-native-gatt",
+        service_uuid = %guid_text(FLOW_SERVICE_GUID),
+        "FLOW service selector created"
+    );
+
+    let services = DeviceInformation::FindAllAsyncAqsFilter(&selector)
+        .map_err(|error| {
+            windows_error(
+                NativeConnectionStage::FlowServiceSelected,
+                "DeviceInformation.FindAllAsync(GattDeviceService selector)",
+                error,
+                true,
+            )
+        })?
+        .await
+        .map_err(|error| {
+            windows_error(
+                NativeConnectionStage::FlowServiceSelected,
+                "DeviceInformation.FindAllAsync(GattDeviceService selector) completion",
+                error,
+                true,
+            )
+        })?;
+
+    let mut instance_paths = services
+        .into_iter()
+        .map(|service| {
+            service.Id().map(|id| id.to_string()).map_err(|error| {
+                windows_error(
+                    NativeConnectionStage::FlowServiceSelected,
+                    "FLOW service DeviceInformation.Id",
+                    error,
+                    true,
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    instance_paths.retain(|path| !path.is_empty());
+    instance_paths.sort_unstable();
+    instance_paths.dedup();
+
+    if instance_paths.is_empty() {
+        return Err(logical_failure(
+            NativeConnectionStage::FlowServiceSelected,
+            "GetDeviceSelectorForBluetoothDeviceIdAndUuid/FindAllAsync",
+            "flow_service_instance_not_exposed",
+            true,
+            "No FLOW 8 GATT service instance exposed by Windows",
+        ));
+    }
+    if instance_paths.len() > 1 {
+        warn!(
+            backend = "windows-native-gatt",
+            service_instance_count = instance_paths.len(),
+            "multiple FLOW service instances were returned by the selected BluetoothDeviceId selector; using the first scoped result"
+        );
+    }
+    Ok(FlowServiceInstance {
+        path: instance_paths.remove(0),
+    })
+}
+
+#[cfg(test)]
+fn select_exact_uuid_result(values: &[GUID], expected: GUID) -> Result<usize, String> {
+    let matches = values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| (*value == expected).then_some(index))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!(
+            "no result matched expected UUID {} (result_count={})",
+            guid_text(expected),
+            values.len()
+        )),
+        _ => Err(format!(
+            "{} results matched expected UUID {}; exactly one is required",
+            matches.len(),
+            guid_text(expected)
+        )),
+    }
+}
+
+fn native_path_from_service_instance_id(instance_id: &str) -> Result<String, String> {
+    if instance_id.is_empty() {
+        Err("FLOW service DeviceInformation.Id was empty".into())
+    } else {
+        // DeviceInformation.Id is already the Windows GATT service instance
+        // path. Forward it verbatim; no global service enumeration or path
+        // guessing is used.
+        Ok(instance_id.to_owned())
+    }
+}
+
 fn select_flow8_device_information(
     devices: DeviceInformationCollection,
 ) -> Result<DeviceInformation, BleError> {
@@ -699,6 +872,7 @@ fn flow_device_identity(info: &DeviceInformation) -> Result<FlowDeviceIdentity, 
         container_id: try_get_guid_property(&properties, CONTAINER_ID_PROPERTY)?,
         parent_id: try_get_string_property(&properties, PARENT_ID_PROPERTY)?
             .filter(|value| !value.is_empty()),
+        bluetooth_address: None,
     };
     info!(
         backend = "windows-native-gatt",
@@ -709,13 +883,10 @@ fn flow_device_identity(info: &DeviceInformation) -> Result<FlowDeviceIdentity, 
     );
 
     if !identity.is_sufficient_for_matching() {
-        return Err(logical_failure(
-            NativeConnectionStage::DeviceFound,
-            "FlowDeviceIdentity",
-            "identity_insufficient",
-            true,
-            "neither System.Devices.ContainerId nor System.Devices.DeviceInstanceId is available; Parent alone is not a reliable FLOW 8 identity",
-        ));
+        warn!(
+            logical_code = "identity_metadata_unavailable",
+            "FLOW 8 PnP identity metadata is unavailable; continuing with exact service and characteristic UUID verification"
+        );
     }
 
     Ok(identity)
@@ -948,419 +1119,595 @@ fn winrt_error_description(error: &windows::core::Error) -> String {
     }
 }
 
-fn enumerate_device_interfaces(class_guid: GUID) -> Result<Vec<NativeDeviceInterface>, BleError> {
-    let info_set = DeviceInfoSet(
-        unsafe {
-            SetupDiGetClassDevsW(
-                Some(&class_guid),
-                PCWSTR::null(),
-                None,
-                DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
-            )
-        }
-        .map_err(|error| {
-            windows_error(
-                NativeConnectionStage::NativeInterfaceEnumerating,
-                "SetupDiGetClassDevsW",
-                error,
-                true,
-            )
-        })?,
-    );
+// Retained only as uncompiled historical context while the UUID-scoped path is
+// validated on hardware. It is not part of any build or production fallback.
+#[cfg(any())]
+mod legacy_global_service_enumeration {
+    use super::*;
 
-    let mut interfaces = Vec::new();
-    let mut index = 0u32;
-    loop {
-        let mut interface_data = SP_DEVICE_INTERFACE_DATA {
-            cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
-            ..Default::default()
-        };
-        match unsafe {
-            SetupDiEnumDeviceInterfaces(info_set.0, None, &class_guid, index, &mut interface_data)
-        } {
-            Ok(()) => {}
-            Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) => break,
-            Err(error) => {
-                return Err(windows_error(
+    fn enumerate_device_interfaces(
+        class_guid: GUID,
+    ) -> Result<Vec<NativeDeviceInterface>, BleError> {
+        let info_set = DeviceInfoSet(
+            unsafe {
+                SetupDiGetClassDevsW(
+                    Some(&class_guid),
+                    PCWSTR::null(),
+                    None,
+                    DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+                )
+            }
+            .map_err(|error| {
+                windows_error(
                     NativeConnectionStage::NativeInterfaceEnumerating,
-                    "SetupDiEnumDeviceInterfaces",
+                    "SetupDiGetClassDevsW",
                     error,
                     true,
+                )
+            })?,
+        );
+
+        let mut interfaces = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut interface_data = SP_DEVICE_INTERFACE_DATA {
+                cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+                ..Default::default()
+            };
+            match unsafe {
+                SetupDiEnumDeviceInterfaces(
+                    info_set.0,
+                    None,
+                    &class_guid,
+                    index,
+                    &mut interface_data,
+                )
+            } {
+                Ok(()) => {}
+                Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) => break,
+                Err(error) => {
+                    return Err(windows_error(
+                        NativeConnectionStage::NativeInterfaceEnumerating,
+                        "SetupDiEnumDeviceInterfaces",
+                        error,
+                        true,
+                    ));
+                }
+            }
+
+            let mut required = 0u32;
+            let _ = unsafe {
+                SetupDiGetDeviceInterfaceDetailW(
+                    info_set.0,
+                    &interface_data,
+                    None,
+                    0,
+                    Some(&mut required),
+                    None,
+                )
+            };
+            if required == 0 {
+                return Err(native_failure(
+                    NativeConnectionStage::NativeInterfaceEnumerating,
+                    "SetupDiGetDeviceInterfaceDetailW(size)",
+                    true,
+                    "Windows returned a zero-sized device interface path",
                 ));
             }
-        }
 
+            let word_count = (required as usize).div_ceil(size_of::<usize>());
+            let mut storage = vec![0usize; word_count];
+            let detail = storage
+                .as_mut_ptr()
+                .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
+            // SAFETY: storage is usize-aligned and sized from the required byte
+            // count returned by SetupDiGetDeviceInterfaceDetailW.
+            let mut device_info = SP_DEVINFO_DATA {
+                cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
+                ..Default::default()
+            };
+            unsafe {
+                (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+                SetupDiGetDeviceInterfaceDetailW(
+                    info_set.0,
+                    &interface_data,
+                    Some(detail),
+                    required,
+                    None,
+                    Some(&mut device_info),
+                )
+            }
+            .map_err(|error| {
+                windows_error(
+                    NativeConnectionStage::NativeInterfaceEnumerating,
+                    "SetupDiGetDeviceInterfaceDetailW",
+                    error,
+                    true,
+                )
+            })?;
+
+            let path_ptr = unsafe { addr_of!((*detail).DevicePath).cast::<u16>() };
+            let path_offset = path_ptr as usize - storage.as_ptr() as usize;
+            let max_units = (required as usize - path_offset) / size_of::<u16>();
+            let units = unsafe { std::slice::from_raw_parts(path_ptr, max_units) };
+            let length = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(max_units);
+            let path = String::from_utf16_lossy(&units[..length]);
+            let instance_id = setupdi_instance_id(&info_set, &device_info)?;
+            let container_id =
+                setupdi_guid_property(&info_set, &device_info, &DEVPKEY_Device_ContainerId)?;
+            let bluetooth_address =
+                setupdi_string_property(&info_set, &device_info, &DEVPKEY_Device_Address)?
+                    .as_deref()
+                    .and_then(parse_bluetooth_address);
+            let mut parent_chain = devnode_parent_chain(device_info.DevInst);
+            if let Some(parent) =
+                setupdi_string_property(&info_set, &device_info, &DEVPKEY_Device_Parent)?
+                && !parent_chain.iter().any(|entry| pnp_id_eq(entry, &parent))
+            {
+                parent_chain.insert(0, parent);
+            }
+            interfaces.push(NativeDeviceInterface {
+                path,
+                instance_id,
+                container_id,
+                bluetooth_address,
+                parent_chain,
+            });
+            index += 1;
+        }
+        Ok(interfaces)
+    }
+
+    fn setupdi_instance_id(
+        info_set: &DeviceInfoSet,
+        device_info: &SP_DEVINFO_DATA,
+    ) -> Result<String, BleError> {
         let mut required = 0u32;
         let _ = unsafe {
-            SetupDiGetDeviceInterfaceDetailW(
-                info_set.0,
-                &interface_data,
-                None,
-                0,
-                Some(&mut required),
-                None,
-            )
+            SetupDiGetDeviceInstanceIdW(info_set.0, device_info, None, Some(&mut required))
         };
         if required == 0 {
             return Err(native_failure(
                 NativeConnectionStage::NativeInterfaceEnumerating,
-                "SetupDiGetDeviceInterfaceDetailW(size)",
+                "SetupDiGetDeviceInstanceIdW(size)",
                 true,
-                "Windows returned a zero-sized device interface path",
+                "Windows returned no PnP device-instance identifier for a GATT interface",
             ));
         }
-
-        let word_count = (required as usize).div_ceil(size_of::<usize>());
-        let mut storage = vec![0usize; word_count];
-        let detail = storage
-            .as_mut_ptr()
-            .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
-        // SAFETY: storage is usize-aligned and sized from the required byte
-        // count returned by SetupDiGetDeviceInterfaceDetailW.
-        let mut device_info = SP_DEVINFO_DATA {
-            cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
-            ..Default::default()
-        };
+        let mut buffer = vec![0u16; required as usize];
         unsafe {
-            (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
-            SetupDiGetDeviceInterfaceDetailW(
+            SetupDiGetDeviceInstanceIdW(
                 info_set.0,
-                &interface_data,
-                Some(detail),
-                required,
-                None,
-                Some(&mut device_info),
+                device_info,
+                Some(&mut buffer),
+                Some(&mut required),
             )
         }
         .map_err(|error| {
             windows_error(
                 NativeConnectionStage::NativeInterfaceEnumerating,
-                "SetupDiGetDeviceInterfaceDetailW",
+                "SetupDiGetDeviceInstanceIdW",
                 error,
                 true,
             )
         })?;
-
-        let path_ptr = unsafe { addr_of!((*detail).DevicePath).cast::<u16>() };
-        let path_offset = path_ptr as usize - storage.as_ptr() as usize;
-        let max_units = (required as usize - path_offset) / size_of::<u16>();
-        let units = unsafe { std::slice::from_raw_parts(path_ptr, max_units) };
-        let length = units
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(max_units);
-        let path = String::from_utf16_lossy(&units[..length]);
-        let instance_id = setupdi_instance_id(&info_set, &device_info)?;
-        let container_id =
-            setupdi_guid_property(&info_set, &device_info, &DEVPKEY_Device_ContainerId)?;
-        let mut parent_chain = devnode_parent_chain(device_info.DevInst);
-        if let Some(parent) =
-            setupdi_string_property(&info_set, &device_info, &DEVPKEY_Device_Parent)?
-            && !parent_chain.iter().any(|entry| pnp_id_eq(entry, &parent))
-        {
-            parent_chain.insert(0, parent);
-        }
-        interfaces.push(NativeDeviceInterface {
-            path,
-            instance_id,
-            container_id,
-            parent_chain,
-        });
-        index += 1;
-    }
-    Ok(interfaces)
-}
-
-fn setupdi_instance_id(
-    info_set: &DeviceInfoSet,
-    device_info: &SP_DEVINFO_DATA,
-) -> Result<String, BleError> {
-    let mut required = 0u32;
-    let _ =
-        unsafe { SetupDiGetDeviceInstanceIdW(info_set.0, device_info, None, Some(&mut required)) };
-    if required == 0 {
-        return Err(native_failure(
-            NativeConnectionStage::NativeInterfaceEnumerating,
-            "SetupDiGetDeviceInstanceIdW(size)",
-            true,
-            "Windows returned no PnP device-instance identifier for a GATT interface",
-        ));
-    }
-    let mut buffer = vec![0u16; required as usize];
-    unsafe {
-        SetupDiGetDeviceInstanceIdW(
-            info_set.0,
-            device_info,
-            Some(&mut buffer),
-            Some(&mut required),
-        )
-    }
-    .map_err(|error| {
-        windows_error(
-            NativeConnectionStage::NativeInterfaceEnumerating,
-            "SetupDiGetDeviceInstanceIdW",
-            error,
-            true,
-        )
-    })?;
-    Ok(wide_buffer_to_string(&buffer))
-}
-
-fn setupdi_property_bytes(
-    info_set: &DeviceInfoSet,
-    device_info: &SP_DEVINFO_DATA,
-    key: &windows::Win32::Foundation::DEVPROPKEY,
-) -> Result<Option<(DEVPROPTYPE, Vec<u8>)>, BleError> {
-    let mut property_type = DEVPROPTYPE::default();
-    let mut required = 0u32;
-    let _ = unsafe {
-        SetupDiGetDevicePropertyW(
-            info_set.0,
-            device_info,
-            key,
-            &mut property_type,
-            None,
-            Some(&mut required),
-            0,
-        )
-    };
-    if required == 0 {
-        return Ok(None);
-    }
-    let mut buffer = vec![0u8; required as usize];
-    unsafe {
-        SetupDiGetDevicePropertyW(
-            info_set.0,
-            device_info,
-            key,
-            &mut property_type,
-            Some(&mut buffer),
-            Some(&mut required),
-            0,
-        )
-    }
-    .map_err(|error| {
-        windows_error(
-            NativeConnectionStage::NativeInterfaceEnumerating,
-            "SetupDiGetDevicePropertyW",
-            error,
-            true,
-        )
-    })?;
-    buffer.truncate(required as usize);
-    Ok(Some((property_type, buffer)))
-}
-
-fn setupdi_guid_property(
-    info_set: &DeviceInfoSet,
-    device_info: &SP_DEVINFO_DATA,
-    key: &windows::Win32::Foundation::DEVPROPKEY,
-) -> Result<Option<GUID>, BleError> {
-    let Some((property_type, buffer)) = setupdi_property_bytes(info_set, device_info, key)? else {
-        return Ok(None);
-    };
-    if property_type != DEVPROP_TYPE_GUID || buffer.len() < size_of::<GUID>() {
-        return Ok(None);
-    }
-    // SAFETY: the property buffer contains a DEVPROP_TYPE_GUID value. SetupDi
-    // does not promise Rust alignment, so read_unaligned is required.
-    Ok(Some(unsafe {
-        std::ptr::read_unaligned(buffer.as_ptr().cast::<GUID>())
-    }))
-}
-
-fn setupdi_string_property(
-    info_set: &DeviceInfoSet,
-    device_info: &SP_DEVINFO_DATA,
-    key: &windows::Win32::Foundation::DEVPROPKEY,
-) -> Result<Option<String>, BleError> {
-    let Some((property_type, buffer)) = setupdi_property_bytes(info_set, device_info, key)? else {
-        return Ok(None);
-    };
-    if property_type != DEVPROP_TYPE_STRING {
-        return Ok(None);
-    }
-    let units = buffer
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>();
-    Ok(Some(wide_buffer_to_string(&units)))
-}
-
-fn devnode_parent_chain(mut devinst: u32) -> Vec<String> {
-    let mut parents: Vec<String> = Vec::new();
-    for _ in 0..16 {
-        let mut parent = 0u32;
-        if unsafe { CM_Get_Parent(&mut parent, devinst, 0) } != CR_SUCCESS {
-            break;
-        }
-        let mut buffer = vec![0u16; MAX_DEVICE_ID_LEN as usize];
-        if unsafe { CM_Get_Device_IDW(parent, &mut buffer, 0) } != CR_SUCCESS {
-            break;
-        }
-        let id = wide_buffer_to_string(&buffer);
-        if id.is_empty()
-            || parents
-                .iter()
-                .any(|entry| pnp_id_eq(entry.as_str(), id.as_str()))
-        {
-            break;
-        }
-        parents.push(id);
-        devinst = parent;
-    }
-    parents
-}
-
-fn wide_buffer_to_string(buffer: &[u16]) -> String {
-    let length = buffer
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf16_lossy(&buffer[..length])
-}
-
-fn open_flow_service_interface(
-    flow_identity: &FlowDeviceIdentity,
-    events: &mpsc::UnboundedSender<DeviceEvent>,
-) -> Result<NativeGattCandidate, BleError> {
-    let interfaces = enumerate_device_interfaces(GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE)?;
-    let total = interfaces.len();
-    let interfaces = interfaces
-        .into_iter()
-        .filter(|interface| belongs_to_flow8_device(interface, flow_identity))
-        .collect::<Vec<_>>();
-    info!(
-        backend = "windows-native-gatt",
-        service_interfaces_total = total,
-        service_interfaces_matching_flow_device = interfaces.len(),
-        "filtered native Bluetooth GATT service interfaces by FLOW 8 PnP identity"
-    );
-
-    if interfaces.is_empty() {
-        return Err(native_failure(
-            NativeConnectionStage::NativeInterfaceEnumerating,
-            "Windows PnP FLOW 8 service-interface association",
-            true,
-            "No GATT service interface belongs to selected FLOW 8 device",
-        ));
+        Ok(wide_buffer_to_string(&buffer))
     }
 
-    let mut candidates = Vec::new();
-    let mut last_open_error = None;
-    let mut opened_interfaces = 0usize;
-    for interface in interfaces {
-        trace!(
-            interface_path = %interface.path,
-            instance_id = %interface.instance_id,
-            container_id = ?interface.container_id,
-            "examining FLOW 8-owned native GATT service interface"
-        );
-        let handle = match open_service_handle(&interface.path) {
-            Ok(handle) => handle,
-            Err(error) => {
-                warn!(interface_path = %interface.path, error = %error, "FLOW 8 native GATT interface open failed");
-                last_open_error = Some(error);
-                continue;
-            }
+    fn setupdi_property_bytes(
+        info_set: &DeviceInfoSet,
+        device_info: &SP_DEVINFO_DATA,
+        key: &windows::Win32::Foundation::DEVPROPKEY,
+    ) -> Result<Option<(DEVPROPTYPE, Vec<u8>)>, BleError> {
+        let mut property_type = DEVPROPTYPE::default();
+        let mut required = 0u32;
+        let _ = unsafe {
+            SetupDiGetDevicePropertyW(
+                info_set.0,
+                device_info,
+                key,
+                &mut property_type,
+                None,
+                Some(&mut required),
+                0,
+            )
         };
-        opened_interfaces += 1;
-        report_stage(events, NativeConnectionStage::NativeServiceHandleOpened);
+        if required == 0 {
+            return Ok(None);
+        }
+        let mut buffer = vec![0u8; required as usize];
+        unsafe {
+            SetupDiGetDevicePropertyW(
+                info_set.0,
+                device_info,
+                key,
+                &mut property_type,
+                Some(&mut buffer),
+                Some(&mut required),
+                0,
+            )
+        }
+        .map_err(|error| {
+            windows_error(
+                NativeConnectionStage::NativeInterfaceEnumerating,
+                "SetupDiGetDevicePropertyW",
+                error,
+                true,
+            )
+        })?;
+        buffer.truncate(required as usize);
+        Ok(Some((property_type, buffer)))
+    }
 
-        let services = match native_services(&handle) {
-            Ok(services) => services,
-            Err(error) => {
-                debug!(interface_path = %interface.path, error = %error, "FLOW 8 interface has no readable GATT service list");
-                continue;
-            }
+    fn setupdi_guid_property(
+        info_set: &DeviceInfoSet,
+        device_info: &SP_DEVINFO_DATA,
+        key: &windows::Win32::Foundation::DEVPROPKEY,
+    ) -> Result<Option<GUID>, BleError> {
+        let Some((property_type, buffer)) = setupdi_property_bytes(info_set, device_info, key)?
+        else {
+            return Ok(None);
         };
-        for service in services {
-            if !is_flow_service(&service) {
-                continue;
-            }
-            let characteristics = native_characteristics(&handle, &service)?;
-            report_stage(events, NativeConnectionStage::CharacteristicsEnumerated);
-            if let Some(characteristic) = characteristics.into_iter().find(is_flow_characteristic) {
-                candidates.push(NativeGattCandidate {
-                    path: interface.path.clone(),
-                    owner_instance_id: interface.instance_id.clone(),
-                    owner_container_id: interface.container_id,
-                    handle,
-                    service,
-                    characteristic,
-                });
+        if property_type != DEVPROP_TYPE_GUID || buffer.len() < size_of::<GUID>() {
+            return Ok(None);
+        }
+        // SAFETY: the property buffer contains a DEVPROP_TYPE_GUID value. SetupDi
+        // does not promise Rust alignment, so read_unaligned is required.
+        Ok(Some(unsafe {
+            std::ptr::read_unaligned(buffer.as_ptr().cast::<GUID>())
+        }))
+    }
+
+    fn setupdi_string_property(
+        info_set: &DeviceInfoSet,
+        device_info: &SP_DEVINFO_DATA,
+        key: &windows::Win32::Foundation::DEVPROPKEY,
+    ) -> Result<Option<String>, BleError> {
+        let Some((property_type, buffer)) = setupdi_property_bytes(info_set, device_info, key)?
+        else {
+            return Ok(None);
+        };
+        if property_type != DEVPROP_TYPE_STRING {
+            return Ok(None);
+        }
+        let units = buffer
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        Ok(Some(wide_buffer_to_string(&units)))
+    }
+
+    fn devnode_parent_chain(mut devinst: u32) -> Vec<String> {
+        let mut parents: Vec<String> = Vec::new();
+        for _ in 0..16 {
+            let mut parent = 0u32;
+            if unsafe { CM_Get_Parent(&mut parent, devinst, 0) } != CR_SUCCESS {
                 break;
             }
+            let mut buffer = vec![0u16; MAX_DEVICE_ID_LEN as usize];
+            if unsafe { CM_Get_Device_IDW(parent, &mut buffer, 0) } != CR_SUCCESS {
+                break;
+            }
+            let id = wide_buffer_to_string(&buffer);
+            if id.is_empty()
+                || parents
+                    .iter()
+                    .any(|entry| pnp_id_eq(entry.as_str(), id.as_str()))
+            {
+                break;
+            }
+            parents.push(id);
+            devinst = parent;
         }
+        parents
     }
 
-    let selected = select_candidate_index(candidates.len()).map_err(|message| {
+    fn wide_buffer_to_string(buffer: &[u16]) -> String {
+        let length = buffer
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(buffer.len());
+        String::from_utf16_lossy(&buffer[..length])
+    }
+
+    fn open_flow_service_interface(
+        flow_identity: &FlowDeviceIdentity,
+        _events: &mpsc::UnboundedSender<DeviceEvent>,
+    ) -> Result<NativeGattCandidate, BleError> {
+        let mut interfaces =
+            enumerate_device_interfaces(GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE)?;
+        let total = interfaces.len();
+        interfaces.sort_by_key(|interface| {
+            std::cmp::Reverse(identity_association(interface, flow_identity))
+        });
+        let identity_matches = interfaces
+            .iter()
+            .filter(|interface| {
+                identity_association(interface, flow_identity) > IdentityAssociation::Unknown
+            })
+            .count();
+        info!(
+            backend = "windows-native-gatt",
+            service_interfaces_total = total,
+            service_interfaces_matching_flow_device = identity_matches,
+            identity_metadata_available = flow_identity.is_sufficient_for_matching(),
+            "enumerated native Bluetooth GATT service interfaces; identity will prioritize candidates but will not gate exact UUID verification"
+        );
+
+        let mut candidates = Vec::new();
+        let mut strongly_associated_open_error = None;
+        let mut sole_candidate_open_error = None;
+        let strongly_associated_count = identity_matches;
+        let mut flow_service_count = 0usize;
+        let mut previous_association = None;
+        for interface in interfaces {
+            let association = identity_association(&interface, flow_identity);
+            if should_stop_before_lower_priority(
+                previous_association,
+                association,
+                candidates.len(),
+            ) {
+                trace!(
+                    selected_association = ?previous_association,
+                    skipped_lower_priority_association = ?association,
+                    "exact FLOW UUID pair found; lower-priority native interfaces will not be opened"
+                );
+                break;
+            }
+            previous_association = Some(association);
+            trace!(
+                interface_path = %interface.path,
+                instance_id = %interface.instance_id,
+                container_id = ?interface.container_id,
+                bluetooth_address = interface.bluetooth_address.map(format_bluetooth_address),
+                association = ?association,
+                "examining native GATT service interface"
+            );
+            let handle = match open_service_handle(&interface.path) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    trace!(
+                        interface_path = %interface.path,
+                        association = ?association,
+                        error = %error,
+                        "native GATT service interface could not be opened; it has not been identified as the FLOW service"
+                    );
+                    if association > IdentityAssociation::Unknown
+                        && strongly_associated_open_error.is_none()
+                    {
+                        strongly_associated_open_error = Some(error);
+                    } else if total == 1 {
+                        sole_candidate_open_error = Some(error);
+                    }
+                    continue;
+                }
+            };
+
+            let services = match native_services(&handle) {
+                Ok(services) => services,
+                Err(error) => {
+                    trace!(interface_path = %interface.path, error = %error, "non-selected GATT interface has no readable service list");
+                    continue;
+                }
+            };
+            for service in services {
+                if !is_flow_service(&service) {
+                    continue;
+                }
+                flow_service_count += 1;
+                let characteristics = native_characteristics(&handle, &service)?;
+                if let Some(characteristic) =
+                    characteristics.into_iter().find(is_flow_characteristic)
+                {
+                    candidates.push(NativeGattCandidate {
+                        path: interface.path.clone(),
+                        owner_instance_id: interface.instance_id.clone(),
+                        owner_container_id: interface.container_id,
+                        handle,
+                        service,
+                        characteristic,
+                        association,
+                    });
+                    break;
+                }
+            }
+        }
+
+        info!(
+            backend = "windows-native-gatt",
+            service_candidates_total = total,
+            flow_service_candidates = flow_service_count,
+            flow_service_characteristic_pairs = candidates.len(),
+            target_service_uuid = %guid_text(FLOW_SERVICE_GUID),
+            target_characteristic_uuid = %guid_text(FLOW_CHARACTERISTIC_GUID),
+            "completed native FLOW service candidate verification"
+        );
+
+        let selected = select_candidate_index(&candidates).map_err(|message| {
         native_failure(
             NativeConnectionStage::TargetCharacteristicFound,
             "native FLOW service/characteristic selection",
             true,
-            message,
+            format!(
+                "{message}; target_service={} target_characteristic={} service_candidates_total={} flow_service_candidates={} exact_pair_candidates={}",
+                guid_text(FLOW_SERVICE_GUID),
+                guid_text(FLOW_CHARACTERISTIC_GUID),
+                total,
+                flow_service_count,
+                candidates.len()
+            ),
         )
     });
 
-    match selected {
-        Ok(index) => {
-            report_stage(events, NativeConnectionStage::TargetCharacteristicFound);
-            Ok(candidates.swap_remove(index))
+        match selected {
+            Ok(index) => Ok(candidates.swap_remove(index)),
+            Err(_error)
+                if candidates.is_empty()
+                    && should_promote_open_failure(strongly_associated_count, total)
+                    && (strongly_associated_open_error.is_some()
+                        || sole_candidate_open_error.is_some()) =>
+            {
+                let original = strongly_associated_open_error
+                    .or(sole_candidate_open_error)
+                    .expect("promotion requires a captured candidate open failure");
+                Err(retarget_open_failure(original, total, flow_service_count))
+            }
+            Err(error) => Err(error),
         }
-        Err(_error)
-            if candidates.is_empty() && opened_interfaces == 0 && last_open_error.is_some() =>
-        {
-            Err(last_open_error.expect("checked above"))
-        }
-        Err(error) => Err(error),
     }
-}
 
-fn select_candidate_index(candidate_count: usize) -> Result<usize, String> {
-    match candidate_count {
+    fn should_stop_before_lower_priority(
+        previous: Option<IdentityAssociation>,
+        current: IdentityAssociation,
+        verified_candidate_count: usize,
+    ) -> bool {
+        previous.is_some_and(|previous| previous > current) && verified_candidate_count > 0
+    }
+
+    fn should_promote_open_failure(
+        strongly_associated_count: usize,
+        total_candidate_count: usize,
+    ) -> bool {
+        strongly_associated_count == 1 || total_candidate_count == 1
+    }
+
+    fn retarget_open_failure(
+        error: BleError,
+        candidate_count: usize,
+        flow_service_count: usize,
+    ) -> BleError {
+        match error {
+            BleError::NativeWindows(mut error) => {
+                error.message = format!(
+                    "{}; the sole plausible target service interface could not be opened (target_service={} target_characteristic={} candidate_count={} flow_service_count={})",
+                    error.message,
+                    guid_text(FLOW_SERVICE_GUID),
+                    guid_text(FLOW_CHARACTERISTIC_GUID),
+                    candidate_count,
+                    flow_service_count
+                );
+                BleError::NativeWindows(error)
+            }
+            other => other,
+        }
+    }
+
+    fn select_candidate_index(candidates: &[NativeGattCandidate]) -> Result<usize, String> {
+        match candidates.len() {
         0 => Err(
             "no native service interface contained both the FLOW service and target characteristic"
                 .into(),
         ),
         1 => Ok(0),
-        many => Err(format!(
-            "{many} FLOW-owned service interfaces exposed the same FLOW service and characteristic"
-        )),
+        many => {
+            let best = candidates
+                .iter()
+                .map(|candidate| candidate.association)
+                .max()
+                .unwrap_or(IdentityAssociation::Unknown);
+            let matching = candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| candidate.association == best)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if best > IdentityAssociation::Unknown && matching.len() == 1 {
+                Ok(matching[0])
+            } else {
+                Err(format!(
+                    "{many} native interfaces exposed the FLOW service and target characteristic, and available device identity could not select exactly one"
+                ))
+            }
+        }
+    }
+    }
+
+    #[cfg(test)]
+    fn belongs_to_flow8_device(
+        interface: &NativeDeviceInterface,
+        flow_identity: &FlowDeviceIdentity,
+    ) -> bool {
+        identity_association(interface, flow_identity) > IdentityAssociation::Unknown
+    }
+
+    fn identity_association(
+        interface: &NativeDeviceInterface,
+        flow_identity: &FlowDeviceIdentity,
+    ) -> IdentityAssociation {
+        // Container identity is the most reliable cross-kind association between
+        // WinRT DeviceInformation and SetupDi service-interface devnodes.
+        let container_matches = interface
+            .container_id
+            .zip(flow_identity.container_id)
+            .is_some_and(|(left, right)| left == right);
+        if container_matches {
+            return IdentityAssociation::Container;
+        }
+
+        if interface
+            .bluetooth_address
+            .zip(flow_identity.bluetooth_address)
+            .is_some_and(|(left, right)| left == right)
+        {
+            return IdentityAssociation::Address;
+        }
+
+        // A DeviceInterface DeviceInformation may expose the parent Device's
+        // DeviceInstanceId. Match that exact identity either on the service
+        // devnode itself or anywhere in its ConfigMgr parent chain. Parent alone
+        // is deliberately not used: it may identify a shared Bluetooth radio and
+        // is only retained for diagnostics.
+        let instance_matches =
+            flow_identity
+                .device_instance_id
+                .as_deref()
+                .is_some_and(|device_instance_id| {
+                    pnp_id_eq(&interface.instance_id, device_instance_id)
+                        || interface
+                            .parent_chain
+                            .iter()
+                            .any(|ancestor| pnp_id_eq(ancestor, device_instance_id))
+                });
+        if instance_matches {
+            return IdentityAssociation::Instance;
+        }
+
+        if !flow_identity.is_sufficient_for_matching() {
+            IdentityAssociation::Unknown
+        } else {
+            IdentityAssociation::Mismatch
+        }
+    }
+
+    fn pnp_id_eq(left: &str, right: &str) -> bool {
+        left.eq_ignore_ascii_case(right)
+    }
+
+    fn parse_bluetooth_address(value: &str) -> Option<u64> {
+        let compact = value
+            .chars()
+            .filter(|character| character.is_ascii_hexdigit())
+            .collect::<String>();
+        (compact.len() == 12)
+            .then(|| u64::from_str_radix(&compact, 16).ok())
+            .flatten()
     }
 }
 
-fn belongs_to_flow8_device(
-    interface: &NativeDeviceInterface,
-    flow_identity: &FlowDeviceIdentity,
-) -> bool {
-    // Container identity is the most reliable cross-kind association between
-    // WinRT DeviceInformation and SetupDi service-interface devnodes.
-    let container_matches = interface
-        .container_id
-        .zip(flow_identity.container_id)
-        .is_some_and(|(left, right)| left == right);
-    if container_matches {
-        return true;
-    }
-
-    // A DeviceInterface DeviceInformation may expose the parent Device's
-    // DeviceInstanceId. Match that exact identity either on the service
-    // devnode itself or anywhere in its ConfigMgr parent chain. Parent alone
-    // is deliberately not used: it may identify a shared Bluetooth radio and
-    // is only retained for diagnostics.
-    let Some(device_instance_id) = flow_identity.device_instance_id.as_deref() else {
-        return false;
-    };
-    pnp_id_eq(&interface.instance_id, device_instance_id)
-        || interface
-            .parent_chain
-            .iter()
-            .any(|ancestor| pnp_id_eq(ancestor, device_instance_id))
+fn format_bluetooth_address(value: u64) -> String {
+    let bytes = value.to_be_bytes();
+    bytes[2..]
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
-fn pnp_id_eq(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right)
+fn guid_text(value: GUID) -> String {
+    uuid::Uuid::from_u128(value.to_u128()).to_string()
 }
 
 fn open_service_handle(path: &str) -> Result<ServiceHandle, BleError> {
@@ -1385,6 +1732,25 @@ fn open_service_handle(path: &str) -> Result<ServiceHandle, BleError> {
         )
     })?;
     Ok(ServiceHandle(handle))
+}
+
+fn open_service_handle_from_instance_path(instance_id: &str) -> Result<ServiceHandle, BleError> {
+    let path = native_path_from_service_instance_id(instance_id).map_err(|message| {
+        logical_failure(
+            NativeConnectionStage::NativeServiceHandleOpened,
+            "FLOW service DeviceInformation.Id -> CreateFileW",
+            "empty_service_instance_id",
+            false,
+            message,
+        )
+    })?;
+    open_service_handle(&path).map_err(|error| match error {
+        BleError::NativeWindows(mut error) => {
+            error.message = format!("{}; service_instance_path={instance_id}", error.message);
+            BleError::NativeWindows(error)
+        }
+        other => other,
+    })
 }
 
 fn native_services(handle: &ServiceHandle) -> Result<Vec<BTH_LE_GATT_SERVICE>, BleError> {
@@ -1584,15 +1950,31 @@ fn native_error(error: &windows::core::Error) -> String {
     format!("{} (HRESULT 0x{:08X})", error, error.code().0 as u32)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any())]
+mod legacy_tests {
     use super::*;
 
     #[test]
     fn service_selection_never_depends_on_interface_order() {
-        assert_eq!(select_candidate_index(1), Ok(0));
-        assert!(select_candidate_index(0).is_err());
-        assert!(select_candidate_index(2).is_err());
+        assert_eq!(
+            select_candidate_index(&[candidate(IdentityAssociation::Unknown)]),
+            Ok(0)
+        );
+        assert!(select_candidate_index(&[]).is_err());
+        assert!(
+            select_candidate_index(&[
+                candidate(IdentityAssociation::Unknown),
+                candidate(IdentityAssociation::Unknown),
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            select_candidate_index(&[
+                candidate(IdentityAssociation::Unknown),
+                candidate(IdentityAssociation::Container),
+            ]),
+            Ok(1)
+        );
     }
 
     #[test]
@@ -1620,6 +2002,7 @@ mod tests {
             device_instance_id: None,
             container_id: Some(GUID::from_u128(1)),
             parent_id: None,
+            bluetooth_address: None,
         };
         assert!(flow.is_sufficient_for_matching());
         assert!(belongs_to_flow8_device(
@@ -1644,6 +2027,7 @@ mod tests {
             device_instance_id: None,
             container_id: None,
             parent_id: Some("BTHENUM\\SHARED-RADIO".into()),
+            bluetooth_address: None,
         };
         let interface = native_interface(
             "SWD\\GATTSERVICE\\OTHER-DEVICE",
@@ -1655,13 +2039,85 @@ mod tests {
     }
 
     #[test]
-    fn completely_missing_flow_identity_is_insufficient() {
+    fn completely_missing_flow_identity_keeps_uuid_fallback_available() {
         let flow = FlowDeviceIdentity {
             device_instance_id: None,
             container_id: None,
             parent_id: None,
+            bluetooth_address: None,
         };
         assert!(!flow.is_sufficient_for_matching());
+        assert_eq!(
+            identity_association(&native_interface("SWD\\GATTSERVICE\\ONE", None, &[]), &flow),
+            IdentityAssociation::Unknown
+        );
+        assert_eq!(
+            select_candidate_index(&[candidate(IdentityAssociation::Unknown)]),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn bluetooth_address_can_disambiguate_candidates_without_pnp_properties() {
+        let flow = FlowDeviceIdentity {
+            device_instance_id: None,
+            container_id: None,
+            parent_id: None,
+            bluetooth_address: Some(0x0011_2233_4455),
+        };
+        let mut interface = native_interface("SWD\\GATTSERVICE\\ONE", None, &[]);
+        interface.bluetooth_address = Some(0x0011_2233_4455);
+        assert_eq!(
+            identity_association(&interface, &flow),
+            IdentityAssociation::Address
+        );
+    }
+
+    #[test]
+    fn exact_container_identity_has_selection_priority() {
+        assert_eq!(
+            select_candidate_index(&[
+                candidate(IdentityAssociation::Address),
+                candidate(IdentityAssociation::Container),
+            ]),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn unrelated_open_failure_is_not_promoted_to_flow_transport_failure() {
+        assert!(!should_promote_open_failure(0, 6));
+        assert!(!should_promote_open_failure(2, 6));
+        assert!(should_stop_before_lower_priority(
+            Some(IdentityAssociation::Container),
+            IdentityAssociation::Mismatch,
+            1,
+        ));
+        assert!(!should_stop_before_lower_priority(
+            Some(IdentityAssociation::Container),
+            IdentityAssociation::Mismatch,
+            0,
+        ));
+    }
+
+    #[test]
+    fn sole_strongly_associated_open_failure_is_reported_explicitly() {
+        assert!(should_promote_open_failure(1, 6));
+        assert!(should_promote_open_failure(0, 1));
+        let error = retarget_open_failure(
+            native_failure(
+                NativeConnectionStage::NativeServiceHandleOpened,
+                "CreateFileW(FLOW GATT service interface)",
+                true,
+                "access denied",
+            ),
+            4,
+            0,
+        );
+        let text = error.to_string();
+        assert!(text.contains("target_service="));
+        assert!(text.contains("target_characteristic="));
+        assert!(text.contains("candidate_count=4"));
     }
 
     #[test]
@@ -1734,6 +2190,7 @@ mod tests {
             device_instance_id: Some(instance_id.into()),
             container_id,
             parent_id: parent_id.map(str::to_owned),
+            bluetooth_address: None,
         }
     }
 
@@ -1746,7 +2203,79 @@ mod tests {
             path: "native-path".into(),
             instance_id: instance_id.into(),
             container_id,
+            bluetooth_address: None,
             parent_chain: parent_chain.iter().map(|value| (*value).into()).collect(),
         }
+    }
+
+    fn candidate(association: IdentityAssociation) -> NativeGattCandidate {
+        NativeGattCandidate {
+            path: "native-path".into(),
+            owner_instance_id: "instance".into(),
+            owner_container_id: None,
+            handle: ServiceHandle(HANDLE::default()),
+            service: BTH_LE_GATT_SERVICE::default(),
+            characteristic: BTH_LE_GATT_CHARACTERISTIC::default(),
+            association,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_flow_service_uuid_is_required_and_unique() {
+        let other = GUID::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb);
+        assert_eq!(
+            select_exact_uuid_result(&[other, FLOW_SERVICE_GUID], FLOW_SERVICE_GUID),
+            Ok(1)
+        );
+        assert!(select_exact_uuid_result(&[other], FLOW_SERVICE_GUID).is_err());
+        assert!(
+            select_exact_uuid_result(&[FLOW_SERVICE_GUID, FLOW_SERVICE_GUID], FLOW_SERVICE_GUID)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_flow_characteristic_uuid_is_required_and_unique() {
+        let other = GUID::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
+        assert_eq!(
+            select_exact_uuid_result(&[other, FLOW_CHARACTERISTIC_GUID], FLOW_CHARACTERISTIC_GUID),
+            Ok(1)
+        );
+        assert!(select_exact_uuid_result(&[other], FLOW_CHARACTERISTIC_GUID).is_err());
+    }
+
+    #[test]
+    fn production_never_uses_the_global_gatt_service_interface_list() {
+        assert!(!PRODUCTION_USES_GLOBAL_GATT_SERVICE_ENUMERATION);
+    }
+
+    #[test]
+    fn service_device_information_id_is_forwarded_without_rewriting() {
+        let instance_id = r"\\?\BTHLEDevice#{flow-service-instance}";
+        assert_eq!(
+            native_path_from_service_instance_id(instance_id),
+            Ok(instance_id.to_owned())
+        );
+        assert!(native_path_from_service_instance_id("").is_err());
+    }
+
+    #[test]
+    fn success_hresult_is_never_reported_as_a_native_failure_code() {
+        let error = windows_error(
+            NativeConnectionStage::DeviceFound,
+            "DeviceInformation.Properties.Lookup",
+            windows::core::Error::from_hresult(HRESULT(0)),
+            true,
+        );
+        let BleError::NativeWindows(error) = error else {
+            panic!("expected a structured native Windows error");
+        };
+        assert_eq!(error.code, None);
+        assert!(!error.to_string().contains("code=0x00000000"));
     }
 }

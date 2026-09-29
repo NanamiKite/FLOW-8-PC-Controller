@@ -29,6 +29,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = "1"
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 strip = "debuginfo"
