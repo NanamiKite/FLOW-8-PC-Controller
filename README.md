@@ -1,13 +1,13 @@
 # FLOW 8 PC Controller
 
-Rust/egui is the active implementation of FLOW 8 PC Controller. The completed C++20/Qt 6 application remains in this repository as the UI, state-model, protocol, and exact-vector reference during migration; it is not deleted or treated as a second product. Real-device evidence shows that FLOW 8 has no CCCD and rejects standard Windows subscription with `HRESULT(0x80650003)`. The production Windows runtime therefore uses a native no-CCCD receive backend; its first complete Windows handshake run remains pending.
+Rust/egui is the active implementation of FLOW 8 PC Controller. The completed C++20/Qt 6 application remains in this repository as the UI, state-model, protocol, and exact-vector reference during migration; it is not deleted or treated as a second product. Real-device evidence shows that FLOW 8 has no CCCD and emits unsolicited notifications. The production Windows path now consumes the external DirectHCI runtime through the `directhci-ble` Rust SDK and passive `listen()`; its first complete `0x35 -> Ready` application run remains pending.
 
 ```text
 egui GUI → SemanticCommand → CommandQueue → Protocol Encoder → Transport
     ▲                                                            │
     └──── Store / confirmed state ← Parser / reassembly ← BLE RX ┘
 
-Transport: Linux/generic = btleplug; Windows/FLOW 8 = native WinRT + Win32 GATT
+Transport: Linux/generic = btleplug; Windows/FLOW 8 = `flow8-directhci` SDK adapter → external `directhcid`
 ```
 
 ## Rust quick start
@@ -28,7 +28,7 @@ export CARGO_TARGET_DIR=/tmp/flow8-rust-target
 cargo run -p flow8-gui
 ```
 
-The GUI starts in explicit `Simulator / SYNTHETIC` mode and needs no BLE adapter. Windows uses a normal Rust toolchain, Windows Runtime/Win32 Bluetooth APIs and Cargo; Rust no longer depends on Qt.
+The GUI starts in explicit `Simulator / SYNTHETIC` mode and needs no BLE adapter. The production Windows FLOW path uses a normal Rust toolchain plus the external `directhcid` service through the Rust SDK; it does not require Qt and does not manage a Windows Bluetooth driver itself.
 
 ## Rust workspace
 
@@ -37,7 +37,8 @@ The GUI starts in explicit `Simulator / SYNTHETIC` mode and needs no BLE adapter
 | `flow8-model` | product model, `StateValue`, evidence, parameter specs |
 | `flow8-protocol` | 31/31 TX, typed atomic/composite RX, FIX8, framing and `0x38` reassembly |
 | `flow8-core` | Store, full semantic queue, state applier, pending/confirmed, Simulator |
-| `flow8-ble` | platform transports, native Windows no-CCCD RX, session/handshake coordinator and async GUI runtime |
+| `flow8-directhci` | thin FLOW profile adapter over the external `directhci-ble` SDK; no protocol parser or controller implementation |
+| `flow8-ble` | transport-neutral session/handshake coordinator, platform runtime bridge, and async GUI channels |
 | `flow8-gui` | egui rendering and semantic intents only |
 | `flow8-cli` | offline protocol utility |
 | `flow8-hardware-bringup` | scan/GATT/notify/handshake/state/capture and safe typed controls |
@@ -214,19 +215,18 @@ and [worldwide Quick Start Guide](https://mediadl.musictribe.com/media/PLM/data/
 
 ## BLE tools
 
-The Windows runtime can select either the retained native GATT backend or the DirectHCI backend. DirectHCI owns the controller and exposes generic raw-HCI/TrouBLE GATT capability; the FLOW service name, UUIDs, passive-listen policy, protocol codec and session state machine remain in `flow8-ble`. Select it explicitly and provide the paired 16-byte client UUID (this is semantic identity data, not a prebuilt packet):
+The Windows runtime uses DirectHCI by default; the retained native GATT backend is legacy/experimental and opt-in only. The separately running `directhcid` owns controller acquisition, Windows driver transitions, raw-HCI access, and recovery. The linked `directhci-ble` SDK reaches that runtime through `directhci-client` and Named Pipe IPC, then exposes generic BLE/GATT operations to FLOW 8. The thin `flow8-directhci` crate owns only FLOW device/UUID selection and passive-listen policy; the protocol codec and session state machine remain in the existing FLOW runtime. Provide the paired 16-byte client UUID (this is semantic identity data, not a prebuilt packet):
 
 ```powershell
 $env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\flow8-rust-target"
-$env:FLOW8_BLE_BACKEND = "directhci"
 $env:FLOW8_CLIENT_UUID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-$env:RUST_LOG = "flow8_ble=trace"
+$env:RUST_LOG = "flow8_directhci=trace,flow8_ble=trace"
 cargo run -p flow8-gui
 ```
 
-For this first integration stage, the DirectHCI service/runtime must already be available. The application connects through `directhci-client`, acquires the selected controller (`DIRECTHCI_CONTROLLER_ID` is required only when more than one exists), scans for `FLOW 8 LE`, discovers the exact FLOW service/characteristic, arms generic passive listening without CCCD, then lets the existing `Flow8Session` perform `0x35 -> 0x39 -> 0x36 -> 0x37 -> 0x38 -> Ready`. The previous ASCII `FLOW8-PC-RUST001` value is not used by this backend. Automatic DirectHCI service startup is a later lifecycle task after the first production Ready run.
+For this first integration stage, external `directhcid.exe run` must already be available. The FLOW application does not spawn it as a child and never opens WinUSB or changes a driver. The `directhci-ble` SDK requests a BLE session from the daemon (`DIRECTHCI_CONTROLLER_ID` is required only when more than one exists), scans for `FLOW 8 LE`, discovers the exact FLOW service/characteristic, arms generic passive listening without CCCD, then lets the existing `Flow8Session` perform `0x35 -> 0x39 -> 0x36 -> 0x37 -> 0x38 -> Ready`. The previous ASCII `FLOW8-PC-RUST001` value is not used by this backend. Automatic DirectHCI service startup is a later lifecycle task after the first production Ready run.
 
-The retained native GATT backend remains the default when `FLOW8_BLE_BACKEND` is unset. Keep build products on
+DirectHCI is the default Windows FLOW backend when `FLOW8_BLE_BACKEND` is unset. Set `FLOW8_BLE_BACKEND=windows-native` only to compare the retained legacy/experimental implementation. Keep build products on
 the Windows-local filesystem, enable useful transport logging, launch the GUI, select BLE
 mode and press **Connect**:
 

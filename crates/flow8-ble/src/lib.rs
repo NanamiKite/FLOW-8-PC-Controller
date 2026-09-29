@@ -727,7 +727,11 @@ impl RuntimeSession {
 
 #[cfg(target_os = "windows")]
 fn directhci_requested() -> bool {
-    std::env::var("FLOW8_BLE_BACKEND").is_ok_and(|value| value.eq_ignore_ascii_case("directhci"))
+    !std::env::var("FLOW8_BLE_BACKEND").is_ok_and(|value| {
+        value.eq_ignore_ascii_case("windows-native")
+            || value.eq_ignore_ascii_case("native")
+            || value.eq_ignore_ascii_case("legacy")
+    })
 }
 
 #[cfg(target_os = "windows")]

@@ -281,7 +281,7 @@ impl Flow8App {
                         self.store.state.session = core_session_state(phase);
                         self.message = format!(
                             "{}: {}",
-                            self.language.tr("BLE session", "BLE 会话"),
+                            self.language.tr("Direct Bluetooth", "直连蓝牙"),
                             session_phase_text(phase, self.language)
                         );
                     }
@@ -430,6 +430,22 @@ impl Flow8App {
                             let _ = self.runtime.send(DeviceCommand::Scan {
                                 duration: Duration::from_secs(4),
                             });
+                        }
+                        if ui
+                            .selectable_label(
+                                self.mode == RunMode::Ble,
+                                self.language.tr("Direct Bluetooth", "直连蓝牙"),
+                            )
+                            .clicked()
+                            && self.mode != RunMode::Ble
+                        {
+                            self.mode = RunMode::Ble;
+                            self.store = Flow8Store::disconnected();
+                            self.message = localized_status_message(
+                                self.mode,
+                                self.store.state.session,
+                                self.language,
+                            );
                         }
                         if ui
                             .selectable_label(
@@ -1685,7 +1701,9 @@ impl Flow8App {
                                         RunMode::Simulator => {
                                             self.language.tr("Simulator", "模拟器")
                                         }
-                                        RunMode::Ble => "BLE",
+                                        RunMode::Ble => {
+                                            self.language.tr("Direct Bluetooth", "直连蓝牙")
+                                        },
                                     }
                                 ));
                                 ui.label(format!(
@@ -3357,7 +3375,7 @@ fn localized_status_message(mode: RunMode, state: SessionState, language: Langua
             .into(),
         RunMode::Ble => format!(
             "{}: {}",
-            language.tr("BLE session", "BLE 会话"),
+            language.tr("Direct Bluetooth", "直连蓝牙"),
             session_state_text(state, language)
         ),
     }

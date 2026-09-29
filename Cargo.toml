@@ -4,6 +4,7 @@ members = [
     "crates/flow8-model",
     "crates/flow8-protocol",
     "crates/flow8-core",
+    "crates/flow8-directhci",
     "crates/flow8-ble",
     "apps/flow8-gui",
     "apps/flow8-cli",

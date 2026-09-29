@@ -1,0 +1,12 @@
+[package]
+name = "flow8-directhci"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+directhci-ble = { path = "../../../DirectHCI/crates/directhci-ble" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

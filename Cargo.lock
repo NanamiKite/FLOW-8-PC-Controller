@@ -1061,8 +1061,8 @@ name = "flow8-ble"
 version = "0.1.0"
 dependencies = [
  "btleplug",
- "directhci-ble",
  "flow8-core",
+ "flow8-directhci",
  "flow8-model",
  "flow8-protocol",
  "futures-util",
@@ -1090,6 +1090,16 @@ dependencies = [
  "flow8-model",
  "flow8-protocol",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "flow8-directhci"
+version = "0.1.0"
+dependencies = [
+ "directhci-ble",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

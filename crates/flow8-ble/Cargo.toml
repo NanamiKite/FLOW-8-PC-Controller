@@ -15,7 +15,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-directhci-ble = { path = "../../../DirectHCI/crates/directhci-ble" }
+flow8-directhci = { path = "../flow8-directhci" }
 windows-collections = "0.3"
 windows = { version = "0.62", features = [
     "Devices_Bluetooth",
