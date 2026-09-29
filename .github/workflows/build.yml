@@ -1,40 +1,55 @@
-name: build
+name: Rust
 
 on:
   push:
   pull_request:
 
+# The workspace currently uses a sibling path dependency on the independent
+# DirectHCI SDK. Configure DIRECTHCI_REPOSITORY (owner/repo) to enable CI.
 jobs:
   linux:
+    if: vars.DIRECTHCI_REPOSITORY != ''
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install build dependencies
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          cmake ninja-build g++ qt6-base-dev qt6-connectivity-dev
-      - name: Configure
-        run: cmake --preset linux-debug -DFLOW8_REQUIRE_BLUETOOTH=ON
-      - name: Build
-        run: cmake --build --preset linux-debug
-      - name: Test
-        run: ctest --preset linux-debug
+        with:
+          path: flow8
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.DIRECTHCI_REPOSITORY }}
+          token: ${{ secrets.DIRECTHCI_READ_TOKEN || github.token }}
+          path: DirectHCI
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev libudev-dev
+      - name: Rust validation
+        working-directory: flow8
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace
+          cargo test --workspace
+          cargo build --workspace
 
   windows:
+    if: vars.DIRECTHCI_REPOSITORY != ''
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.3'
-          arch: win64_mingw
-          tools: tools_mingw1310
-          add-tools-to-path: true
-          modules: qtconnectivity
-          cache: true
-      - name: Configure
-        run: cmake --preset windows-mingw-debug
-      - name: Build
-        run: cmake --build --preset windows-mingw-debug
-      - name: Test
-        run: ctest --preset windows-mingw-debug
+          path: flow8
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.DIRECTHCI_REPOSITORY }}
+          token: ${{ secrets.DIRECTHCI_READ_TOKEN || github.token }}
+          path: DirectHCI
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust validation
+        working-directory: flow8
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
+        run: |
+          cargo check --workspace
+          cargo test --workspace
+          cargo build --workspace

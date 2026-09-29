@@ -1969,8 +1969,8 @@ impl Flow8App {
                                 });
                                 ui.label(
                                     egui::RichText::new(self.language.tr(
-                                        "Gesture and alternate EQ modes remain visible for Qt parity, but are disabled until the egui interaction modes are implemented.",
-                                        "为保持 Qt 界面一致性，控制手势和另一种 EQ 模式仍会显示；在 egui 交互模式实现前保持禁用。",
+                                        "Gesture and alternate EQ modes remain visible for layout parity, but are disabled until the egui interaction modes are implemented.",
+                                        "为保持现有界面一致性，控制手势和另一种 EQ 模式仍会显示；在 egui 交互模式实现前保持禁用。",
                                     ))
                                     .size(9.0)
                                     .color(SECONDARY),
