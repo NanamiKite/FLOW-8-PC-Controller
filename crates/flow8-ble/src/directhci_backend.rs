@@ -12,7 +12,39 @@ use flow8_directhci::{
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, info, warn};
 
-use super::{BleError, DeviceEvent, NativeConnectionStage, RxIngress, TransportRx};
+use super::{
+    BleError, DeviceEvent, DiscoveredDevice, NativeConnectionStage, RxIngress, TransportRx,
+};
+use uuid::Uuid;
+
+/// Windows GUI discovery uses the same DirectHCI SDK as the production
+/// connection. A btleplug scan cannot see the adapter while DirectHCI owns it.
+pub(super) async fn scan(duration: Duration) -> Result<Vec<DiscoveredDevice>, BleError> {
+    let config = Flow8DirectHciConfig {
+        controller_id: std::env::var("DIRECTHCI_CONTROLLER_ID").ok(),
+        preferred_address: None,
+        scan_timeout: duration,
+        client_name: "flow8-pc-controller".into(),
+        client_version: Some(env!("CARGO_PKG_VERSION").into()),
+    };
+    let devices = DirectHciTransport::scan(config)
+        .await
+        .map_err(|error| BleError::Transport(format!("DirectHCI FLOW scan: {error}")))?;
+    Ok(devices
+        .into_iter()
+        .map(|device| DiscoveredDevice {
+            id: device.address.clone(),
+            name: device.name,
+            address: device.address,
+            rssi: Some(device.rssi),
+            services: device
+                .services
+                .into_iter()
+                .filter_map(|value| Uuid::parse_str(&value).ok())
+                .collect(),
+        })
+        .collect())
+}
 
 const SCAN_TIMEOUT: Duration = Duration::from_secs(12);
 

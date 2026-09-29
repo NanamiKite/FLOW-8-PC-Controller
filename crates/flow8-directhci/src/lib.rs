@@ -65,6 +65,14 @@ pub struct Flow8DirectHciInfo {
     pub cccd_handle: Option<u16>,
 }
 
+#[derive(Clone, Debug)]
+pub struct Flow8DirectHciScanResult {
+    pub address: String,
+    pub name: Option<String>,
+    pub rssi: i16,
+    pub services: Vec<String>,
+}
+
 #[derive(Debug)]
 pub enum Flow8DirectHciEvent {
     Notification(Vec<u8>),
@@ -123,6 +131,45 @@ pub struct DirectHciTransport {
 }
 
 impl DirectHciTransport {
+    /// Standalone GUI scan. Release the SDK session before a later Connect
+    /// creates its own long-lived BLE connection.
+    pub async fn scan(
+        config: Flow8DirectHciConfig,
+    ) -> Result<Vec<Flow8DirectHciScanResult>, Flow8DirectHciError> {
+        let central = DirectHciBleCentral::connect(BleCentralConfig {
+            controller_id: config.controller_id,
+            client_name: config.client_name,
+            client_version: config.client_version,
+        })
+        .await
+        .map_err(|error| Flow8DirectHciError::directhci("connect DirectHCI runtime", error))?;
+        let result = central.scan(config.scan_timeout).await;
+        let cleanup = central.shutdown().await;
+        if let Err(error) = cleanup {
+            if result.is_ok() {
+                return Err(Flow8DirectHciError::directhci(
+                    "release DirectHCI after scan",
+                    error,
+                ));
+            }
+            warn!(%error, "DirectHCI cleanup failed after scan error");
+        }
+        Ok(result
+            .map_err(|error| Flow8DirectHciError::directhci("scan BLE devices", error))?
+            .into_iter()
+            .map(|device| Flow8DirectHciScanResult {
+                address: device.address.to_string(),
+                name: device.local_name,
+                rssi: i16::from(device.rssi),
+                services: device
+                    .service_uuids
+                    .into_iter()
+                    .map(|uuid| uuid.to_string())
+                    .collect(),
+            })
+            .collect())
+    }
+
     /// Connects, performs generic GATT discovery, and arms the passive FLOW
     /// listener before returning. No FLOW protocol bytes are sent here.
     pub async fn connect(

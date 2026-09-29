@@ -1194,6 +1194,14 @@ fn scan_allowed(phase: SessionPhase, session_active: bool) -> bool {
     !session_active && matches!(phase, SessionPhase::Disconnected | SessionPhase::Error)
 }
 
+async fn scan_devices(duration: Duration) -> Result<Vec<DiscoveredDevice>, BleError> {
+    #[cfg(target_os = "windows")]
+    if directhci_requested() {
+        return directhci_backend::scan(duration).await;
+    }
+    BleTransport::new().await?.scan(duration).await
+}
+
 async fn handle_device_command(
     command: DeviceCommand,
     session: &mut Option<ActiveSession>,
@@ -1217,22 +1225,26 @@ async fn handle_device_command(
                 return true;
             }
             let _ = events.send(DeviceEvent::Phase(SessionPhase::Scanning));
-            match BleTransport::new().await {
-                Ok(transport) => match transport.scan(duration).await {
-                    Ok(devices) => {
-                        let _ = events.send(DeviceEvent::ScanResults(devices));
-                        let _ = events.send(DeviceEvent::Phase(coordinator.phase()));
-                    }
-                    Err(error) => {
-                        let _ = events.send(DeviceEvent::Error(error.to_string()));
-                    }
-                },
+            match scan_devices(duration).await {
+                Ok(devices) => {
+                    let _ = events.send(DeviceEvent::ScanResults(devices));
+                    let _ = events.send(DeviceEvent::Phase(coordinator.phase()));
+                }
                 Err(error) => {
                     let _ = events.send(DeviceEvent::Error(error.to_string()));
                 }
             }
         }
         DeviceCommand::Connect => {
+            if session.is_some()
+                || !matches!(
+                    coordinator.phase(),
+                    SessionPhase::Disconnected | SessionPhase::Error
+                )
+            {
+                info!(phase = ?coordinator.phase(), "FLOW connect ignored while a session is active");
+                return true;
+            }
             #[cfg(target_os = "windows")]
             if directhci_requested() {
                 match directhci_client_id() {

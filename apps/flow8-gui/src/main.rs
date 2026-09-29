@@ -415,12 +415,30 @@ impl Flow8App {
                         if ui.button(self.language.tr("Disconnect", "断开")).clicked() {
                             let _ = self.runtime.send(DeviceCommand::Disconnect);
                         }
-                        if ui.button(self.language.tr("Connect", "连接")).clicked() {
+                        let can_connect = self.mode != RunMode::Ble
+                            || matches!(
+                                self.store.state.session,
+                                SessionState::Disconnected | SessionState::Error
+                            );
+                        if ui
+                            .add_enabled(
+                                can_connect,
+                                egui::Button::new(self.language.tr("Connect", "连接")),
+                            )
+                            .clicked()
+                        {
                             if self.mode != RunMode::Ble {
                                 self.mode = RunMode::Ble;
                                 self.store = Flow8Store::disconnected();
                             }
-                            let _ = self.runtime.send(DeviceCommand::Connect);
+                            match self.runtime.send(DeviceCommand::Connect) {
+                                Ok(()) => {
+                                    self.store.state.session = SessionState::Connecting;
+                                    self.native_stage = None;
+                                    self.last_ble_error = None;
+                                }
+                                Err(error) => self.message = error,
+                            }
                         }
                         let can_scan = self.mode != RunMode::Ble
                             || matches!(
@@ -441,9 +459,16 @@ impl Flow8App {
                                 self.mode = RunMode::Ble;
                                 self.store = Flow8Store::disconnected();
                             }
-                            let _ = self.runtime.send(DeviceCommand::Scan {
+                            match self.runtime.send(DeviceCommand::Scan {
                                 duration: Duration::from_secs(4),
-                            });
+                            }) {
+                                Ok(()) => {
+                                    self.store.state.session = SessionState::Scanning;
+                                    self.native_stage = None;
+                                    self.last_ble_error = None;
+                                }
+                                Err(error) => self.message = error,
+                            }
                         }
                         if ui
                             .selectable_label(
