@@ -652,7 +652,7 @@ impl RuntimeSession {
 
     fn mark_handshake_rx(&self) {}
 
-    async fn disconnect(&mut self) -> Result<(), BleError> {
+    async fn disconnect(&mut self, _source: &'static str) -> Result<(), BleError> {
         self.ingress.invalidate();
         self.reader.abort();
         self.session.disconnect().await
@@ -714,13 +714,13 @@ impl RuntimeSession {
         }
     }
 
-    async fn disconnect(&mut self) -> Result<(), BleError> {
+    async fn disconnect(&mut self, source: &'static str) -> Result<(), BleError> {
         match self {
             Self::WindowsNative(session) => {
                 session.disconnect();
                 Ok(())
             }
-            Self::DirectHci(session) => session.disconnect().await,
+            Self::DirectHci(session) => session.disconnect(source).await,
         }
     }
 }
@@ -817,7 +817,7 @@ async fn handle_device_command(
     match command {
         DeviceCommand::Shutdown => {
             if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect().await
+                && let Err(error) = active.disconnect("runtime_shutdown").await
             {
                 let _ = events.send(DeviceEvent::Error(error.to_string()));
             }
@@ -856,7 +856,7 @@ async fn handle_device_command(
                 }
             }
             if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect().await
+                && let Err(error) = active.disconnect("connection_replaced").await
             {
                 let _ = events.send(DeviceEvent::Error(error.to_string()));
             }
@@ -898,7 +898,7 @@ async fn handle_device_command(
         }
         DeviceCommand::Disconnect => {
             if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect().await
+                && let Err(error) = active.disconnect("explicit_user_disconnect").await
             {
                 let _ = events.send(DeviceEvent::Error(error.to_string()));
             }
@@ -1003,7 +1003,7 @@ async fn handle_transport_rx(
         TransportRx::Disconnected { .. } => {
             info!("FLOW 8 disconnected; invalidating session state");
             if let Some(mut active) = session.take()
-                && let Err(error) = active.disconnect().await
+                && let Err(error) = active.disconnect("transport_rx_disconnected").await
             {
                 let _ = events.send(DeviceEvent::Error(error.to_string()));
             }

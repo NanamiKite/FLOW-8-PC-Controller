@@ -49,6 +49,11 @@ impl DirectHciSession {
         info!(
             backend = "directhci",
             address = %info.peer,
+            "DirectHCI session created"
+        );
+        info!(
+            backend = "directhci",
+            address = %info.peer,
             mtu = info.att_mtu,
             value_handle = info.value_handle,
             cccd_handle = ?info.cccd_handle,
@@ -110,11 +115,11 @@ impl DirectHciSession {
 
     pub(super) fn mark_handshake_rx(&self) {}
 
-    pub(super) async fn disconnect(&mut self) -> Result<(), BleError> {
+    pub(super) async fn disconnect(&mut self, source: &'static str) -> Result<(), BleError> {
         self.ingress.invalidate();
         let disconnect_result = if let Some(transport) = self.transport.take() {
             transport
-                .disconnect()
+                .disconnect_with_reason(source)
                 .await
                 .map_err(|error| BleError::Transport(format!("DirectHCI disconnect: {error}")))
         } else {

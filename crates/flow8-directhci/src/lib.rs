@@ -110,6 +110,7 @@ enum TransportCommand {
         reply: oneshot::Sender<Result<(), Flow8DirectHciError>>,
     },
     Disconnect {
+        source: &'static str,
         reply: Option<oneshot::Sender<Result<(), Flow8DirectHciError>>>,
     },
 }
@@ -272,19 +273,28 @@ impl DirectHciTransport {
             .map_err(|_| Flow8DirectHciError::WorkerStopped)?
     }
 
-    pub async fn disconnect(mut self) -> Result<(), Flow8DirectHciError> {
-        self.disconnect_inner().await
+    pub async fn disconnect(self) -> Result<(), Flow8DirectHciError> {
+        self.disconnect_with_reason("explicit_disconnect").await
     }
 
-    async fn disconnect_inner(&mut self) -> Result<(), Flow8DirectHciError> {
+    pub async fn disconnect_with_reason(
+        mut self,
+        source: &'static str,
+    ) -> Result<(), Flow8DirectHciError> {
+        self.disconnect_inner(source).await
+    }
+
+    async fn disconnect_inner(&mut self, source: &'static str) -> Result<(), Flow8DirectHciError> {
         if self.disconnect_requested {
             return Ok(());
         }
         self.disconnect_requested = true;
+        info!(source, "DirectHCI disconnect requested");
         let (reply_tx, reply_rx) = oneshot::channel();
         let sent = self
             .commands
             .send(TransportCommand::Disconnect {
+                source,
                 reply: Some(reply_tx),
             })
             .await
@@ -311,9 +321,14 @@ impl Drop for DirectHciTransport {
             return;
         }
         self.disconnect_requested = true;
-        let _ = self
-            .commands
-            .try_send(TransportCommand::Disconnect { reply: None });
+        warn!(
+            source = "runtime_session_drop",
+            "DirectHCI disconnect requested"
+        );
+        let _ = self.commands.try_send(TransportCommand::Disconnect {
+            source: "runtime_session_drop",
+            reply: None,
+        });
     }
 }
 
@@ -330,6 +345,8 @@ async fn transport_loop(
             command = commands.recv() => {
                 match command {
                     Some(TransportCommand::Write { value, reply }) => {
+                        let byte_count = value.len();
+                        info!(bytes = byte_count, "DirectHCI write begin");
                         let result = connection
                             .write(&characteristic, value, WriteMode::WithResponse)
                             .await
@@ -337,13 +354,19 @@ async fn transport_loop(
                                 "write FLOW 8 characteristic",
                                 error,
                             ));
-                        if let Err(error) = &result {
-                            let _ = events.send(Flow8DirectHciEvent::Error(error.to_string())).await;
+                        match &result {
+                            Ok(()) => info!(bytes = byte_count, "DirectHCI write complete"),
+                            Err(error) => {
+                                warn!(bytes = byte_count, %error, "DirectHCI write failed");
+                                let _ = events
+                                    .send(Flow8DirectHciEvent::Error(error.to_string()))
+                                    .await;
+                            }
                         }
                         let _ = reply.send(result);
                     }
-                    Some(TransportCommand::Disconnect { reply }) => {
-                        let result = close_and_disconnect(notifications, connection).await;
+                    Some(TransportCommand::Disconnect { source, reply }) => {
+                        let result = close_and_disconnect(notifications, connection, source).await;
                         if let Some(reply) = reply {
                             let _ = reply.send(result);
                         }
@@ -351,7 +374,8 @@ async fn transport_loop(
                         return;
                     }
                     None => {
-                        let _ = close_and_disconnect(notifications, connection).await;
+                        let source = "transport_command_channel_closed";
+                        let _ = close_and_disconnect(notifications, connection, source).await;
                         return;
                     }
                 }
@@ -369,7 +393,8 @@ async fn transport_loop(
                             .await
                             .is_err()
                         {
-                            let _ = close_and_disconnect(notifications, connection).await;
+                            let source = "rx_event_consumer_closed";
+                            let _ = close_and_disconnect(notifications, connection, source).await;
                             return;
                         }
                     }
@@ -381,15 +406,21 @@ async fn transport_loop(
                         );
                     }
                     Ok(None) => {
+                        let source = "ble_peer_disconnected_or_sdk_stream_ended";
+                        warn!(source, "DirectHCI session shutdown begin");
                         let _ = events.send(Flow8DirectHciEvent::Disconnected).await;
-                        let _ = connection.disconnect().await;
+                        let result = connection.disconnect().await;
+                        info!(source, success = result.is_ok(), "DirectHCI session shutdown complete");
                         return;
                     }
                     Err(error) => {
+                        let source = "transport_error";
+                        warn!(source, %error, "DirectHCI session shutdown begin");
                         let message = format!("DirectHCI notification stream: {error}");
                         let _ = events.send(Flow8DirectHciEvent::Error(message)).await;
                         let _ = events.send(Flow8DirectHciEvent::Disconnected).await;
-                        let _ = connection.disconnect().await;
+                        let result = connection.disconnect().await;
+                        info!(source, success = result.is_ok(), "DirectHCI session shutdown complete");
                         return;
                     }
                 }
@@ -401,7 +432,9 @@ async fn transport_loop(
 async fn close_and_disconnect(
     notifications: GattNotificationStream,
     connection: BleConnection,
+    reason: &'static str,
 ) -> Result<(), Flow8DirectHciError> {
+    info!(reason, "DirectHCI session shutdown begin");
     let close = notifications
         .close()
         .await
@@ -411,7 +444,9 @@ async fn close_and_disconnect(
         .await
         .map_err(|error| Flow8DirectHciError::directhci("disconnect FLOW 8", error));
     close?;
-    disconnect
+    disconnect?;
+    info!(reason, "DirectHCI session shutdown complete");
+    Ok(())
 }
 
 async fn shutdown_central_after_error(
