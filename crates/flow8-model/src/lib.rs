@@ -250,6 +250,73 @@ pub enum FxId {
     Fx2,
 }
 
+/// The hardware/official documentation confirms 16 slots per engine. The
+/// individual names and zero-based name-to-BLE-ID association below come from
+/// an independent FLOW 8 controller, not a captured FLOW 8 preset switch.
+/// Keep that distinction until verified on the physical device.
+pub const FX_PRESET_COUNT: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FxPresetInfo {
+    pub id: u8,
+    pub name: &'static str,
+    pub evidence: EvidenceStatus,
+}
+
+// Source for the names/order: abelroes/flow-8-midi,
+// src/model/channels.rs (FX1_PRESETS / FX2_PRESETS). Official FLOW 8 block
+// diagram independently confirms slots 0-11 are reverb or delay/echo,
+// slot 12 is flanger, and slots 13-15 are chorus variants.
+pub const FX1_PRESET_NAMES: [&str; FX_PRESET_COUNT] = [
+    "Ambience",
+    "Perc-Rev1",
+    "Perc-Rev2",
+    "Guit-Rev1",
+    "Guit-Rev2",
+    "Chamber",
+    "Room",
+    "Concert",
+    "Church",
+    "Cathedral",
+    "Temple",
+    "Stadium",
+    "Flanger",
+    "Soft Chor",
+    "Warm Chor",
+    "Deep Chor",
+];
+
+pub const FX2_PRESET_NAMES: [&str; FX_PRESET_COUNT] = [
+    "Delay 1/1",
+    "Delay 1/2",
+    "Delay 1/3",
+    "Delay 2/1",
+    "Echo 1/1",
+    "Echo 1/2",
+    "Echo 1/3",
+    "Echo 2/1",
+    "Wide Echo",
+    "Ping Pong",
+    "Ping P 1/3",
+    "Ping P R>L",
+    "Flanger",
+    "Soft Chor",
+    "Warm Chor",
+    "Deep Chor",
+];
+
+pub fn fx_preset_info(fx: FxId, id: u8) -> Option<FxPresetInfo> {
+    let names = match fx {
+        FxId::Fx1 => &FX1_PRESET_NAMES,
+        FxId::Fx2 => &FX2_PRESET_NAMES,
+    };
+    names.get(id as usize).map(|name| FxPresetInfo {
+        id,
+        name,
+        evidence: EvidenceStatus::Inferred,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UsbAudioEndpointId {
     Usb12,
@@ -490,6 +557,19 @@ pub struct RoutingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fx_preset_catalog_has_sixteen_distinct_slots_per_engine() {
+        for fx in [FxId::Fx1, FxId::Fx2] {
+            for id in 0..FX_PRESET_COUNT as u8 {
+                let info = fx_preset_info(fx, id).expect("all 16 slots have a name");
+                assert_eq!(info.id, id);
+                assert!(!info.name.is_empty());
+                assert_eq!(info.evidence, EvidenceStatus::Inferred);
+            }
+            assert!(fx_preset_info(fx, FX_PRESET_COUNT as u8).is_none());
+        }
+    }
 
     #[test]
     fn device_observation_clears_pending_even_when_value_differs() {

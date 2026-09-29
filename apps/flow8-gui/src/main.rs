@@ -12,8 +12,8 @@ use eframe::egui::{
 use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage, SessionPhase};
 use flow8_core::{Flow8State, Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState};
 use flow8_model::{
-    EvidenceStatus, FxId, HeadphoneSource, InputChannelState, InputId, MixBusId, MixDestination,
-    MonitorRoutingSource, ParameterSpec, TapPoint, specs,
+    EvidenceStatus, FX_PRESET_COUNT, FxId, HeadphoneSource, InputChannelState, InputId, MixBusId,
+    MixDestination, MonitorRoutingSource, ParameterSpec, TapPoint, fx_preset_info, specs,
 };
 
 const BG: Color32 = Color32::from_rgb(17, 19, 23);
@@ -947,12 +947,67 @@ impl Flow8App {
                             enabled: !muted,
                         });
                     }
-                    ui.label(format!(
-                        "{}: {}",
-                        self.language.tr("Preset", "预设"),
-                        effect.preset.effective().copied().unwrap_or(0)
-                    ));
                 });
+                ui.add_space(6.0);
+                let current_preset = effect.preset.effective().copied();
+                let preset_label = current_preset
+                    .and_then(|id| fx_preset_info(fx_id, id))
+                    .map(|info| format!("{:02} · {}", info.id + 1, info.name))
+                    .unwrap_or_else(|| match current_preset {
+                        Some(id) => {
+                            format!("{} {}", self.language.tr("Unknown preset", "未知预设"), id)
+                        }
+                        None => self
+                            .language
+                            .tr("No preset reported", "尚未收到预设")
+                            .to_owned(),
+                    });
+                let mut selected_preset = None;
+                ui.horizontal(|ui| {
+                    ui.label(self.language.tr("Preset", "预设"));
+                    ui.add_enabled_ui(
+                        self.mode != RunMode::Ble
+                            || self.store.state.session == SessionState::Ready,
+                        |ui| {
+                            egui::ComboBox::from_id_salt(("fx-preset", index))
+                                .selected_text(preset_label)
+                                .width(190.0 * self.metrics.ui_scale)
+                                .show_ui(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .max_height(360.0)
+                                        .show(ui, |ui| {
+                                            for id in 0..FX_PRESET_COUNT as u8 {
+                                                let info = fx_preset_info(fx_id, id)
+                                                    .expect("preset ID in range");
+                                                if ui
+                                                    .selectable_label(
+                                                        current_preset == Some(id),
+                                                        format!("{:02} · {}", id + 1, info.name),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    if current_preset != Some(id) {
+                                                        selected_preset = Some(id);
+                                                    }
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                });
+                        },
+                    );
+                });
+                if let Some(preset) = selected_preset {
+                    self.dispatch(SemanticCommand::SetFxPreset { fx: fx_id, preset });
+                }
+                ui.label(
+                    egui::RichText::new(self.language.tr(
+                        "Preset names/order are inferred; device feedback is authoritative.",
+                        "预设名称与顺序为推断；设备回报为最终依据。",
+                    ))
+                    .size(9.0 * self.metrics.ui_scale)
+                    .color(SECONDARY),
+                );
                 let mut pan = effect.pan.effective().copied().unwrap_or(0.0);
                 if parameter_row(ui, self.language.tr("Pan", "声像"), &mut pan, specs::PAN)
                     .changed()
@@ -3064,25 +3119,65 @@ fn pan_control(ui: &mut egui::Ui, value: &mut f32, width: f32, metrics: UiMetric
     response.on_hover_cursor(cursor)
 }
 
-fn parameter_row(ui: &mut egui::Ui, label: &str, value: &mut f32, spec: ParameterSpec) -> Response {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).color(TEXT));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let suffix = match spec.unit {
-                flow8_model::Unit::Decibels => " dB",
-                flow8_model::Unit::Hertz => " Hz",
-                _ => "",
-            };
-            ui.add(
-                egui::Slider::new(value, spec.min..=spec.max)
-                    .step_by(spec.step.unwrap_or(0.01) as f64)
-                    .suffix(suffix)
-                    .show_value(true),
-            )
+struct ParameterRowResponse {
+    user_changed: bool,
+}
+
+impl ParameterRowResponse {
+    fn changed(&self) -> bool {
+        self.user_changed
+    }
+}
+
+fn parameter_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    spec: ParameterSpec,
+) -> ParameterRowResponse {
+    let original = *value;
+    let response = ui
+        .horizontal(|ui| {
+            ui.label(egui::RichText::new(label).color(TEXT));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let suffix = match spec.unit {
+                    flow8_model::Unit::Decibels => " dB",
+                    flow8_model::Unit::Hertz => " Hz",
+                    _ => "",
+                };
+                ui.add(
+                    egui::Slider::new(value, spec.min..=spec.max)
+                        .step_by(spec.step.unwrap_or(0.01) as f64)
+                        .suffix(suffix)
+                        .show_value(true),
+                )
+            })
+            .inner
         })
-        .inner
-    })
-    .inner
+        .inner;
+    // egui may mark Slider::changed when merely snapping a received device
+    // value to a display step. That is a rendering detail, not user intent.
+    let pointer_edit =
+        response.dragged() || response.clicked() || response.is_pointer_button_down_on();
+    let keyboard_edit = response.has_focus()
+        && ui.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Key { pressed: true, .. }
+                )
+            })
+        });
+    let wheel_edit = response.hovered() && ui.input(|input| input.smooth_scroll_delta.y != 0.0);
+    let user_changed = response.changed()
+        && (pointer_edit || keyboard_edit || wheel_edit)
+        && (*value - original).abs() > 1.0e-6;
+    if !user_changed {
+        *value = original;
+    }
+    ParameterRowResponse { user_changed }
 }
 
 fn eq_gain_graph(ui: &mut egui::Ui, channel: &InputChannelState) -> Option<(usize, f32)> {
@@ -3641,6 +3736,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn idle_mixer_never_echoes_received_pan_to_tx_queue() {
+        let context = egui::Context::default();
+        let mut app = Flow8App::from_context(&context);
+        app.store = Flow8Store::disconnected();
+        app.store.state.session = SessionState::Ready;
+        app.mode = RunMode::Ble;
+        for (endpoint, value) in [(0, 1.0 / 127.0), (6, 0.0), (15, 0.0)] {
+            app.store
+                .apply_rx(
+                    flow8_protocol::RxCommand::Pan { endpoint, value },
+                    EvidenceStatus::VerifiedFromDevice,
+                )
+                .unwrap();
+        }
+        app.store
+            .apply_rx(
+                flow8_protocol::RxCommand::Compressor {
+                    endpoint: 0,
+                    amount: 101.0 / 255.0,
+                },
+                EvidenceStatus::VerifiedFromDevice,
+            )
+            .unwrap();
+        for _ in 0..3 {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 920.0))),
+                ..Default::default()
+            };
+            let mut output = context.run_ui(raw, |ui| app.mixer(ui));
+            output.textures_delta.clear();
+            let mut commands = Vec::new();
+            while let Some(command) = app.store.queue.pop() {
+                commands.push(command);
+            }
+            assert!(commands.is_empty(), "idle GUI sent commands: {commands:?}");
+        }
+    }
+
+    #[test]
     fn all_eleven_pages_render_in_english_and_simplified_chinese() {
         let context = egui::Context::default();
         let mut app = Flow8App::from_context(&context);
@@ -3696,6 +3830,10 @@ mod tests {
                         "page {page:?} rendered no shapes for {language:?} at {size:?}"
                     );
                     output.textures_delta.clear();
+                    assert!(
+                        app.store.queue.is_empty(),
+                        "idle page {page:?} generated a device command for {language:?} at {size:?}"
+                    );
                 }
             }
         }

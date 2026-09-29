@@ -2333,6 +2333,35 @@ mod tests {
     }
 
     #[test]
+    fn fx_preset_switch_uses_existing_codec_and_device_wins_on_readback() {
+        let mut store = Flow8Store::disconnected();
+        store.state.session = SessionState::Ready;
+        store
+            .dispatch(SemanticCommand::SetFxPreset {
+                fx: FxId::Fx2,
+                preset: 4,
+            })
+            .unwrap();
+        assert_eq!(store.state.effects[1].preset.pending, Some(4));
+        let command = store.queue.pop().expect("FX preset command");
+        assert_eq!(
+            flow8_protocol::encode(&command.to_protocol()).unwrap(),
+            vec![0x31, 0x01, 0x0d, 0x04, 0x43]
+        );
+        store
+            .apply_rx(
+                RxCommand::FxPreset {
+                    endpoint: 0x0d,
+                    preset: 3,
+                },
+                EvidenceStatus::VerifiedFromDevice,
+            )
+            .unwrap();
+        assert_eq!(store.state.effects[1].preset.confirmed, Some(3));
+        assert_eq!(store.state.effects[1].preset.pending, None);
+    }
+
+    #[test]
     fn device_rx_clears_conflicting_pending_value() {
         let mut store = Flow8Store::simulator();
         store.state.channels[0].gain_db.set_pending(10.0);
