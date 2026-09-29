@@ -422,7 +422,21 @@ impl Flow8App {
                             }
                             let _ = self.runtime.send(DeviceCommand::Connect);
                         }
-                        if ui.button(self.language.tr("Scan", "扫描")).clicked() {
+                        let can_scan = self.mode != RunMode::Ble
+                            || matches!(
+                                self.store.state.session,
+                                SessionState::Disconnected | SessionState::Error
+                            );
+                        let scan = ui
+                            .add_enabled(
+                                can_scan,
+                                egui::Button::new(self.language.tr("Scan", "扫描")),
+                            )
+                            .on_disabled_hover_text(self.language.tr(
+                                "Disconnect before scanning for devices.",
+                                "请先断开当前设备，再扫描其他设备。",
+                            ));
+                        if scan.clicked() {
                             if self.mode != RunMode::Ble {
                                 self.mode = RunMode::Ble;
                                 self.store = Flow8Store::disconnected();

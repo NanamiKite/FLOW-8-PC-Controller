@@ -339,105 +339,134 @@ async fn transport_loop(
     mut commands: mpsc::Receiver<TransportCommand>,
     events: mpsc::Sender<Flow8DirectHciEvent>,
 ) {
+    // Independent long-lived futures share this one BLE session. A serial
+    // WithResponse write cannot stop polling the passive notification stream.
+    let exit = tokio::select! {
+        exit = writer_loop(&connection, &characteristic, &mut commands, &events) => exit,
+        exit = notification_pump(&mut notifications, characteristic.value_handle, &events) => exit,
+    };
+    let (source, reply) = match exit {
+        TransportExit::Writer { source, reply } => (source, reply),
+        TransportExit::Receiver { source, error } => {
+            if let Some(error) = error {
+                let _ = events.send(Flow8DirectHciEvent::Error(error)).await;
+            }
+            (source, None)
+        }
+    };
+    let result = close_and_disconnect(notifications, connection, source).await;
+    if let Some(reply) = reply {
+        let _ = reply.send(result);
+    }
+    let _ = events.send(Flow8DirectHciEvent::Disconnected).await;
+}
+
+enum TransportExit {
+    Writer {
+        source: &'static str,
+        reply: Option<oneshot::Sender<Result<(), Flow8DirectHciError>>>,
+    },
+    Receiver {
+        source: &'static str,
+        error: Option<String>,
+    },
+}
+
+async fn writer_loop(
+    connection: &BleConnection,
+    characteristic: &GattCharacteristic,
+    commands: &mut mpsc::Receiver<TransportCommand>,
+    events: &mpsc::Sender<Flow8DirectHciEvent>,
+) -> TransportExit {
+    while let Some(command) = commands.recv().await {
+        match command {
+            TransportCommand::Write { value, reply } => {
+                let byte_count = value.len();
+                info!(bytes = byte_count, "DirectHCI write begin");
+                let result = connection
+                    .write(characteristic, value, WriteMode::WithResponse)
+                    .await
+                    .map_err(|error| {
+                        Flow8DirectHciError::directhci("write FLOW 8 characteristic", error)
+                    });
+                match &result {
+                    Ok(()) => info!(bytes = byte_count, "DirectHCI write complete"),
+                    Err(error) => {
+                        warn!(bytes = byte_count, %error, "DirectHCI write failed");
+                        let _ = events
+                            .send(Flow8DirectHciEvent::Error(error.to_string()))
+                            .await;
+                    }
+                }
+                let _ = reply.send(result);
+            }
+            TransportCommand::Disconnect { source, reply } => {
+                return TransportExit::Writer { source, reply };
+            }
+        }
+    }
+    TransportExit::Writer {
+        source: "transport_command_channel_closed",
+        reply: None,
+    }
+}
+
+async fn notification_pump(
+    notifications: &mut GattNotificationStream,
+    value_handle: u16,
+    events: &mpsc::Sender<Flow8DirectHciEvent>,
+) -> TransportExit {
     loop {
-        tokio::select! {
-            biased;
-            command = commands.recv() => {
-                match command {
-                    Some(TransportCommand::Write { value, reply }) => {
-                        let byte_count = value.len();
-                        info!(bytes = byte_count, "DirectHCI write begin");
-                        let result = connection
-                            .write(&characteristic, value, WriteMode::WithResponse)
-                            .await
-                            .map_err(|error| Flow8DirectHciError::directhci(
-                                "write FLOW 8 characteristic",
-                                error,
-                            ));
-                        match &result {
-                            Ok(()) => info!(bytes = byte_count, "DirectHCI write complete"),
-                            Err(error) => {
-                                warn!(bytes = byte_count, %error, "DirectHCI write failed");
-                                let _ = events
-                                    .send(Flow8DirectHciEvent::Error(error.to_string()))
-                                    .await;
-                            }
-                        }
-                        let _ = reply.send(result);
-                    }
-                    Some(TransportCommand::Disconnect { source, reply }) => {
-                        let result = close_and_disconnect(notifications, connection, source).await;
-                        if let Some(reply) = reply {
-                            let _ = reply.send(result);
-                        }
-                        let _ = events.send(Flow8DirectHciEvent::Disconnected).await;
-                        return;
-                    }
-                    None => {
-                        let source = "transport_command_channel_closed";
-                        let _ = close_and_disconnect(notifications, connection, source).await;
-                        return;
-                    }
+        match notifications.recv().await {
+            Ok(Some(event)) if event.handle == value_handle => {
+                let state_fragment = event.value.first() == Some(&0x38);
+                if state_fragment {
+                    info!(
+                        handle = event.handle,
+                        fragment_count_byte = ?event.value.get(1),
+                        sequence_byte = ?event.value.get(2),
+                        fragment_index_byte = ?event.value.get(3),
+                        bytes = event.value.len(),
+                        "FLOW 0x38 SDK stream ingress"
+                    );
+                }
+                debug!(
+                    handle = event.handle,
+                    bytes = event.value.len(),
+                    "forwarding FLOW 8 characteristic value"
+                );
+                let forwarded = events
+                    .send(Flow8DirectHciEvent::Notification(event.value))
+                    .await
+                    .is_ok();
+                if state_fragment {
+                    info!(forwarded, "FLOW 0x38 adapter forwarding result");
+                }
+                if !forwarded {
+                    return TransportExit::Receiver {
+                        source: "rx_event_consumer_closed",
+                        error: None,
+                    };
                 }
             }
-            received = notifications.recv() => {
-                match received {
-                    Ok(Some(event)) if event.handle == characteristic.value_handle => {
-                        let state_fragment = event.value.first() == Some(&0x38);
-                        if state_fragment {
-                            info!(
-                                handle = event.handle,
-                                fragment_count_byte = ?event.value.get(1),
-                                sequence_byte = ?event.value.get(2),
-                                fragment_index_byte = ?event.value.get(3),
-                                bytes = event.value.len(),
-                                "FLOW 0x38 SDK stream ingress"
-                            );
-                        }
-                        debug!(
-                            handle = event.handle,
-                            bytes = event.value.len(),
-                            "forwarding FLOW 8 characteristic value"
-                        );
-                        let forwarded = events
-                            .send(Flow8DirectHciEvent::Notification(event.value))
-                            .await
-                            .is_ok();
-                        if state_fragment {
-                            info!(forwarded, "FLOW 0x38 adapter forwarding result");
-                        }
-                        if !forwarded {
-                            let source = "rx_event_consumer_closed";
-                            let _ = close_and_disconnect(notifications, connection, source).await;
-                            return;
-                        }
-                    }
-                    Ok(Some(event)) => {
-                        warn!(
-                            handle = event.handle,
-                            expected_handle = characteristic.value_handle,
-                            "ignored notification from unexpected handle"
-                        );
-                    }
-                    Ok(None) => {
-                        let source = "ble_peer_disconnected_or_sdk_stream_ended";
-                        warn!(source, "DirectHCI session shutdown begin");
-                        let _ = events.send(Flow8DirectHciEvent::Disconnected).await;
-                        let result = connection.disconnect().await;
-                        info!(source, success = result.is_ok(), "DirectHCI session shutdown complete");
-                        return;
-                    }
-                    Err(error) => {
-                        let source = "transport_error";
-                        warn!(source, %error, "DirectHCI session shutdown begin");
-                        let message = format!("DirectHCI notification stream: {error}");
-                        let _ = events.send(Flow8DirectHciEvent::Error(message)).await;
-                        let _ = events.send(Flow8DirectHciEvent::Disconnected).await;
-                        let result = connection.disconnect().await;
-                        info!(source, success = result.is_ok(), "DirectHCI session shutdown complete");
-                        return;
-                    }
-                }
+            Ok(Some(event)) => {
+                warn!(
+                    handle = event.handle,
+                    expected_handle = value_handle,
+                    "ignored notification from unexpected handle"
+                );
+            }
+            Ok(None) => {
+                return TransportExit::Receiver {
+                    source: "ble_peer_disconnected_or_sdk_stream_ended",
+                    error: None,
+                };
+            }
+            Err(error) => {
+                return TransportExit::Receiver {
+                    source: "transport_error",
+                    error: Some(format!("DirectHCI notification stream: {error}")),
+                };
             }
         }
     }

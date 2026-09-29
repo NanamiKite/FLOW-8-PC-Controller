@@ -2,11 +2,11 @@
 //! present; callers run these futures on a separate Tokio runtime.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fmt,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -26,7 +26,7 @@ use futures_util::Stream;
 #[cfg(not(target_os = "windows"))]
 use futures_util::StreamExt;
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::sleep;
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
@@ -327,6 +327,8 @@ pub struct Flow8Session {
     decoder: CommandStreamDecoder,
     awaiting_state_apply: bool,
     received_host_hello: bool,
+    handshake_response_pending_or_sent: bool,
+    state_request_pending_or_sent: bool,
 }
 
 impl Flow8Session {
@@ -338,6 +340,8 @@ impl Flow8Session {
             decoder: CommandStreamDecoder::default(),
             awaiting_state_apply: false,
             received_host_hello: false,
+            handshake_response_pending_or_sent: false,
+            state_request_pending_or_sent: false,
         }
     }
 
@@ -357,6 +361,8 @@ impl Flow8Session {
             self.sequence = 0;
             self.awaiting_state_apply = false;
             self.received_host_hello = false;
+            self.handshake_response_pending_or_sent = false;
+            self.state_request_pending_or_sent = false;
         } else if phase == SessionPhase::StateSyncing {
             self.awaiting_state_apply = false;
         }
@@ -368,6 +374,8 @@ impl Flow8Session {
     /// registration and never implies a CCCD write.
     pub fn rx_armed(&mut self) -> SessionAction {
         self.received_host_hello = false;
+        self.handshake_response_pending_or_sent = false;
+        self.state_request_pending_or_sent = false;
         self.transition(SessionPhase::Handshaking)
     }
 
@@ -380,6 +388,7 @@ impl Flow8Session {
             ));
         }
         self.awaiting_state_apply = false;
+        self.state_request_pending_or_sent = false;
         Ok(self.transition(SessionPhase::Ready))
     }
 
@@ -445,13 +454,20 @@ impl Flow8Session {
                             ))];
                         }
                         self.received_host_hello = true;
+                        if self.handshake_response_pending_or_sent {
+                            debug!("duplicate FLOW 8 0x35; 0x39 already queued or sent");
+                            return actions;
+                        }
                         if self.phase != SessionPhase::StateSyncing {
                             actions.push(self.transition(SessionPhase::StateSyncing));
                         }
                         match self.encode_command(&TxCommand::HandshakeClient {
                             client_id: self.client_id,
                         }) {
-                            Ok(mut sends) => actions.append(&mut sends),
+                            Ok(mut sends) => {
+                                self.handshake_response_pending_or_sent = true;
+                                actions.append(&mut sends);
+                            }
                             Err(error) => actions.push(SessionAction::Error(error.to_string())),
                         }
                     }
@@ -462,9 +478,16 @@ impl Flow8Session {
                                 self.phase
                             ))];
                         }
+                        if self.state_request_pending_or_sent {
+                            debug!("duplicate FLOW 8 0x36; 0x37 already queued or sent");
+                            return actions;
+                        }
                         info!(source = "rx_0x36", phase = ?self.phase, "FLOW 0x37 action source");
                         match self.encode_command(&TxCommand::GetMixerState) {
-                            Ok(mut sends) => actions.append(&mut sends),
+                            Ok(mut sends) => {
+                                self.state_request_pending_or_sent = true;
+                                actions.append(&mut sends);
+                            }
                             Err(error) => actions.push(SessionAction::Error(error.to_string())),
                         }
                     }
@@ -479,8 +502,12 @@ impl Flow8Session {
                         };
                         info!(source, phase = ?self.phase, "FLOW 0x37 action source");
                         actions.push(self.transition(SessionPhase::StateSyncing));
+                        self.state_request_pending_or_sent = false;
                         match self.encode_command(&TxCommand::GetMixerState) {
-                            Ok(mut sends) => actions.append(&mut sends),
+                            Ok(mut sends) => {
+                                self.state_request_pending_or_sent = true;
+                                actions.append(&mut sends);
+                            }
                             Err(error) => actions.push(SessionAction::Error(error.to_string())),
                         }
                     }
@@ -829,16 +856,156 @@ fn directhci_client_id() -> Result<[u8; 16], String> {
     Ok(client_id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuousKey {
+    Pan(u8),
+    EndpointPan(u8),
+    Gain(u8),
+    Route(u8, u8),
+    Master(u8),
+    GraphicEq(u8, u8),
+    ParametricEq(u8, u8),
+    Compressor(u8),
+    Limiter(u8),
+    Tempo,
+    Delay(u8),
+}
+
+impl ContinuousKey {
+    fn for_command(command: &TxCommand) -> Option<Self> {
+        match command {
+            TxCommand::Pan { input, .. } => Some(Self::Pan(input.endpoint())),
+            TxCommand::EndpointPan { endpoint, .. } => Some(Self::EndpointPan(*endpoint)),
+            TxCommand::Gain { input, .. } => Some(Self::Gain(input.endpoint())),
+            TxCommand::RouteLevel {
+                source,
+                destination,
+                ..
+            } => Some(Self::Route(source.endpoint(), destination.endpoint())),
+            TxCommand::DestinationMaster { destination, .. } => {
+                Some(Self::Master(destination.endpoint()))
+            }
+            TxCommand::GraphicEq { endpoint, band, .. } => Some(Self::GraphicEq(*endpoint, *band)),
+            TxCommand::ParametricEq { input, band, .. } => {
+                Some(Self::ParametricEq(input.endpoint(), *band))
+            }
+            TxCommand::Compressor { input, .. } => Some(Self::Compressor(input.endpoint())),
+            TxCommand::Limiter { endpoint, .. } => Some(Self::Limiter(*endpoint)),
+            TxCommand::FxTempo { .. } => Some(Self::Tempo),
+            TxCommand::ChannelDelay { endpoint, .. } => Some(Self::Delay(*endpoint)),
+            // Discrete commands and mixed continuous/discrete payloads remain FIFO.
+            _ => None,
+        }
+    }
+}
+
 enum WriterCommand {
-    Write(Vec<u8>),
+    Write {
+        frame: Vec<u8>,
+        key: Option<ContinuousKey>,
+    },
     MarkHandshakeRx,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueDisposition {
+    Queued,
+    Replaced,
+}
+
+struct WriterMailboxState {
+    pending: VecDeque<WriterCommand>,
+    open: bool,
+}
+
+struct WriterMailbox {
+    state: Mutex<WriterMailboxState>,
+    ready: Notify,
+}
+
+impl WriterMailbox {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(WriterMailboxState {
+                pending: VecDeque::new(),
+                open: true,
+            }),
+            ready: Notify::new(),
+        }
+    }
+
+    fn push(&self, command: WriterCommand) -> Result<QueueDisposition, BleError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| BleError::Transport("FLOW 8 TX mailbox poisoned".into()))?;
+        if !state.open {
+            return Err(BleError::Transport("FLOW 8 TX writer stopped".into()));
+        }
+        match command {
+            WriterCommand::Write {
+                frame,
+                key: Some(key),
+            } => {
+                // Never coalesce across a discrete operation or handshake marker:
+                // their ordering relative to control changes must be preserved.
+                for pending in state.pending.iter_mut().rev() {
+                    match pending {
+                        WriterCommand::Write {
+                            frame: queued,
+                            key: Some(existing),
+                        } if *existing == key => {
+                            *queued = frame;
+                            return Ok(QueueDisposition::Replaced);
+                        }
+                        WriterCommand::Write { key: None, .. } | WriterCommand::MarkHandshakeRx => {
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                state.pending.push_back(WriterCommand::Write {
+                    frame,
+                    key: Some(key),
+                });
+            }
+            other => state.pending.push_back(other),
+        }
+        drop(state);
+        self.ready.notify_one();
+        Ok(QueueDisposition::Queued)
+    }
+
+    async fn recv(&self) -> Option<WriterCommand> {
+        loop {
+            let notified = self.ready.notified();
+            {
+                let mut state = self.state.lock().ok()?;
+                if let Some(command) = state.pending.pop_front() {
+                    return Some(command);
+                }
+                if !state.open {
+                    return None;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.open = false;
+            state.pending.clear();
+        }
+        self.ready.notify_one();
+    }
 }
 
 struct ActiveSession {
     backend: &'static str,
     mtu: u16,
     write_type: WriteType,
-    writer_tx: mpsc::UnboundedSender<WriterCommand>,
+    mailbox: Arc<WriterMailbox>,
     shutdown_tx: Option<oneshot::Sender<&'static str>>,
     writer: tokio::task::JoinHandle<()>,
 }
@@ -851,14 +1018,14 @@ impl ActiveSession {
         let backend = session.backend_name();
         let mtu = session.mtu();
         let write_type = session.write_type();
-        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        let mailbox = Arc::new(WriterMailbox::new());
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (started_tx, started_rx) = oneshot::channel();
-        // A dedicated Tokio task owns the one active BLE session. The RX actor
-        // never awaits GATT writes and all frames use this one FIFO sender.
+        // The RX actor never awaits a GATT write. Only the one session writer
+        // may take a frame out of the pending mailbox and write it.
         let writer = tokio::spawn(run_writer(
             session,
-            writer_rx,
+            Arc::clone(&mailbox),
             shutdown_rx,
             started_tx,
             events,
@@ -870,20 +1037,22 @@ impl ActiveSession {
             backend,
             mtu,
             write_type,
-            writer_tx,
+            mailbox,
             shutdown_tx: Some(shutdown_tx),
             writer,
         })
     }
 
-    fn queue(&self, frame: Vec<u8>) -> Result<(), BleError> {
-        self.writer_tx
-            .send(WriterCommand::Write(frame))
-            .map_err(|_| BleError::Transport("FLOW 8 TX writer stopped".into()))
+    fn queue(
+        &self,
+        frame: Vec<u8>,
+        key: Option<ContinuousKey>,
+    ) -> Result<QueueDisposition, BleError> {
+        self.mailbox.push(WriterCommand::Write { frame, key })
     }
 
     fn mark_handshake_rx(&self) {
-        let _ = self.writer_tx.send(WriterCommand::MarkHandshakeRx);
+        let _ = self.mailbox.push(WriterCommand::MarkHandshakeRx);
     }
 
     async fn disconnect(mut self, source: &'static str) {
@@ -896,7 +1065,7 @@ impl ActiveSession {
 
 async fn run_writer(
     mut session: RuntimeSession,
-    mut rx: mpsc::UnboundedReceiver<WriterCommand>,
+    mailbox: Arc<WriterMailbox>,
     mut shutdown: oneshot::Receiver<&'static str>,
     started: oneshot::Sender<()>,
     events: mpsc::UnboundedSender<DeviceEvent>,
@@ -907,11 +1076,11 @@ async fn run_writer(
         let request = tokio::select! {
             biased;
             reason = &mut shutdown => break reason.unwrap_or("runtime_session_drop"),
-            request = rx.recv() => request,
+            request = mailbox.recv() => request,
         };
         match request {
             Some(WriterCommand::MarkHandshakeRx) => session.mark_handshake_rx(),
-            Some(WriterCommand::Write(frame)) => {
+            Some(WriterCommand::Write { frame, .. }) => {
                 let command = frame.first().copied().unwrap_or_default();
                 info!(
                     backend = session.backend_name(),
@@ -941,14 +1110,15 @@ async fn run_writer(
                     }
                 }
             }
-            None => break "tx_channel_closed",
+            None => break "tx_mailbox_closed",
         }
     };
+    mailbox.close();
     info!(
         backend = session.backend_name(),
         reason, "FLOW TX writer shutdown"
     );
-    if matches!(reason, "tx_channel_closed" | "runtime_session_drop") {
+    if matches!(reason, "tx_mailbox_closed" | "runtime_session_drop") {
         let _ = events.send(DeviceEvent::Error(format!(
             "FLOW 8 TX writer stopped unexpectedly: {reason}"
         )));
@@ -962,6 +1132,15 @@ fn execute_actions(
     actions: Vec<SessionAction>,
     session: Option<&ActiveSession>,
     events: &mpsc::UnboundedSender<DeviceEvent>,
+) {
+    execute_actions_with_key(actions, session, events, None);
+}
+
+fn execute_actions_with_key(
+    actions: Vec<SessionAction>,
+    session: Option<&ActiveSession>,
+    events: &mpsc::UnboundedSender<DeviceEvent>,
+    key: Option<ContinuousKey>,
 ) {
     for action in actions {
         match action {
@@ -985,14 +1164,22 @@ fn execute_actions(
                 };
                 let bytes = frame.len();
                 trace!(raw = %hex_bytes(&frame), "FLOW TX raw packet");
-                match session.queue(frame) {
-                    Ok(()) => {
+                match session.queue(frame, key) {
+                    Ok(QueueDisposition::Queued) => {
                         info!(backend = session.backend, command, bytes, "FLOW TX queued");
                         match command {
                             0x39 => info!("sending FLOW 8 handshake response 0x39"),
                             0x37 => info!("requesting FLOW 8 full mixer state with 0x37"),
                             _ => {}
                         }
+                    }
+                    Ok(QueueDisposition::Replaced) => {
+                        debug!(
+                            backend = session.backend,
+                            command,
+                            ?key,
+                            "FLOW TX replaced unsent continuous value"
+                        );
                     }
                     Err(error) => {
                         let _ = events.send(DeviceEvent::Error(error.to_string()));
@@ -1001,6 +1188,10 @@ fn execute_actions(
             }
         }
     }
+}
+
+fn scan_allowed(phase: SessionPhase, session_active: bool) -> bool {
+    !session_active && matches!(phase, SessionPhase::Disconnected | SessionPhase::Error)
 }
 
 async fn handle_device_command(
@@ -1021,6 +1212,10 @@ async fn handle_device_command(
             return false;
         }
         DeviceCommand::Scan { duration } => {
+            if !scan_allowed(coordinator.phase(), session.is_some()) {
+                info!(phase = ?coordinator.phase(), "FLOW scan ignored while a session is active");
+                return true;
+            }
             let _ = events.send(DeviceEvent::Phase(SessionPhase::Scanning));
             match BleTransport::new().await {
                 Ok(transport) => match transport.scan(duration).await {
@@ -1118,9 +1313,15 @@ async fn handle_device_command(
             if matches!(command, TxCommand::GetMixerState) {
                 info!(source = "user_semantic_request", phase = ?coordinator.phase(), "FLOW 0x37 action source");
             }
+            let key = ContinuousKey::for_command(&command);
             match coordinator.encode_command(&command) {
                 Ok(actions) => {
-                    execute_actions(actions, session.as_ref(), events);
+                    if matches!(command, TxCommand::GetMixerState) {
+                        let phase = coordinator.transition(SessionPhase::StateSyncing);
+                        coordinator.state_request_pending_or_sent = true;
+                        execute_actions(vec![phase], session.as_ref(), events);
+                    }
+                    execute_actions_with_key(actions, session.as_ref(), events, key);
                 }
                 Err(error) => {
                     let _ = events.send(DeviceEvent::Error(error.to_string()));
@@ -1392,6 +1593,92 @@ mod tests {
             monitor_routing: 0,
             snapshot_scope: 0,
         }
+    }
+
+    #[test]
+    fn scan_cannot_preempt_an_active_session() {
+        assert!(!scan_allowed(SessionPhase::Ready, true));
+        assert!(!scan_allowed(SessionPhase::StateSyncing, true));
+        assert!(!scan_allowed(SessionPhase::Error, true));
+        assert!(!scan_allowed(SessionPhase::Connecting, false));
+        assert!(scan_allowed(SessionPhase::Disconnected, false));
+        assert!(scan_allowed(SessionPhase::Error, false));
+    }
+
+    fn queue_protocol_command(mailbox: &WriterMailbox, command: TxCommand) {
+        let key = ContinuousKey::for_command(&command);
+        let frame = flow8_protocol::encode(&command).unwrap();
+        mailbox.push(WriterCommand::Write { frame, key }).unwrap();
+    }
+
+    #[test]
+    fn pending_continuous_route_keeps_latest_value_per_source_and_destination() {
+        use flow8_model::{InputId, MixDestination};
+
+        let mailbox = WriterMailbox::new();
+        let route = |destination, normalized| TxCommand::RouteLevel {
+            source: InputId::Input1,
+            destination,
+            normalized,
+        };
+        queue_protocol_command(&mailbox, route(MixDestination::Main, 0.2));
+        queue_protocol_command(&mailbox, route(MixDestination::Monitor1, 0.4));
+        queue_protocol_command(&mailbox, route(MixDestination::Main, 0.8));
+
+        let state = mailbox.state.lock().unwrap();
+        assert_eq!(state.pending.len(), 2);
+        let frames: Vec<_> = state
+            .pending
+            .iter()
+            .map(|command| match command {
+                WriterCommand::Write { frame, .. } => frame.clone(),
+                WriterCommand::MarkHandshakeRx => panic!("unexpected marker"),
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            vec![
+                flow8_protocol::encode(&route(MixDestination::Main, 0.8)).unwrap(),
+                flow8_protocol::encode(&route(MixDestination::Monitor1, 0.4)).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn discrete_write_is_fifo_barrier_for_continuous_coalescing() {
+        use flow8_model::{InputId, MixDestination};
+
+        let mailbox = WriterMailbox::new();
+        let route = |normalized| TxCommand::RouteLevel {
+            source: InputId::Input1,
+            destination: MixDestination::Main,
+            normalized,
+        };
+        let mute = TxCommand::Mute {
+            endpoint: InputId::Input1.endpoint(),
+            enabled: true,
+        };
+        queue_protocol_command(&mailbox, route(0.2));
+        queue_protocol_command(&mailbox, mute.clone());
+        queue_protocol_command(&mailbox, route(0.8));
+
+        let state = mailbox.state.lock().unwrap();
+        let frames: Vec<_> = state
+            .pending
+            .iter()
+            .map(|command| match command {
+                WriterCommand::Write { frame, .. } => frame.clone(),
+                WriterCommand::MarkHandshakeRx => panic!("unexpected marker"),
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            vec![
+                flow8_protocol::encode(&route(0.2)).unwrap(),
+                flow8_protocol::encode(&mute).unwrap(),
+                flow8_protocol::encode(&route(0.8)).unwrap(),
+            ]
+        );
     }
 
     #[test]
