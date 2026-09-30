@@ -89,8 +89,27 @@ impl KnownSetting {
     }
 }
 
+/// Endpoint class for a read-only 0x16 channel-state request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelStateTarget {
+    Input(InputId),
+    Destination(MixDestination),
+}
+
+impl ChannelStateTarget {
+    pub const fn endpoint(self) -> u8 {
+        match self {
+            Self::Input(input) => input.endpoint(),
+            Self::Destination(destination) => destination.endpoint(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticCommand {
+    RequestChannelState {
+        target: ChannelStateTarget,
+    },
     SetGain {
         input: InputId,
         db: f32,
@@ -216,6 +235,9 @@ pub enum SemanticCommand {
 impl SemanticCommand {
     pub fn to_protocol(&self) -> TxCommand {
         match self {
+            Self::RequestChannelState { target } => TxCommand::GetChannelState {
+                endpoint: target.endpoint(),
+            },
             Self::SetGain { input, db } => TxCommand::Gain {
                 input: *input,
                 db: *db,
@@ -506,6 +528,7 @@ impl SemanticCommand {
             | Self::RenameSnapshot { .. }
             | Self::SelectDeviceOutput { .. }
             | Self::RequestMeters { .. }
+            | Self::RequestChannelState { .. }
             | Self::RequestChannelLabels
             | Self::RequestFullState
             | Self::RequestSnapshotNames
@@ -1262,7 +1285,8 @@ impl Flow8Store {
             SemanticCommand::RequestMeters { destination } => {
                 self.meter_output_target = Some(destination);
             }
-            SemanticCommand::RequestChannelLabels
+            SemanticCommand::RequestChannelState { .. }
+            | SemanticCommand::RequestChannelLabels
             | SemanticCommand::RequestFullState
             | SemanticCommand::RequestSnapshotNames => {}
             SemanticCommand::FactoryReset => {

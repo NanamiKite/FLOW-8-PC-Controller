@@ -11,7 +11,9 @@ use eframe::egui::{
     self, Align, Color32, FontId, Layout, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
 };
 use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage, SessionPhase};
-use flow8_core::{Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState};
+use flow8_core::{
+    ChannelStateTarget, Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState,
+};
 use flow8_model::{
     EqState, EvidenceStatus, FX_PRESET_COUNT, FxId, HeadphoneSource, InputChannelState, InputId,
     MixBusId, MixDestination, MonitorRoutingSource, ParameterSpec, SnapshotSlotState, TapPoint,
@@ -1161,7 +1163,14 @@ impl Flow8App {
                 self.page = page;
             }
             if let Some(destination) = destination {
-                self.store.state.selected_destination = destination;
+                if self.store.state.selected_destination != destination {
+                    self.store.state.selected_destination = destination;
+                    if self.store.state.session == SessionState::Ready {
+                        self.dispatch(SemanticCommand::RequestChannelState {
+                            target: ChannelStateTarget::Destination(destination),
+                        });
+                    }
+                }
             }
         }
     }
@@ -1374,11 +1383,17 @@ impl Flow8App {
     }
 
     fn apply_strip_action(&mut self, id: InputId, action: StripAction) {
+        let selection_changed = self.store.state.selected_input != Some(id);
         self.store.state.selected_input = Some(id);
         match action {
             StripAction::Select => {
                 self.inspector_input = true;
                 self.inspector_open = true;
+                if selection_changed && self.store.state.session == SessionState::Ready {
+                    self.dispatch(SemanticCommand::RequestChannelState {
+                        target: ChannelStateTarget::Input(id),
+                    });
+                }
             }
             StripAction::Route(value) => self.dispatch(SemanticCommand::SetRouteLevel {
                 source: id,
@@ -1499,6 +1514,14 @@ impl Flow8App {
 
     fn output_inspector(&mut self, ui: &mut egui::Ui) {
         let destination = self.store.state.selected_destination;
+        if ui
+            .small_button(self.language.tr("Refresh channel", "刷新通道"))
+            .clicked()
+        {
+            self.dispatch(SemanticCommand::RequestChannelState {
+                target: ChannelStateTarget::Destination(destination),
+            });
+        }
         if let Some(bus_id) = bus_id_for_destination(destination)
             && let Some(bus) = self.store.state.bus_for_destination(destination).cloned()
         {
@@ -1771,6 +1794,14 @@ impl Flow8App {
     fn input_inspector(&mut self, ui: &mut egui::Ui, id: InputId) {
         let channel = self.store.state.channels[id.index()].clone();
         card(ui, |ui| {
+            if ui
+                .small_button(self.language.tr("Refresh channel", "刷新通道"))
+                .clicked()
+            {
+                self.dispatch(SemanticCommand::RequestChannelState {
+                    target: ChannelStateTarget::Input(id),
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(self.language.tr("INPUT DETAIL", "输入详情"))
@@ -2076,7 +2107,14 @@ impl Flow8App {
                 )
                 .clicked()
                 {
-                    self.store.state.selected_destination = destination;
+                    if self.store.state.selected_destination != destination {
+                        self.store.state.selected_destination = destination;
+                        if self.store.state.session == SessionState::Ready {
+                            self.dispatch(SemanticCommand::RequestChannelState {
+                                target: ChannelStateTarget::Destination(destination),
+                            });
+                        }
+                    }
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2130,7 +2168,13 @@ impl Flow8App {
                 }
             }
             if response.clicked() {
+                let selection_changed = self.store.state.selected_input != Some(id);
                 self.store.state.selected_input = Some(id);
+                if selection_changed && self.store.state.session == SessionState::Ready {
+                    self.dispatch(SemanticCommand::RequestChannelState {
+                        target: ChannelStateTarget::Input(id),
+                    });
+                }
             }
             let channel = self.store.state.channels[index].clone();
             let route = channel.route_levels[self.store.state.selected_destination.index()]
