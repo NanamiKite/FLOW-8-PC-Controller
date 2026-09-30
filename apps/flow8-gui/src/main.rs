@@ -151,6 +151,129 @@ fn device_slot_status(slot: &SnapshotSlotState) -> DeviceSlotStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SnapshotGridLayout {
+    columns: usize,
+    card_inner_width: f32,
+    button_width: f32,
+    gap: f32,
+}
+
+impl SnapshotGridLayout {
+    fn new(available_width: f32, scale: f32, gap: f32, slots: usize) -> Self {
+        // Count a new column only when another complete card, including four
+        // usable buttons and the card margins, fits in the visible width.
+        let min_card_width = (4.0 * 90.0 * scale + 3.0 * gap + 28.0).max(410.0 * scale);
+        let columns = (((available_width + gap) / (min_card_width + gap)).floor() as usize)
+            .clamp(1, slots.max(1));
+        let card_width =
+            ((available_width - gap * (columns - 1) as f32) / columns as f32).min(560.0 * scale);
+        // The card has 12-point side margins; leave extra rounding slack.
+        let card_inner_width = (card_width - 28.0).max(0.0).floor();
+        let button_width = ((card_inner_width - 3.0 * gap) / 4.0).max(0.0).floor();
+        Self {
+            columns,
+            card_inner_width,
+            button_width,
+            gap,
+        }
+    }
+
+    fn group_width(self) -> f32 {
+        // Frame: two 12-point inner margins and two 1-point strokes.
+        self.columns as f32 * (self.card_inner_width + 26.0) + (self.columns - 1) as f32 * self.gap
+    }
+}
+
+fn ellipsize_snapshot_name(
+    painter: &egui::Painter,
+    name: &str,
+    font: &FontId,
+    max_width: f32,
+) -> String {
+    let width = |text: String| painter.layout_no_wrap(text, font.clone(), TEXT).size().x;
+    if width(name.to_owned()) <= max_width {
+        return name.to_owned();
+    }
+    let characters: Vec<char> = name.chars().collect();
+    let mut low = 0;
+    let mut high = characters.len();
+    while low < high {
+        let middle = (low + high + 1) / 2;
+        let candidate = format!("{}…", characters[..middle].iter().collect::<String>());
+        if width(candidate) <= max_width {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    format!("{}…", characters[..low].iter().collect::<String>())
+}
+
+fn snapshot_status_badge(
+    ui: &mut egui::Ui,
+    status: &DeviceSlotStatus,
+    language: Language,
+) -> Response {
+    let (label, fill, foreground) = match status {
+        DeviceSlotStatus::Free => (
+            language.tr("Free", "空闲"),
+            GREEN.gamma_multiply(0.35),
+            GREEN,
+        ),
+        DeviceSlotStatus::Occupied(_) => (
+            language.tr("Occupied", "已占用"),
+            RED.gamma_multiply(0.35),
+            RED,
+        ),
+        DeviceSlotStatus::Unknown => (language.tr("Unknown", "未知"), SURFACE_ALT, SECONDARY),
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(5)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).color(foreground));
+        })
+        .response
+}
+
+fn snapshot_name_row(
+    ui: &mut egui::Ui,
+    name: Option<&str>,
+    busy: bool,
+    width: f32,
+    font_size: f32,
+    language: Language,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(width, (font_size * 1.4).round_ui()),
+        Sense::hover(),
+    );
+    let text = if busy {
+        language.tr("Waiting for device", "等待设备回报")
+    } else {
+        name.unwrap_or("")
+    };
+    if !text.is_empty() {
+        let painter = ui.painter().with_clip_rect(rect);
+        let font = FontId::proportional(font_size);
+        let display = ellipsize_snapshot_name(&painter, text, &font, rect.width() - 4.0);
+        painter.text(
+            rect.left_center() + Vec2::new(2.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            display,
+            font,
+            if busy { SECONDARY } else { TEXT },
+        );
+    }
+    if let Some(name) = name {
+        response.on_hover_text(name)
+    } else {
+        response
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConfirmationAction {
     EnablePhantom(InputId),
@@ -167,6 +290,16 @@ enum ConfirmationAction {
         slot: u8,
         observed_name: Option<String>,
     },
+    RenameDeviceSnapshot {
+        slot: u8,
+        name: String,
+        observed_name: Option<String>,
+    },
+}
+
+fn valid_snapshot_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty() && trimmed.len() <= 20 && !trimmed.chars().any(char::is_control)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +462,11 @@ impl Flow8App {
             | ConfirmationAction::DeleteDeviceSnapshot {
                 slot,
                 observed_name,
+            }
+            | ConfirmationAction::RenameDeviceSnapshot {
+                slot,
+                observed_name,
+                ..
             } => self
                 .store
                 .state
@@ -369,7 +507,22 @@ impl Flow8App {
                 enabled: true,
             },
             ConfirmationAction::SaveDeviceSnapshot { slot, name, .. } => {
-                SemanticCommand::SaveSnapshot { slot, name }
+                if !valid_snapshot_name(&name) {
+                    return;
+                }
+                SemanticCommand::SaveSnapshot {
+                    slot,
+                    name: name.trim().to_owned(),
+                }
+            }
+            ConfirmationAction::RenameDeviceSnapshot { slot, name, .. } => {
+                if !valid_snapshot_name(&name) {
+                    return;
+                }
+                SemanticCommand::RenameSnapshot {
+                    slot,
+                    name: name.trim().to_owned(),
+                }
             }
             ConfirmationAction::LoadDeviceSnapshot { slot, .. } => {
                 SemanticCommand::LoadSnapshot { slot }
@@ -383,14 +536,14 @@ impl Flow8App {
 
     fn confirmation_dialog(&mut self, context: &egui::Context) {
         self.clear_stale_confirmation();
-        let Some(pending) = self.pending_confirmation.clone() else {
+        let Some(mut pending) = self.pending_confirmation.clone() else {
             return;
         };
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.pending_confirmation = None;
             return;
         }
-        let (title, description) = match pending.action {
+        let (title, description) = match pending.action.clone() {
             ConfirmationAction::EnablePhantom(input) => (
                 self.language.tr("Enable 48 V?", "开启 48 V？").to_owned(),
                 format!(
@@ -411,16 +564,16 @@ impl Flow8App {
                     slot + 1,
                     match observed_name.as_deref() {
                         Some("") => self.language.tr(
-                            "Current mixer settings will be saved to this free device slot. This does not save a PC file.",
-                            "当前混音设置将保存到此空闲设备槽位；不会保存电脑文件。",
+                            "Current mixer settings will be saved to this free device slot.",
+                            "当前混音设置将保存到此空闲设备槽位。",
                         ),
                         Some(_) => self.language.tr(
-                            "Current mixer settings will replace the snapshot stored in this slot. This does not save a PC file.",
-                            "当前混音设置会覆盖此槽位中的快照；不会保存电脑文件。",
+                            "Current mixer settings will replace the snapshot stored in this slot.",
+                            "当前混音设置会覆盖此槽位中的快照。",
                         ),
                         None => self.language.tr(
-                            "Slot occupancy is unknown. Saving may overwrite a device snapshot. This does not save a PC file.",
-                            "槽位占用状态未知；保存可能覆盖设备快照，也不会保存电脑文件。",
+                            "Slot occupancy is unknown. Saving may overwrite a device snapshot.",
+                            "槽位占用状态未知；保存可能覆盖设备快照。",
                         ),
                     }
                 ),
@@ -432,8 +585,8 @@ impl Flow8App {
                     self.language.tr("FLOW 8 device slot", "FLOW 8 设备槽位"),
                     slot + 1,
                     self.language.tr(
-                        "This applies the saved snapshot to the live FLOW 8 mixer. Current settings may change according to the snapshot scope; this does not load a PC file.",
-                        "这会将快照应用到 FLOW 8 当前混音；具体设置可能按快照范围改变，不会载入电脑文件。",
+                        "This applies the saved snapshot to the live FLOW 8 mixer. Current settings may change according to the snapshot scope.",
+                        "这会将快照应用到 FLOW 8 当前混音；具体设置可能按快照范围改变。",
                     )
                 ),
             ),
@@ -444,8 +597,20 @@ impl Flow8App {
                     self.language.tr("FLOW 8 device slot", "FLOW 8 设备槽位"),
                     slot + 1,
                     self.language.tr(
-                        "The snapshot stored on FLOW 8 will be deleted. This cannot be undone here; PC files are unaffected.",
-                        "FLOW 8 上保存的快照将被删除，此处无法撤销；电脑文件不受影响。",
+                        "The snapshot stored on FLOW 8 will be deleted. This cannot be undone here.",
+                        "FLOW 8 上保存的快照将被删除，此处无法撤销。",
+                    )
+                ),
+            ),
+            ConfirmationAction::RenameDeviceSnapshot { slot, .. } => (
+                self.language.tr("Rename device snapshot?", "重命名设备快照？").to_owned(),
+                format!(
+                    "{} {:02}. {}",
+                    self.language.tr("FLOW 8 device slot", "FLOW 8 设备槽位"),
+                    slot + 1,
+                    self.language.tr(
+                        "Only the name stored in this FLOW 8 slot will change.",
+                        "只修改 FLOW 8 此槽位保存的名称。",
                     )
                 ),
             ),
@@ -461,16 +626,44 @@ impl Flow8App {
             .show(context, |ui| {
                 ui.set_max_width(420.0);
                 ui.label(description);
+                let mut can_confirm = true;
+                if let ConfirmationAction::SaveDeviceSnapshot { name, .. }
+                | ConfirmationAction::RenameDeviceSnapshot { name, .. } = &mut pending.action
+                {
+                    ui.add_space(8.0);
+                    ui.label(self.language.tr("Snapshot name", "快照名称"));
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .desired_width(300.0)
+                            .hint_text(self.language.tr("Name", "名称")),
+                    );
+                    can_confirm = valid_snapshot_name(name);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} / 20 {}",
+                            name.trim().len(),
+                            self.language.tr("UTF-8 bytes", "UTF-8 字节")
+                        ))
+                        .color(if can_confirm { SECONDARY } else { RED }),
+                    );
+                }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button(self.language.tr("Cancel", "取消")).clicked() {
                         decision = Some(false);
                     }
-                    if ui.button(self.language.tr("Confirm", "确认")).clicked() {
+                    if ui
+                        .add_enabled(
+                            can_confirm,
+                            egui::Button::new(self.language.tr("Confirm", "确认")),
+                        )
+                        .clicked()
+                    {
                         decision = Some(true);
                     }
                 });
             });
+        self.pending_confirmation = Some(pending);
         match decision {
             Some(true) => self.confirm_pending_action(),
             Some(false) => self.pending_confirmation = None,
@@ -1868,125 +2061,141 @@ impl Flow8App {
 
     fn snapshots_page(&mut self, ui: &mut egui::Ui) {
         ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.add_space(18.0);
-            ui.vertical(|ui| {
-                ui.heading(
-                    egui::RichText::new(self.language.tr("Device Snapshots", "设备快照"))
-                        .color(TEXT),
-                );
-                ui.label(
-                    egui::RichText::new(self.language.tr(
-                        "These slots are stored on FLOW 8, not on this computer.",
-                        "这些槽位保存在 FLOW 8 上，不在本机。",
-                    ))
-                    .color(SECONDARY),
-                );
-                if ui
-                    .button(self.language.tr("Refresh slots", "刷新槽位"))
-                    .clicked()
-                {
-                    self.dispatch(SemanticCommand::RequestSnapshotNames);
-                }
-                ui.add_space(10.0);
-                let snapshots = self.store.state.snapshots.device_slots.clone();
-                egui::Grid::new("device-snapshots")
-                    .num_columns(5)
-                    .spacing([9.0, 9.0])
-                    .show(ui, |ui| {
-                        for (index, snapshot) in snapshots.into_iter().enumerate() {
-                            card(ui, |ui| {
-                                ui.set_min_width(150.0);
+        let snapshots = self.store.state.snapshots.device_slots.clone();
+        let viewport_width = ui.available_width().min(ui.clip_rect().width()).max(0.0);
+        let layout = SnapshotGridLayout::new(
+            (viewport_width - 36.0).max(0.0),
+            self.metrics.ui_scale,
+            self.metrics.spacing,
+            snapshots.len(),
+        );
+        let _ = centered_snapshot_content(ui, layout.group_width(), |ui| {
+            ui.heading(
+                egui::RichText::new(self.language.tr("Device Snapshots", "设备快照")).color(TEXT),
+            );
+            ui.label(
+                egui::RichText::new(self.language.tr(
+                    "These slots are stored on FLOW 8.",
+                    "这些槽位保存在 FLOW 8 上。",
+                ))
+                .color(SECONDARY),
+            );
+            if ui
+                .button(self.language.tr("Refresh slots", "刷新槽位"))
+                .clicked()
+            {
+                self.dispatch(SemanticCommand::RequestSnapshotNames);
+            }
+            ui.add_space(10.0);
+            for row in snapshots.chunks(layout.columns) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = layout.gap;
+                    for snapshot in row {
+                        let _ = snapshot_card(ui, layout.card_inner_width, |ui| {
+                            let status = device_slot_status(snapshot);
+                            let busy = snapshot.name.pending.is_some();
+                            let occupied = matches!(status, DeviceSlotStatus::Occupied(_)) && !busy;
+                            ui.horizontal(|ui| {
                                 ui.label(
                                     egui::RichText::new(format!("{:02}", snapshot.slot + 1))
                                         .strong()
                                         .color(YELLOW),
                                 );
-                                let status = device_slot_status(&snapshot);
-                                let busy = snapshot.name.pending.is_some();
-                                let occupied =
-                                    matches!(status, DeviceSlotStatus::Occupied(_)) && !busy;
-                                let status_label = match &status {
-                                    DeviceSlotStatus::Unknown => {
-                                        self.language.tr("Unknown", "未知")
-                                    }
-                                    DeviceSlotStatus::Free => self.language.tr("Free", "空闲"),
-                                    DeviceSlotStatus::Occupied(_) => {
-                                        self.language.tr("Occupied", "已占用")
-                                    }
-                                };
-                                ui.label(egui::RichText::new(status_label).color(SECONDARY));
-                                if let DeviceSlotStatus::Occupied(name) = &status {
-                                    ui.label(name);
-                                }
-                                if snapshot.name.pending.is_some() {
-                                    ui.label(
-                                        egui::RichText::new(
-                                            self.language.tr("Waiting for device", "等待设备回报"),
-                                        )
-                                        .color(SECONDARY),
-                                    );
-                                }
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            occupied,
-                                            egui::Button::new(self.language.tr("Load", "载入"))
-                                                .small(),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.request_confirmation(
-                                            ConfirmationAction::LoadDeviceSnapshot {
-                                                slot: snapshot.slot,
-                                                observed_name: snapshot.name.confirmed.clone(),
-                                            },
-                                        );
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            !busy,
-                                            egui::Button::new(self.language.tr("Save", "保存"))
-                                                .small(),
-                                        )
-                                        .clicked()
-                                    {
-                                        let name = match &status {
-                                            DeviceSlotStatus::Occupied(name) => name.clone(),
-                                            _ => format!("Snapshot {:02}", snapshot.slot + 1),
-                                        };
-                                        self.request_confirmation(
-                                            ConfirmationAction::SaveDeviceSnapshot {
-                                                slot: snapshot.slot,
-                                                name,
-                                                observed_name: snapshot.name.confirmed.clone(),
-                                            },
-                                        );
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            occupied,
-                                            egui::Button::new(self.language.tr("Delete", "删除"))
-                                                .small(),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.request_confirmation(
-                                            ConfirmationAction::DeleteDeviceSnapshot {
-                                                slot: snapshot.slot,
-                                                observed_name: snapshot.name.confirmed.clone(),
-                                            },
-                                        );
-                                    }
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    snapshot_status_badge(ui, &status, self.language);
                                 });
                             });
-                            if index % 5 == 4 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-                ui.add_space(10.0);
-            });
+                            let name = match &status {
+                                DeviceSlotStatus::Occupied(name) => Some(name.as_str()),
+                                _ => None,
+                            };
+                            snapshot_name_row(
+                                ui,
+                                name,
+                                busy,
+                                layout.card_inner_width,
+                                self.metrics.body_font,
+                                self.language,
+                            );
+                            let button_size =
+                                Vec2::new(layout.button_width, self.metrics.control_height);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = layout.gap;
+                                if snapshot_action_button(
+                                    ui,
+                                    self.language.tr("Load", "载入"),
+                                    occupied,
+                                    button_size,
+                                )
+                                .clicked()
+                                {
+                                    self.request_confirmation(
+                                        ConfirmationAction::LoadDeviceSnapshot {
+                                            slot: snapshot.slot,
+                                            observed_name: snapshot.name.confirmed.clone(),
+                                        },
+                                    );
+                                }
+                                if snapshot_action_button(
+                                    ui,
+                                    self.language.tr("Save", "保存"),
+                                    !busy,
+                                    button_size,
+                                )
+                                .clicked()
+                                {
+                                    let name = match &status {
+                                        DeviceSlotStatus::Occupied(name) => name.clone(),
+                                        _ => format!("Snapshot {:02}", snapshot.slot + 1),
+                                    };
+                                    self.request_confirmation(
+                                        ConfirmationAction::SaveDeviceSnapshot {
+                                            slot: snapshot.slot,
+                                            name,
+                                            observed_name: snapshot.name.confirmed.clone(),
+                                        },
+                                    );
+                                }
+                                if snapshot_action_button(
+                                    ui,
+                                    self.language.tr("Delete", "删除"),
+                                    occupied,
+                                    button_size,
+                                )
+                                .clicked()
+                                {
+                                    self.request_confirmation(
+                                        ConfirmationAction::DeleteDeviceSnapshot {
+                                            slot: snapshot.slot,
+                                            observed_name: snapshot.name.confirmed.clone(),
+                                        },
+                                    );
+                                }
+                                if snapshot_action_button(
+                                    ui,
+                                    self.language.tr("Rename", "重命名"),
+                                    occupied,
+                                    button_size,
+                                )
+                                .clicked()
+                                {
+                                    if let DeviceSlotStatus::Occupied(name) = &status {
+                                        self.request_confirmation(
+                                            ConfirmationAction::RenameDeviceSnapshot {
+                                                slot: snapshot.slot,
+                                                name: name.clone(),
+                                                observed_name: snapshot.name.confirmed.clone(),
+                                            },
+                                        );
+                                    }
+                                }
+                            });
+                        });
+                    }
+                });
+                ui.add_space(layout.gap);
+            }
+            ui.add_space(10.0);
         });
     }
 
@@ -2931,7 +3140,7 @@ impl eframe::App for Flow8App {
                         });
                 }
                 Page::Snapshots => {
-                    egui::ScrollArea::both()
+                    egui::ScrollArea::vertical()
                         .id_salt("snapshots-scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -3745,14 +3954,46 @@ fn output_eq_graph(ui: &mut egui::Ui, eq: &EqState, metrics: UiMetrics) -> Optio
     edit
 }
 
-fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+fn card_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, BORDER))
         .corner_radius(8)
         .inner_margin(12)
-        .show(ui, add)
+}
+
+fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card_frame().show(ui, add).inner
+}
+
+fn centered_snapshot_content<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    ui.with_layout(Layout::top_down(Align::Center), |ui| {
+        ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), add)
+    })
+    .inner
+}
+
+fn snapshot_card<R>(
+    ui: &mut egui::Ui,
+    inner_width: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    card_frame().show(ui, |ui| {
+        ui.set_width(inner_width);
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.set_width(inner_width);
+            add(ui)
+        })
         .inner
+    })
+}
+
+fn snapshot_action_button(ui: &mut egui::Ui, label: &str, enabled: bool, size: Vec2) -> Response {
+    ui.add_enabled(enabled, egui::Button::new(label).small().min_size(size))
 }
 
 fn small_tab(ui: &mut egui::Ui, selected: bool, label: &str, accent: Color32) -> Response {
@@ -4084,10 +4325,12 @@ fn configure_style(context: &egui::Context, metrics: UiMetrics) {
     style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(37, 41, 48);
     style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(53, 58, 67));
     style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(55, 62, 73);
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.5, Color32::from_rgb(130, 145, 164));
+    // egui includes this stroke width in Button layout on the next frame.
+    // Keep it constant so hover/focus cannot move neighboring top-bar buttons.
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(130, 145, 164));
     style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     style.visuals.widgets.active.bg_fill = Color32::from_rgb(72, 79, 91);
-    style.visuals.widgets.active.bg_stroke = Stroke::new(2.0, YELLOW);
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, YELLOW);
     style.visuals.widgets.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     style.visuals.widgets.open.bg_fill = Color32::from_rgb(49, 55, 65);
     style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
@@ -4412,6 +4655,202 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_grid_reflows_and_four_actions_keep_equal_nonoverlapping_widths() {
+        assert_eq!(SnapshotGridLayout::new(831.0, 1.0, 8.0, 10).columns, 1);
+        assert_eq!(SnapshotGridLayout::new(832.0, 1.0, 8.0, 10).columns, 2);
+        let mut previous_columns = 0;
+        for window_width in [1040.0, 1280.0, 1440.0, 1600.0, 1920.0, 2560.0] {
+            let metrics = UiMetrics::calculate(Vec2::new(window_width, 920.0), 1.0, 1.0);
+            let layout =
+                SnapshotGridLayout::new(window_width - 36.0, metrics.ui_scale, metrics.spacing, 10);
+            assert!(layout.columns >= previous_columns);
+            previous_columns = layout.columns;
+            assert!(4.0 * layout.button_width + 3.0 * layout.gap <= layout.card_inner_width + 0.1);
+            for language in [Language::English, Language::Chinese] {
+                let context = egui::Context::default();
+                configure_style(&context, metrics);
+                let raw = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        Pos2::ZERO,
+                        Vec2::new(window_width, 920.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut rects = Vec::new();
+                let mut output = context.run_ui(raw, |ui| {
+                    ui.set_width(layout.card_inner_width);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = layout.gap;
+                        for (english, chinese) in [
+                            ("Load", "载入"),
+                            ("Save", "保存"),
+                            ("Delete", "删除"),
+                            ("Rename", "重命名"),
+                        ] {
+                            rects.push(
+                                snapshot_action_button(
+                                    ui,
+                                    language.tr(english, chinese),
+                                    true,
+                                    Vec2::new(layout.button_width, metrics.control_height),
+                                )
+                                .rect,
+                            );
+                        }
+                    });
+                });
+                output.textures_delta.clear();
+                assert_eq!(rects.len(), 4);
+                for pair in rects.windows(2) {
+                    assert!(pair[0].right() <= pair[1].left());
+                    assert!((pair[0].width() - pair[1].width()).abs() < 0.1);
+                }
+                assert!(rects[3].right() - rects[0].left() <= layout.card_inner_width + 0.1);
+            }
+        }
+        assert!(previous_columns > 1);
+    }
+
+    #[test]
+    fn snapshot_card_group_has_balanced_window_margins() {
+        for width in [1040.0, 1280.0, 1440.0, 1600.0, 1920.0, 2560.0] {
+            let metrics = UiMetrics::calculate(Vec2::new(width, 920.0), 1.0, 1.0);
+            let layout =
+                SnapshotGridLayout::new(width - 36.0, metrics.ui_scale, metrics.spacing, 10);
+            let context = egui::Context::default();
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 920.0))),
+                ..Default::default()
+            };
+            let mut margins = (0.0, 0.0);
+            let mut output = context.run_ui(raw, |ui| {
+                let viewport = ui.max_rect();
+                let group = centered_snapshot_content(ui, layout.group_width(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = layout.gap;
+                        for _ in 0..layout.columns {
+                            let _ = snapshot_card(ui, layout.card_inner_width, |ui| {
+                                ui.label("01");
+                            });
+                        }
+                    });
+                });
+                margins = (
+                    group.response.rect.left() - viewport.left(),
+                    viewport.right() - group.response.rect.right(),
+                );
+            });
+            output.textures_delta.clear();
+            assert!(
+                (margins.0 - margins.1).abs() <= 3.0,
+                "width={width}, left={}, right={}",
+                margins.0,
+                margins.1
+            );
+            assert!(margins.0 >= 16.0 && margins.1 >= 16.0);
+        }
+    }
+
+    #[test]
+    fn snapshot_cards_keep_status_in_header_and_reserve_name_height() {
+        for language in [Language::English, Language::Chinese] {
+            let context = egui::Context::default();
+            let metrics = UiMetrics::calculate(Vec2::new(1040.0, 700.0), 1.0, 1.0);
+            configure_style(&context, metrics);
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1040.0, 700.0))),
+                ..Default::default()
+            };
+            let mut cards = Vec::new();
+            let mut output = context.run_ui(raw, |ui| {
+                ui.horizontal(|ui| {
+                    for status in [
+                        DeviceSlotStatus::Free,
+                        DeviceSlotStatus::Occupied("Vocal".into()),
+                    ] {
+                        let card = snapshot_card(ui, 410.0, |ui| {
+                            let header = ui.horizontal(|ui| {
+                                ui.label("01");
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    snapshot_status_badge(ui, &status, language);
+                                });
+                            });
+                            let name = match &status {
+                                DeviceSlotStatus::Occupied(name) => Some(name.as_str()),
+                                _ => None,
+                            };
+                            let name = snapshot_name_row(
+                                ui,
+                                name,
+                                false,
+                                410.0,
+                                metrics.body_font,
+                                language,
+                            );
+                            let actions = ui.horizontal(|ui| {
+                                for (english, chinese) in [
+                                    ("Load", "载入"),
+                                    ("Save", "保存"),
+                                    ("Delete", "删除"),
+                                    ("Rename", "重命名"),
+                                ] {
+                                    snapshot_action_button(
+                                        ui,
+                                        language.tr(english, chinese),
+                                        true,
+                                        Vec2::new(90.0, metrics.control_height),
+                                    );
+                                }
+                            });
+                            (header.response.rect, name.rect, actions.response.rect)
+                        });
+                        cards.push((card.response.rect, card.inner));
+                    }
+                });
+            });
+            output.textures_delta.clear();
+            assert_eq!(cards.len(), 2);
+            for (_, (header, name, actions)) in &cards {
+                assert!(header.bottom() <= name.top());
+                assert!(name.bottom() <= actions.top());
+            }
+            assert!((cards[0].0.height() - cards[1].0.height()).abs() < 0.1);
+            assert!(cards[0].0.right() <= cards[1].0.left());
+        }
+    }
+
+    #[test]
+    fn long_snapshot_name_does_not_expand_responsive_grid() {
+        fn render_width(language: Language, name: &str) -> f32 {
+            let context = egui::Context::default();
+            let mut app = Flow8App::from_context(&context);
+            app.language = language;
+            app.store.state.snapshots.device_slots[0]
+                .name
+                .observe(name.into(), EvidenceStatus::VerifiedFromDevice);
+            let mut width = 0.0;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 920.0))),
+                ..Default::default()
+            };
+            let mut output = context.run_ui(raw, |ui| {
+                width = ui.scope(|ui| app.snapshots_page(ui)).response.rect.width();
+            });
+            output.textures_delta.clear();
+            width
+        }
+
+        for language in [Language::English, Language::Chinese] {
+            let short = render_width(language, "A");
+            let long = render_width(language, &"VeryLongSnapshotName".repeat(20));
+            assert!(
+                (short - long).abs() < 1.0,
+                "snapshot grid changed width for {language:?}: {short} vs {long}"
+            );
+        }
+    }
+
+    #[test]
     fn device_snapshot_actions_require_confirmation_and_cancel_is_safe() {
         let context = egui::Context::default();
         let mut app = Flow8App::from_context(&context);
@@ -4451,6 +4890,55 @@ mod tests {
             app.store.queue.pop(),
             Some(SemanticCommand::SaveSnapshot { slot: 0, .. })
         ));
+    }
+
+    #[test]
+    fn snapshot_names_obey_protocol_byte_limit_and_submit_edited_name() {
+        assert!(!valid_snapshot_name("  "));
+        assert!(!valid_snapshot_name("line\nbreak"));
+        assert!(valid_snapshot_name("中文中文中文")); // 18 UTF-8 bytes.
+        assert!(!valid_snapshot_name("中文中文中文中")); // 21 UTF-8 bytes.
+        assert!(valid_snapshot_name("  Vocal  "));
+
+        let context = egui::Context::default();
+        let mut app = Flow8App::from_context(&context);
+        app.store.state.session = SessionState::Ready;
+        app.page = Page::Snapshots;
+        app.store.state.snapshots.device_slots[0]
+            .name
+            .observe("Old".into(), EvidenceStatus::VerifiedFromDevice);
+
+        app.request_confirmation(ConfirmationAction::SaveDeviceSnapshot {
+            slot: 0,
+            name: "  New name  ".into(),
+            observed_name: Some("Old".into()),
+        });
+        assert!(app.store.queue.is_empty());
+        app.confirm_pending_action();
+        assert!(matches!(
+            app.store.queue.pop(),
+            Some(SemanticCommand::SaveSnapshot { slot: 0, name }) if name == "New name"
+        ));
+
+        app.request_confirmation(ConfirmationAction::RenameDeviceSnapshot {
+            slot: 0,
+            name: "Vocal".into(),
+            observed_name: Some("Old".into()),
+        });
+        assert!(app.store.queue.is_empty());
+        app.confirm_pending_action();
+        assert!(matches!(
+            app.store.queue.pop(),
+            Some(SemanticCommand::RenameSnapshot { slot: 0, name }) if name == "Vocal"
+        ));
+
+        app.request_confirmation(ConfirmationAction::SaveDeviceSnapshot {
+            slot: 0,
+            name: "中文中文中文中".into(),
+            observed_name: Some("Old".into()),
+        });
+        app.confirm_pending_action();
+        assert!(app.store.queue.is_empty());
     }
 
     #[test]
@@ -4643,6 +5131,14 @@ mod tests {
         assert_ne!(
             style.visuals.widgets.inactive.fg_stroke.color,
             style.visuals.widgets.noninteractive.fg_stroke.color
+        );
+        assert_eq!(
+            style.visuals.widgets.inactive.bg_stroke.width,
+            style.visuals.widgets.hovered.bg_stroke.width
+        );
+        assert_eq!(
+            style.visuals.widgets.hovered.bg_stroke.width,
+            style.visuals.widgets.active.bg_stroke.width
         );
         assert!((style.animation_time - 0.14).abs() < f32::EPSILON);
     }
