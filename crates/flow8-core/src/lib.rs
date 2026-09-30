@@ -204,6 +204,9 @@ pub enum SemanticCommand {
     SelectDeviceOutput {
         destination: MixDestination,
     },
+    RequestMeters {
+        destination: MixDestination,
+    },
     RequestFullState,
     RequestSnapshotNames,
     FactoryReset,
@@ -353,6 +356,21 @@ impl SemanticCommand {
             Self::SelectDeviceOutput { destination } => TxCommand::SelectOutput {
                 endpoint: destination.endpoint(),
             },
+            Self::RequestMeters { destination } => {
+                let mut channel_codes = [0; 15];
+                channel_codes[..7].copy_from_slice(&[0x40, 0x41, 0x42, 0x43, 0xc4, 0xc5, 0xc6]);
+                // The APK derives this flag from output-channel metadata. Our
+                // current MAIN/FX stereo model still needs hardware calibration.
+                let stereo = matches!(
+                    destination,
+                    MixDestination::Main | MixDestination::Fx1 | MixDestination::Fx2
+                );
+                channel_codes[7] = destination.endpoint() | 0x40 | if stereo { 0x80 } else { 0 };
+                TxCommand::MeterRequest(flow8_protocol::MeterRequest {
+                    count: 8,
+                    channel_codes,
+                })
+            }
             Self::RequestFullState => TxCommand::GetMixerState,
             Self::RequestSnapshotNames => TxCommand::GetSnapshotNames,
             Self::FactoryReset => TxCommand::FactoryReset,
@@ -485,6 +503,7 @@ impl SemanticCommand {
             | Self::DeleteSnapshot { .. }
             | Self::RenameSnapshot { .. }
             | Self::SelectDeviceOutput { .. }
+            | Self::RequestMeters { .. }
             | Self::RequestFullState
             | Self::RequestSnapshotNames
             | Self::FactoryReset => None,
@@ -825,6 +844,7 @@ pub enum CoreError {
 pub struct Flow8Store {
     pub state: Flow8State,
     pub queue: SemanticCommandQueue,
+    meter_output_target: Option<MixDestination>,
     simulator_time: f32,
     simulator_event_bucket: u64,
     simulator_mode: bool,
@@ -841,6 +861,7 @@ impl Flow8Store {
         Self {
             state: Flow8State::synthetic(),
             queue: SemanticCommandQueue::default(),
+            meter_output_target: None,
             simulator_time: 0.0,
             simulator_event_bucket: 0,
             simulator_mode: true,
@@ -852,6 +873,7 @@ impl Flow8Store {
         Self {
             state,
             queue: SemanticCommandQueue::default(),
+            meter_output_target: None,
             simulator_time: 0.0,
             simulator_event_bucket: 0,
             simulator_mode: false,
@@ -1234,6 +1256,9 @@ impl Flow8Store {
                         .observe(Some(destination), EvidenceStatus::Synthetic);
                 }
             }
+            SemanticCommand::RequestMeters { destination } => {
+                self.meter_output_target = Some(destination);
+            }
             SemanticCommand::RequestFullState | SemanticCommand::RequestSnapshotNames => {}
             SemanticCommand::FactoryReset => {
                 if synthetic {
@@ -1574,6 +1599,7 @@ impl Flow8Store {
                 let mut candidate = Flow8Store {
                     state: self.state.clone(),
                     queue: SemanticCommandQueue::default(),
+                    meter_output_target: self.meter_output_target,
                     simulator_time: self.simulator_time,
                     simulator_event_bucket: self.simulator_event_bucket,
                     simulator_mode: self.simulator_mode,
@@ -1946,7 +1972,10 @@ impl Flow8Store {
                 .observe(-raw_reduction, EvidenceStatus::Unknown);
         }
         let output_level = stereo_level(update.meters_db[10], update.meters_db[11]);
-        let selected = self.state.device_selected_output.confirmed.flatten();
+        // 0x21 selects the meter output independently of the physical output.
+        let selected =
+            self.meter_output_target
+                .or(self.state.device_selected_output.confirmed.flatten());
         if let Some(destination) = selected
             && let Some(bus) = self.state.bus_for_destination_mut(destination)
         {

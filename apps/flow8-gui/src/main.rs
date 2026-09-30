@@ -358,6 +358,7 @@ struct Flow8App {
     stage_positions: [Vec2; 7],
     pending_confirmation: Option<PendingConfirmation>,
     snapshot_names_requested: bool,
+    meter_request_target: Option<MixDestination>,
     state_sync_applied: bool,
     native_stage: Option<NativeConnectionStage>,
     last_ble_error: Option<String>,
@@ -393,6 +394,7 @@ impl Flow8App {
             }),
             pending_confirmation: None,
             snapshot_names_requested: false,
+            meter_request_target: None,
             state_sync_applied: false,
             native_stage: None,
             last_ble_error: None,
@@ -679,6 +681,7 @@ impl Flow8App {
                     if phase != SessionPhase::Ready {
                         self.pending_confirmation = None;
                         self.snapshot_names_requested = false;
+                        self.meter_request_target = None;
                     }
                     if matches!(phase, SessionPhase::Connecting | SessionPhase::StateSyncing) {
                         self.state_sync_applied = false;
@@ -760,6 +763,18 @@ impl Flow8App {
         }
 
         self.flush_commands();
+    }
+
+    fn sync_meter_request(&mut self) {
+        if self.store.state.session != SessionState::Ready {
+            self.meter_request_target = None;
+            return;
+        }
+        let destination = self.store.state.selected_destination;
+        if self.meter_request_target != Some(destination) {
+            self.dispatch(SemanticCommand::RequestMeters { destination });
+            self.meter_request_target = Some(destination);
+        }
     }
 
     fn flush_commands(&mut self) {
@@ -859,6 +874,7 @@ impl Flow8App {
                             self.store = Flow8Store::disconnected();
                             self.pending_confirmation = None;
                             self.snapshot_names_requested = false;
+                            self.meter_request_target = None;
                             self.state_sync_applied = false;
                             match self.runtime.send(DeviceCommand::Connect) {
                                 Ok(()) => {
@@ -1275,7 +1291,7 @@ impl Flow8App {
                             [usize::from(destination == MixDestination::Fx2)];
                         (
                             *fx.master_level.effective().unwrap_or(&0.75),
-                            -18.0,
+                            *fx.meter.level_db.effective().unwrap_or(&-60.0),
                             fx.master_level.confirmed,
                         )
                     };
@@ -3163,6 +3179,9 @@ impl eframe::App for Flow8App {
             });
         });
         self.confirmation_dialog(ui.ctx());
+        // Request the APK-defined meter sources once after Ready and when the
+        // displayed destination changes. 0x38 itself contains no meter values.
+        self.sync_meter_request();
         // Send this frame's intents now, rather than waiting for the next repaint.
         // The Store's semantic queue still coalesces continuous edits within the frame.
         self.flush_commands();
