@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{
     self, Align, Color32, FontId, Layout, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
 };
@@ -54,8 +55,10 @@ impl UiMetrics {
             secondary_font: 11.0 * scale,
             small_font: 10.0 * scale,
             heading_font: 22.0 * scale,
-            control_height: 30.0 * scale,
-            spacing: 8.0 * scale,
+            control_height: (30.0 * scale).round_ui(),
+            // add_space advances the cursor without rounding it. Keep scaled
+            // spacing on egui's logical grid so trailing gaps stay aligned too.
+            spacing: (8.0 * scale).round_ui(),
         }
     }
 }
@@ -75,7 +78,8 @@ impl LayoutMetrics {
         let compact = available_width < 1180.0 * ui.ui_scale;
         let wide = available_width >= 1760.0 * ui.ui_scale;
         let inspector_width = (available_width * if wide { 0.24 } else { 0.27 })
-            .clamp(290.0 * ui.ui_scale, 430.0 * ui.ui_scale);
+            .clamp(290.0 * ui.ui_scale, 430.0 * ui.ui_scale)
+            .round_ui();
         let channel_area = if compact {
             available_width
         } else {
@@ -86,11 +90,14 @@ impl LayoutMetrics {
         let channels = visible_channels.max(1) as f32;
         let gaps = ui.spacing * (channels - 1.0);
         let natural_channel_width = ((channel_area - gaps) / channels).max(0.0);
-        let fader_height =
-            (available.y - 290.0 * ui.ui_scale).clamp(160.0 * ui.ui_scale, 320.0 * ui.ui_scale);
+        let fader_height = (available.y - 290.0 * ui.ui_scale)
+            .clamp(160.0 * ui.ui_scale, 320.0 * ui.ui_scale)
+            .round_ui();
         Self {
             fader_height,
-            channel_width: natural_channel_width.clamp(channel_min_width, channel_max_width),
+            channel_width: natural_channel_width
+                .clamp(channel_min_width, channel_max_width)
+                .round_ui(),
             inspector_width,
             compact,
             mixer_scrolls: natural_channel_width < channel_min_width,
@@ -589,16 +596,18 @@ impl Flow8App {
             .filter(|id| self.preferences.channel_visible[id.index()])
             .count();
         let layout = LayoutMetrics::calculate(available, metrics, visible_channels);
-        let master_width = 166.0 * metrics.ui_scale;
+        let master_width = (166.0 * metrics.ui_scale).round_ui();
         let show_inspector = self.inspector_open;
         let inspector_width = if show_inspector {
             layout.inspector_width
         } else {
             0.0
         };
-        let divider_width = 24.0 * metrics.ui_scale;
+        let divider_width = (24.0 * metrics.ui_scale).round_ui();
         let gaps = divider_width * if show_inspector { 2.0 } else { 1.0 };
-        let channel_area = (available.x - master_width - inspector_width - gaps).max(80.0);
+        let channel_area = (available.x - master_width - inspector_width - gaps)
+            .max(80.0)
+            .round_ui();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let strip_height = ui
@@ -704,7 +713,8 @@ impl Flow8App {
             .clamp(
                 (144.0 * metrics.ui_scale).max(132.0),
                 164.0 * metrics.ui_scale,
-            );
+            )
+            .round_ui();
         egui::ScrollArea::both()
             .id_salt("mixer-strips")
             .max_width(available_width)
@@ -839,7 +849,7 @@ impl Flow8App {
                             if fader_sized(
                                 ui,
                                 &mut master,
-                                58.0 * self.metrics.ui_scale,
+                                72.0 * self.metrics.ui_scale,
                                 fader_height,
                                 0.75,
                                 confirmed_master,
@@ -860,7 +870,6 @@ impl Flow8App {
                                 meter,
                                 42.0 * self.metrics.ui_scale,
                                 fader_height,
-                                self.metrics,
                             );
                         },
                     )
@@ -2691,7 +2700,7 @@ fn mixer_divider(ui: &mut egui::Ui, width: f32, height: f32) {
 }
 
 fn strip_controls_height(metrics: UiMetrics, show_icons: bool) -> f32 {
-    (if show_icons { 182.0 } else { 152.0 }) * metrics.ui_scale
+    ((if show_icons { 182.0 } else { 152.0 }) * metrics.ui_scale).round_ui()
 }
 
 fn strip_controls(
@@ -2704,9 +2713,11 @@ fn strip_controls(
     // Allocate the same fixed header for inputs and master. Unlike a minimum
     // height, this cannot move the fader endpoints when header contents differ.
     let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(width, strip_controls_height(metrics, show_icons)),
+        Vec2::new(width, strip_controls_height(metrics, show_icons)).round_ui(),
         Sense::hover(),
     );
+    // Use the same aligned bounds for child layout and clipping.
+    let rect = rect.round_ui();
     let mut controls = ui.new_child(
         egui::UiBuilder::new()
             .id_salt("strip-controls")
@@ -2737,7 +2748,7 @@ fn channel_strip(
         .inner_margin(8)
         .show(ui, |ui| {
             // strip_width includes the frame margin and stroke.
-            let content_width = (strip_width - 18.0).max(100.0);
+            let content_width = (strip_width - 18.0).max(100.0).round_ui();
             ui.set_width(content_width);
             ui.vertical_centered(|ui| {
                 strip_controls(ui, content_width, metrics, show_channel_icons, |ui| {
@@ -2823,8 +2834,11 @@ fn channel_strip(
                     Vec2::new(content_width, fader_height),
                     Layout::left_to_right(Align::Min),
                     |ui| {
-                        let fader_width = (content_width * 0.49).clamp(46.0, 76.0);
-                        let meter_width = (content_width - fader_width - metrics.spacing).max(38.0);
+                        let fader_width = (content_width * 0.65)
+                            .clamp(68.0, 82.0)
+                            .min(content_width - metrics.spacing - 20.0)
+                            .round_ui();
+                        let meter_width = (content_width - fader_width - metrics.spacing).max(20.0);
                         let changed = fader_sized(
                             ui,
                             &mut route,
@@ -2838,7 +2852,7 @@ fn channel_strip(
                             "拖动调节 · Shift 精调 · 双击回到 0 dB",
                         ))
                         .changed();
-                        meter_widget_sized(ui, meter, meter_width, fader_height, metrics);
+                        meter_widget_sized(ui, meter, meter_width, fader_height);
                         if changed {
                             action = Some(StripAction::Route(route));
                         }
@@ -2960,12 +2974,35 @@ impl FaderGesture {
     }
 }
 
+// Reserve a small bottom detent for mute, separate from finite fader levels.
+const FADER_MUTE_GAP: f32 = 0.07;
+const FADER_SCALE: [(f32, &str); 5] = [
+    (1.0, "10"),
+    (0.75, "0"),
+    (0.5, "-10"),
+    (0.25, "-30"),
+    (0.0, "-∞"),
+];
+
+fn fader_visual_position(value: f32) -> f32 {
+    if value <= 0.0 {
+        0.0
+    } else {
+        FADER_MUTE_GAP + value.clamp(0.0, 1.0) * (1.0 - FADER_MUTE_GAP)
+    }
+}
+
 fn fader_thumb_y(track: Rect, value: f32) -> f32 {
-    egui::lerp(track.bottom()..=track.top(), value)
+    egui::lerp(track.bottom()..=track.top(), fader_visual_position(value))
 }
 
 fn fader_value_at_y(track: Rect, y: f32) -> f32 {
-    ((track.bottom() - y) / track.height()).clamp(0.0, 1.0)
+    let position = ((track.bottom() - y) / track.height()).clamp(0.0, 1.0);
+    if position <= FADER_MUTE_GAP {
+        0.0
+    } else {
+        ((position - FADER_MUTE_GAP) / (1.0 - FADER_MUTE_GAP)).clamp(0.0, 1.0)
+    }
 }
 
 fn fader_sized(
@@ -2977,9 +3014,9 @@ fn fader_sized(
     confirmed: Option<f32>,
 ) -> Response {
     let (rect, mut response) =
-        ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
+        ui.allocate_exact_size(Vec2::new(width, height).round_ui(), Sense::click_and_drag());
     let track = Rect::from_center_size(
-        rect.center(),
+        Pos2::new(rect.left() + 26.0, rect.center().y),
         Vec2::new(5.0, (rect.height() - 24.0).max(1.0)),
     );
     let pointer_held =
@@ -3076,23 +3113,30 @@ fn fader_sized(
         );
     }
     painter.rect_filled(track, 2.0, Color32::from_rgb(52, 57, 67));
-    let fill_top = egui::lerp(track.bottom()..=track.top(), *value);
+    let fill_top = fader_thumb_y(track, *value);
     painter.rect_filled(
         Rect::from_min_max(Pos2::new(track.left(), fill_top), track.right_bottom()),
         2.0,
         YELLOW,
     );
-    for index in 0..=10 {
-        let y = egui::lerp(track.bottom()..=track.top(), index as f32 / 10.0);
+    for (level, label) in FADER_SCALE {
+        let y = fader_thumb_y(track, level);
         painter.line_segment(
             [
-                Pos2::new(track.left() - 8.0, y),
-                Pos2::new(track.left() - 3.0, y),
+                Pos2::new(track.right() + 3.0, y),
+                Pos2::new(track.right() + 7.0, y),
             ],
             Stroke::new(1.0, SECONDARY),
         );
+        painter.text(
+            Pos2::new(track.right() + 12.0, y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(10.0),
+            SECONDARY,
+        );
     }
-    let thumb_y = egui::lerp(track.bottom()..=track.top(), *value);
+    let thumb_y = fader_thumb_y(track, *value);
     let thumb = Rect::from_center_size(Pos2::new(track.center().x, thumb_y), Vec2::new(29.0, 15.0));
     painter.rect_filled(
         thumb,
@@ -3114,8 +3158,8 @@ fn fader_sized(
     response
 }
 
-fn meter_widget_sized(ui: &mut egui::Ui, db: f32, width: f32, height: f32, metrics: UiMetrics) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+fn meter_widget_sized(ui: &mut egui::Ui, db: f32, width: f32, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height).round_ui(), Sense::hover());
     let bar = Rect::from_min_max(
         Pos2::new(rect.left() + 3.0, rect.top() + 2.0),
         Pos2::new(rect.left() + 14.0, rect.bottom() - 2.0),
@@ -3138,37 +3182,11 @@ fn meter_widget_sized(ui: &mut egui::Ui, db: f32, width: f32, height: f32, metri
         2.0,
         color,
     );
-    for (value, label) in [
-        (10.0_f32, "+10"),
-        (0.0, "0"),
-        (-20.0, "-20"),
-        (-40.0, "-40"),
-        (-60.0, "-60"),
-    ] {
-        let y = egui::lerp(
-            bar.bottom()..=bar.top(),
-            ((value + 60.0) / 70.0).clamp(0.0, 1.0),
-        );
-        ui.painter().line_segment(
-            [
-                Pos2::new(bar.right() + 2.0, y),
-                Pos2::new(bar.right() + 5.0, y),
-            ],
-            Stroke::new(1.0, SECONDARY),
-        );
-        ui.painter().text(
-            Pos2::new(bar.right() + 7.0, y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(metrics.small_font),
-            SECONDARY,
-        );
-    }
 }
 
 fn pan_control(ui: &mut egui::Ui, value: &mut f32, width: f32, metrics: UiMetrics) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(
-        Vec2::new(width, 20.0 * metrics.ui_scale),
+        Vec2::new(width, 20.0 * metrics.ui_scale).round_ui(),
         Sense::click_and_drag(),
     );
     if (response.dragged() || response.clicked())
@@ -3330,7 +3348,7 @@ fn eq_gain_graph(ui: &mut egui::Ui, channel: &InputChannelState) -> Option<(usiz
 
 fn output_eq_graph(ui: &mut egui::Ui, eq: &EqState, metrics: UiMetrics) -> Option<(usize, f32)> {
     let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), 176.0 * metrics.ui_scale),
+        Vec2::new(ui.available_width(), 176.0 * metrics.ui_scale).round_ui(),
         Sense::hover(),
     );
     ui.painter()
@@ -3642,22 +3660,10 @@ fn fader_level_text(value: f32) -> String {
 }
 
 fn normalized_to_display_db(value: f32) -> f32 {
-    flow8_protocol_curve(value).max(-60.0)
-}
-fn flow8_protocol_curve(value: f32) -> f32 {
-    if value >= 1.0 {
-        10.0
-    } else if value >= 0.5 {
-        40.0 * value - 30.0
-    } else if value >= 0.25 {
-        80.0 * value - 50.0
-    } else if value >= 0.0625 {
-        160.0 * value - 70.0
-    } else if value >= 1.0 / 1024.0 {
-        480.0 * value - 90.0
-    } else {
-        -144.0
-    }
+    // Presentation floor observed on the physical fader; wire conversion stays in flow8-protocol.
+    flow8_protocol::normalized_to_fader_db(value.clamp(0.0, 1.0))
+        .unwrap_or(-89.5)
+        .max(-89.5)
 }
 
 fn core_session_state(phase: SessionPhase) -> SessionState {
@@ -3810,7 +3816,8 @@ fn configure_style(context: &egui::Context, metrics: UiMetrics) {
     style.visuals.selection.stroke = Stroke::new(1.5, Color32::WHITE);
     style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
     style.spacing.item_spacing = Vec2::splat(metrics.spacing);
-    style.spacing.button_padding = Vec2::new(12.0 * metrics.ui_scale, 7.0 * metrics.ui_scale);
+    style.spacing.button_padding =
+        Vec2::new(12.0 * metrics.ui_scale, 7.0 * metrics.ui_scale).round_ui();
     style.spacing.interact_size.y = metrics.control_height;
     style.animation_time = 0.14;
     context.set_style_of(egui::Theme::Dark, style);
@@ -4057,13 +4064,14 @@ mod tests {
         let mut gesture = FaderGesture::begin(0.5, 100.0, track, true, false);
         assert!(!gesture.update(100.0, track, false));
         assert!(gesture.update(60.0, track, false));
-        assert!((gesture.target - 0.7).abs() < 1.0e-6);
+        let dragged_target = fader_value_at_y(track, fader_thumb_y(track, 0.5) - 40.0);
+        assert!((gesture.target - dragged_target).abs() < 1.0e-6);
         // A delayed RX might replace the Store value with 0.2. The active
-        // gesture still displays 0.7 and does not enqueue another TX.
+        // gesture still displays the dragged target and does not enqueue another TX.
         let stale_confirmed = 0.2;
         assert!((gesture.target - stale_confirmed).abs() > 0.4);
         assert!(!gesture.update(60.0, track, false));
-        assert!((gesture.target - 0.7).abs() < 1.0e-6);
+        assert!((gesture.target - dragged_target).abs() < 1.0e-6);
     }
 
     #[test]
@@ -4071,7 +4079,7 @@ mod tests {
         let track = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(5.0, 200.0));
         let mut click = FaderGesture::begin(0.25, 20.0, track, false, false);
         assert!(click.update(20.0, track, false));
-        assert!((click.target - 0.9).abs() < 1.0e-6);
+        assert!((click.target - fader_value_at_y(track, 20.0)).abs() < 1.0e-6);
 
         let mut fine = FaderGesture::begin(0.5, 100.0, track, true, false);
         assert!(!fine.update(100.0, track, false));
@@ -4079,6 +4087,24 @@ mod tests {
         assert!((fine.target - 0.51).abs() < 1.0e-6);
         assert!(!fine.update(80.0, track, false));
         assert!((fine.target - 0.51).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fader_scale_matches_physical_labels_and_thumb_positions() {
+        assert_eq!(
+            FADER_SCALE.map(|(_, label)| label),
+            ["10", "0", "-10", "-30", "-∞"]
+        );
+        let track = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(5.0, 200.0));
+        for (level, _) in FADER_SCALE {
+            let y = fader_thumb_y(track, level);
+            assert!((fader_value_at_y(track, y) - level).abs() < 1.0e-6);
+        }
+        assert!(fader_thumb_y(track, 0.001) < fader_thumb_y(track, 0.0));
+        assert_eq!(fader_value_at_y(track, track.bottom() - 5.0), 0.0);
+        assert_eq!(fader_level_text(0.0), "−∞");
+        assert_eq!(fader_level_text(0.0001), "-89.5");
+        assert_eq!(fader_level_text(1.0), "+10.0");
     }
 
     #[test]
