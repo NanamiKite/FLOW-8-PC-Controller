@@ -1,7 +1,10 @@
 //! FLOW Mix APK-evidenced protocol primitives and first-stage command set.
 //! No item in this crate claims acceptance by physical FLOW 8 hardware.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use flow8_model::{InputId, MixDestination};
 use thiserror::Error;
@@ -231,7 +234,10 @@ pub fn parse_packet(raw: &[u8]) -> Result<Packet, ProtocolError> {
 struct ReassemblySlot {
     fragment_count: u8,
     fragments: Vec<Option<Vec<u8>>>,
+    updated_at: Instant,
 }
+
+const REASSEMBLY_SLOT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default)]
 pub struct FragmentReassembler {
@@ -249,23 +255,30 @@ impl FragmentReassembler {
             .fragment_index
             .ok_or(ProtocolError::InvalidFragment)? as usize;
         let key = (packet.command, sequence);
+        let now = Instant::now();
+        self.slots
+            .retain(|_, slot| now.duration_since(slot.updated_at) < REASSEMBLY_SLOT_TIMEOUT);
         if !self.slots.contains_key(&key) && self.slots.len() >= 4 {
             return Err(ProtocolError::NoReassemblySlot);
         }
         let slot = self.slots.entry(key).or_insert_with(|| ReassemblySlot {
             fragment_count: packet.fragment_count,
             fragments: vec![None; packet.fragment_count as usize],
+            updated_at: now,
         });
         if slot.fragment_count != packet.fragment_count {
+            self.slots.remove(&key);
             return Err(ProtocolError::ConflictingFragment);
         }
         if let Some(previous) = &slot.fragments[index] {
             if previous != &packet.payload {
+                self.slots.remove(&key);
                 return Err(ProtocolError::ConflictingFragment);
             }
         } else {
             slot.fragments[index] = Some(packet.payload);
         }
+        slot.updated_at = now;
         let size: usize = slot
             .fragments
             .iter()

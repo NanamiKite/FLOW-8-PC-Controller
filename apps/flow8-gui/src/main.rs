@@ -1,10 +1,13 @@
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{
@@ -1030,6 +1033,12 @@ impl Flow8App {
                 | DeviceEvent::WriteMode(_)
                 | DeviceEvent::Backend(_)
                 | DeviceEvent::Mtu(_) => {}
+                DeviceEvent::ProtocolWarning(warning) => {
+                    self.message = format!(
+                        "{}: {warning}",
+                        self.language.tr("Protocol warning", "协议告警")
+                    );
+                }
                 DeviceEvent::Error(error) => {
                     self.pending_confirmation = None;
                     self.snapshot_names_requested = false;
@@ -1106,6 +1115,7 @@ impl Flow8App {
                 .runtime
                 .send(DeviceCommand::Send(command.to_protocol()))
             {
+                self.store.queue.push_front(command);
                 self.message = error;
                 break;
             }
@@ -5828,13 +5838,21 @@ mod tests {
     }
 }
 
+const MAX_PRODUCTION_LOG_BYTES: u64 = 16 * 1024 * 1024;
+
+struct ProductionLogFile {
+    file: File,
+    written: u64,
+    capped: bool,
+}
+
 #[derive(Clone)]
 struct ProductionLogWriter {
-    file: Arc<Mutex<File>>,
+    file: Arc<Mutex<ProductionLogFile>>,
 }
 
 struct ProductionLogSink {
-    file: Arc<Mutex<File>>,
+    file: Arc<Mutex<ProductionLogFile>>,
     stdout: io::Stdout,
 }
 
@@ -5851,11 +5869,19 @@ impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for ProductionLogWrit
 
 impl Write for ProductionLogSink {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.file
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .write_all(buffer)?;
         let _ = self.stdout.write_all(buffer);
+        let mut log = self.file.lock().unwrap_or_else(|error| error.into_inner());
+        if !log.capped {
+            if log.written + buffer.len() as u64 <= MAX_PRODUCTION_LOG_BYTES {
+                log.file.write_all(buffer)?;
+                log.written += buffer.len() as u64;
+            } else {
+                log.capped = true;
+                eprintln!(
+                    "warning: FLOW 8 diagnostic log reached its 16 MiB limit; further output remains on stdout"
+                );
+            }
+        }
         Ok(buffer.len())
     }
 
@@ -5863,10 +5889,87 @@ impl Write for ProductionLogSink {
         self.file
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .file
             .flush()?;
         let _ = self.stdout.flush();
         Ok(())
     }
+}
+
+fn production_log_directory() -> io::Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+        return Ok(PathBuf::from(root)
+            .join("FLOW 8 PC Controller")
+            .join("logs"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(root) = std::env::var_os("XDG_STATE_HOME") {
+            return Ok(PathBuf::from(root).join("flow8-pc-controller"));
+        }
+        if let Some(root) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(root).join(".local/state/flow8-pc-controller"));
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no private per-user log directory is available",
+    ))
+}
+
+fn open_production_log() -> io::Result<(File, PathBuf)> {
+    let directory = production_log_directory()?;
+    fs::create_dir_all(&directory)?;
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log directory is not a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+
+    const MAX_RETAINED_PRODUCTION_LOGS: usize = 12;
+    let retained = fs::read_dir(&directory)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("windows-production-connection-") && name.ends_with(".log")
+        })
+        .count();
+    if retained >= MAX_RETAINED_PRODUCTION_LOGS {
+        return Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "12 FLOW 8 diagnostic logs are retained; archive or remove old logs before capturing another",
+        ));
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..16 {
+        let path = directory.join(format!(
+            "windows-production-connection-{timestamp}-{}-{attempt}.log",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique FLOW 8 log filename",
+    ))
 }
 
 fn flow8_ble_verbose_logging(filter: &str) -> bool {
@@ -5881,20 +5984,27 @@ fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_new(&rust_log)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("flow8_ble=info"));
     if flow8_ble_verbose_logging(&rust_log) {
-        let path = Path::new("captures/hardware/windows-production-connection.log");
-        let writer = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
-            .and_then(|()| File::create(path));
-        match writer {
-            Ok(file) => {
+        match open_production_log() {
+            Ok((file, path)) => {
+                eprintln!("FLOW 8 diagnostic log: {}", path.display());
+                eprintln!(
+                    "warning: verbose FLOW 8 logs contain raw device state and client identifiers; share them only after review"
+                );
                 let _ = tracing_subscriber::fmt()
                     .with_env_filter(filter)
                     .with_writer(ProductionLogWriter {
-                        file: Arc::new(Mutex::new(file)),
+                        file: Arc::new(Mutex::new(ProductionLogFile {
+                            file,
+                            written: 0,
+                            capped: false,
+                        })),
                     })
                     .try_init();
                 return;
             }
-            Err(error) => eprintln!("warning: could not create {}: {error}", path.display()),
+            Err(error) => {
+                eprintln!("warning: could not create private FLOW 8 diagnostic log: {error}")
+            }
         }
     }
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();

@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -39,6 +39,18 @@ mod windows_native;
 pub const SERVICE_UUID: Uuid = Uuid::from_u128(0x14839ad4_8d7e_415c_9a42_167340cf2339);
 pub const CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x0034594a_a8e7_4b1a_a6b1_cd5243059a57);
 
+const MAX_QUEUED_RX_PACKETS: usize = 256;
+const MAX_PENDING_WRITES: usize = 256;
+
+#[derive(Debug)]
+struct RxQueuePermit(Arc<AtomicUsize>);
+
+impl Drop for RxQueuePermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Owned messages crossing the platform callback/stream boundary. Native
 /// callbacks never parse FLOW protocol data; they only copy bytes into this
 /// channel and return.
@@ -47,12 +59,16 @@ enum TransportRx {
     Packet {
         generation: u64,
         bytes: Vec<u8>,
+        _permit: RxQueuePermit,
     },
     #[cfg(target_os = "windows")]
     Connected {
         generation: u64,
     },
     Disconnected {
+        generation: u64,
+    },
+    Overflow {
         generation: u64,
     },
     #[cfg(target_os = "windows")]
@@ -74,6 +90,7 @@ struct RxIngress {
     generation: u64,
     active: Arc<AtomicBool>,
     tx: mpsc::UnboundedSender<TransportRx>,
+    pending: Arc<AtomicUsize>,
 }
 
 impl RxIngress {
@@ -82,6 +99,7 @@ impl RxIngress {
             generation,
             active: Arc::new(AtomicBool::new(true)),
             tx,
+            pending: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -95,11 +113,26 @@ impl RxIngress {
             }
             return false;
         }
+        if self
+            .pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_QUEUED_RX_PACKETS).then_some(count + 1)
+            })
+            .is_err()
+        {
+            if self.active.swap(false, Ordering::AcqRel) {
+                let _ = self.tx.send(TransportRx::Overflow {
+                    generation: self.generation,
+                });
+            }
+            return false;
+        }
         let forwarded = self
             .tx
             .send(TransportRx::Packet {
                 generation: self.generation,
                 bytes: source.to_vec(),
+                _permit: RxQueuePermit(Arc::clone(&self.pending)),
             })
             .is_ok();
         if source.first() == Some(&0x38) {
@@ -135,10 +168,15 @@ impl RxIngress {
 
     #[cfg(target_os = "windows")]
     fn error(&self, message: impl Into<String>) -> bool {
-        self.send(TransportRx::Error {
-            generation: self.generation,
-            message: message.into(),
-        })
+        if !self.active.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        self.tx
+            .send(TransportRx::Error {
+                generation: self.generation,
+                message: message.into(),
+            })
+            .is_ok()
     }
 
     #[cfg(target_os = "windows")]
@@ -246,6 +284,7 @@ pub enum SessionAction {
     Phase(SessionPhase),
     Send(Vec<u8>),
     Received(RxCommand),
+    Warning(String),
     Error(String),
 }
 
@@ -270,12 +309,52 @@ pub enum DeviceEvent {
     WriteMode(WriteType),
     Backend(&'static str),
     Mtu(u16),
+    ProtocolWarning(String),
     Error(String),
+}
+
+const MAX_QUEUED_GUI_EVENTS: usize = 512;
+const MAX_QUEUED_USER_COMMANDS: usize = 256;
+
+#[derive(Clone)]
+struct EventSender {
+    tx: mpsc::Sender<DeviceEvent>,
+    overflowed: Arc<AtomicBool>,
+    overflow_notify: Arc<Notify>,
+}
+
+impl EventSender {
+    fn send(&self, event: DeviceEvent) -> Result<(), ()> {
+        if self.overflowed.load(Ordering::Acquire) {
+            return Err(());
+        }
+        match self.tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if !self.overflowed.swap(true, Ordering::AcqRel) {
+                    warn!(
+                        limit = MAX_QUEUED_GUI_EVENTS,
+                        "FLOW GUI event queue exceeded capacity; stopping BLE session"
+                    );
+                    self.overflow_notify.notify_one();
+                }
+                Err(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
+        }
+    }
+
+    fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
+    }
 }
 
 pub struct DeviceRuntime {
     command_tx: mpsc::UnboundedSender<DeviceCommand>,
-    event_rx: mpsc::UnboundedReceiver<DeviceEvent>,
+    user_command_tx: mpsc::Sender<TxCommand>,
+    event_rx: mpsc::Receiver<DeviceEvent>,
+    event_overflowed: Arc<AtomicBool>,
+    event_overflow_reported: bool,
 }
 
 impl DeviceRuntime {
@@ -284,7 +363,14 @@ impl DeviceRuntime {
     /// on hosts without Bluetooth.
     pub fn spawn(client_id: [u8; 16]) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (user_command_tx, user_command_rx) = mpsc::channel(MAX_QUEUED_USER_COMMANDS);
+        let (event_tx, event_rx) = mpsc::channel(MAX_QUEUED_GUI_EVENTS);
+        let event_overflowed = Arc::new(AtomicBool::new(false));
+        let events = EventSender {
+            tx: event_tx,
+            overflowed: Arc::clone(&event_overflowed),
+            overflow_notify: Arc::new(Notify::new()),
+        };
         std::thread::Builder::new()
             .name("flow8-ble-runtime".into())
             .spawn(move || {
@@ -293,26 +379,54 @@ impl DeviceRuntime {
                     .worker_threads(2)
                     .build();
                 match runtime {
-                    Ok(runtime) => runtime.block_on(device_actor(command_rx, event_tx, client_id)),
+                    Ok(runtime) => runtime.block_on(device_actor(
+                        command_rx,
+                        user_command_rx,
+                        events,
+                        client_id,
+                    )),
                     Err(error) => {
-                        let _ = event_tx.send(DeviceEvent::Error(error.to_string()));
+                        let _ = events.send(DeviceEvent::Error(error.to_string()));
                     }
                 }
             })
             .expect("spawn FLOW 8 BLE runtime thread");
         Self {
             command_tx,
+            user_command_tx,
             event_rx,
+            event_overflowed,
+            event_overflow_reported: false,
         }
     }
 
     pub fn send(&self, command: DeviceCommand) -> Result<(), String> {
+        if let DeviceCommand::Send(command) = command {
+            return self
+                .user_command_tx
+                .try_send(command)
+                .map_err(|error| match error {
+                    mpsc::error::TrySendError::Full(_) => {
+                        "BLE user command queue is full; the command was not sent".to_owned()
+                    }
+                    mpsc::error::TrySendError::Closed(_) => "BLE runtime stopped".to_owned(),
+                });
+        }
         self.command_tx
             .send(command)
             .map_err(|_| "BLE runtime stopped".to_owned())
     }
 
     pub fn try_recv(&mut self) -> Option<DeviceEvent> {
+        if self.event_overflowed.load(Ordering::Acquire) {
+            if self.event_overflow_reported {
+                return None;
+            }
+            self.event_overflow_reported = true;
+            return Some(DeviceEvent::Error(
+                "FLOW 8 event backlog exceeded capacity; connection stopped. Restart the application before reconnecting.".into(),
+            ));
+        }
         self.event_rx.try_recv().ok()
     }
 }
@@ -443,7 +557,10 @@ impl Flow8Session {
                 warn!(command, phase = ?self.phase, "ignoring unsupported FLOW 8 RX command without ending the session");
                 Vec::new()
             }
-            Err(error) => vec![SessionAction::Error(error.to_string())],
+            Err(error) => {
+                warn!(phase = ?self.phase, %error, "FLOW 8 RX frame rejected; session remains active");
+                vec![SessionAction::Warning(error.to_string())]
+            }
             Ok(Some(command)) => {
                 let mut actions = vec![SessionAction::Received(command.clone())];
                 match command {
@@ -452,7 +569,7 @@ impl Flow8Session {
                             && !(self.phase == SessionPhase::StateSyncing
                                 && self.received_host_hello)
                         {
-                            return vec![SessionAction::Error(format!(
+                            return vec![SessionAction::Warning(format!(
                                 "ignored FLOW 8 0x35 while RX was not armed (phase={:?})",
                                 self.phase
                             ))];
@@ -477,7 +594,7 @@ impl Flow8Session {
                     }
                     RxCommand::HandshakeReply => {
                         if self.phase != SessionPhase::StateSyncing || !self.received_host_hello {
-                            return vec![SessionAction::Error(format!(
+                            return vec![SessionAction::Warning(format!(
                                 "ignored FLOW 8 0x36 before a valid 0x35 (phase={:?})",
                                 self.phase
                             ))];
@@ -704,7 +821,7 @@ struct RuntimeSession {
 impl RuntimeSession {
     async fn connect(
         generation: u64,
-        _events: mpsc::UnboundedSender<DeviceEvent>,
+        _events: EventSender,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportRx>), BleError> {
         let transport = BleTransport::new().await?;
         let session = transport.connect_flow8().await?;
@@ -771,7 +888,7 @@ enum RuntimeSession {
 impl RuntimeSession {
     async fn connect(
         generation: u64,
-        events: mpsc::UnboundedSender<DeviceEvent>,
+        events: EventSender,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportRx>), BleError> {
         if directhci_requested() {
             let (session, rx) =
@@ -984,12 +1101,24 @@ impl WriterMailbox {
                         _ => {}
                     }
                 }
+                if state.pending.len() >= MAX_PENDING_WRITES {
+                    return Err(BleError::Transport(
+                        "FLOW 8 TX queue capacity exceeded".into(),
+                    ));
+                }
                 state.pending.push_back(WriterCommand::Write {
                     frame,
                     key: Some(key),
                 });
             }
-            other => state.pending.push_back(other),
+            other => {
+                if state.pending.len() >= MAX_PENDING_WRITES {
+                    return Err(BleError::Transport(
+                        "FLOW 8 TX queue capacity exceeded".into(),
+                    ));
+                }
+                state.pending.push_back(other);
+            }
         }
         drop(state);
         self.ready.notify_one();
@@ -1031,10 +1160,7 @@ struct ActiveSession {
 }
 
 impl ActiveSession {
-    async fn new(
-        session: RuntimeSession,
-        events: mpsc::UnboundedSender<DeviceEvent>,
-    ) -> Result<Self, BleError> {
+    async fn new(session: RuntimeSession, events: EventSender) -> Result<Self, BleError> {
         let backend = session.backend_name();
         let mtu = session.mtu();
         let write_type = session.write_type();
@@ -1088,7 +1214,7 @@ async fn run_writer(
     mailbox: Arc<WriterMailbox>,
     mut shutdown: oneshot::Receiver<&'static str>,
     started: oneshot::Sender<()>,
-    events: mpsc::UnboundedSender<DeviceEvent>,
+    events: EventSender,
 ) {
     info!(backend = session.backend_name(), "FLOW TX writer started");
     let _ = started.send(());
@@ -1151,7 +1277,7 @@ async fn run_writer(
 fn execute_actions(
     actions: Vec<SessionAction>,
     session: Option<&ActiveSession>,
-    events: &mpsc::UnboundedSender<DeviceEvent>,
+    events: &EventSender,
 ) {
     execute_actions_with_key(actions, session, events, None);
 }
@@ -1159,7 +1285,7 @@ fn execute_actions(
 fn execute_actions_with_key(
     actions: Vec<SessionAction>,
     session: Option<&ActiveSession>,
-    events: &mpsc::UnboundedSender<DeviceEvent>,
+    events: &EventSender,
     key: Option<ContinuousKey>,
 ) {
     for action in actions {
@@ -1169,6 +1295,9 @@ fn execute_actions_with_key(
             }
             SessionAction::Received(command) => {
                 let _ = events.send(DeviceEvent::Received(command));
+            }
+            SessionAction::Warning(message) => {
+                let _ = events.send(DeviceEvent::ProtocolWarning(message));
             }
             SessionAction::Error(error) => {
                 let _ = events.send(DeviceEvent::Error(error));
@@ -1228,7 +1357,7 @@ async fn handle_device_command(
     transport_rx: &mut Option<mpsc::UnboundedReceiver<TransportRx>>,
     coordinator: &mut Flow8Session,
     generation: &mut u64,
-    events: &mpsc::UnboundedSender<DeviceEvent>,
+    events: &EventSender,
 ) -> bool {
     match command {
         DeviceCommand::Shutdown => {
@@ -1379,12 +1508,12 @@ async fn handle_transport_rx(
     session: &mut Option<ActiveSession>,
     transport_rx: &mut Option<mpsc::UnboundedReceiver<TransportRx>>,
     coordinator: &mut Flow8Session,
-    events: &mpsc::UnboundedSender<DeviceEvent>,
+    events: &EventSender,
 ) {
     let generation = match &event {
-        TransportRx::Packet { generation, .. } | TransportRx::Disconnected { generation } => {
-            *generation
-        }
+        TransportRx::Packet { generation, .. }
+        | TransportRx::Disconnected { generation }
+        | TransportRx::Overflow { generation } => *generation,
         #[cfg(target_os = "windows")]
         TransportRx::Connected { generation }
         | TransportRx::Error { generation, .. }
@@ -1448,6 +1577,27 @@ async fn handle_transport_rx(
         TransportRx::Connected { .. } => {
             info!("FLOW 8 physical connection established");
         }
+        TransportRx::Overflow { .. } => {
+            warn!(
+                limit = MAX_QUEUED_RX_PACKETS,
+                "FLOW 8 RX queue exceeded capacity; closing session to avoid losing protocol state"
+            );
+            if let Some(active) = session.take() {
+                active.disconnect("rx_queue_overflow").await;
+            }
+            *transport_rx = None;
+            coordinator.transition(SessionPhase::Disconnected);
+            execute_actions(
+                vec![
+                    coordinator.transition(SessionPhase::Error),
+                    SessionAction::Error(
+                        "FLOW 8 RX queue overflow; reconnect to resynchronize device state".into(),
+                    ),
+                ],
+                None,
+                events,
+            );
+        }
         TransportRx::Disconnected { .. } => {
             info!("FLOW 8 disconnected; invalidating session state");
             if let Some(active) = session.take() {
@@ -1459,7 +1609,19 @@ async fn handle_transport_rx(
         }
         #[cfg(target_os = "windows")]
         TransportRx::Error { message, .. } => {
-            let _ = events.send(DeviceEvent::Error(message));
+            if let Some(active) = session.take() {
+                active.disconnect("transport_error").await;
+            }
+            *transport_rx = None;
+            coordinator.transition(SessionPhase::Disconnected);
+            execute_actions(
+                vec![
+                    coordinator.transition(SessionPhase::Error),
+                    SessionAction::Error(message),
+                ],
+                None,
+                events,
+            );
         }
         #[cfg(target_os = "windows")]
         TransportRx::HandshakeTimeout { .. } => {
@@ -1486,7 +1648,8 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 async fn device_actor(
     mut commands: mpsc::UnboundedReceiver<DeviceCommand>,
-    events: mpsc::UnboundedSender<DeviceEvent>,
+    mut user_commands: mpsc::Receiver<TxCommand>,
+    events: EventSender,
     client_id: [u8; 16],
 ) {
     let mut coordinator = Flow8Session::new(client_id);
@@ -1495,8 +1658,13 @@ async fn device_actor(
     let mut generation = 0u64;
 
     loop {
+        if events.overflowed() {
+            warn!("FLOW GUI event queue overflow; closing the active transport session");
+            break;
+        }
         if let Some(rx) = transport_rx.as_mut() {
             tokio::select! {
+                _ = events.overflow_notify.notified() => continue,
                 command = commands.recv() => {
                     let Some(command) = command else { break; };
                     if !handle_device_command(
@@ -1532,9 +1700,28 @@ async fn device_actor(
                         }
                     }
                 }
+                command = user_commands.recv() => {
+                    let Some(command) = command else { break; };
+                    if !handle_device_command(
+                        DeviceCommand::Send(command),
+                        &mut session,
+                        &mut transport_rx,
+                        &mut coordinator,
+                        &mut generation,
+                        &events,
+                    ).await {
+                        break;
+                    }
+                }
             }
         } else {
-            let Some(command) = commands.recv().await else {
+            let command = tokio::select! {
+                biased;
+                _ = events.overflow_notify.notified() => continue,
+                command = commands.recv() => command,
+                command = user_commands.recv() => command.map(DeviceCommand::Send),
+            };
+            let Some(command) = command else {
                 break;
             };
             if !handle_device_command(
@@ -1865,7 +2052,7 @@ mod tests {
         session.transition(SessionPhase::StateSyncing);
         let actions = session.notification(&[0x36, 0x01, 0x00]);
         assert_eq!(session.phase(), SessionPhase::StateSyncing);
-        assert!(matches!(actions.as_slice(), [SessionAction::Error(_)]));
+        assert!(matches!(actions.as_slice(), [SessionAction::Warning(_)]));
     }
 
     #[test]
@@ -1957,7 +2144,7 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv(),
-            Ok(TransportRx::Packet { generation: 7, bytes })
+            Ok(TransportRx::Packet { generation: 7, bytes, .. })
                 if bytes == vec![0x35, 0x01, 0x36]
         ));
     }
@@ -2046,7 +2233,7 @@ mod tests {
         assert!(retry.forward(&[0x35]));
         assert!(matches!(
             rx.try_recv(),
-            Ok(TransportRx::Packet { generation: 31, bytes }) if bytes == vec![0x35]
+            Ok(TransportRx::Packet { generation: 31, bytes, .. }) if bytes == vec![0x35]
         ));
     }
 }

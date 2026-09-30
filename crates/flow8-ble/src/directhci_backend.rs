@@ -13,7 +13,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, info, warn};
 
 use super::{
-    BleError, DeviceEvent, DiscoveredDevice, NativeConnectionStage, RxIngress, TransportRx,
+    BleError, DeviceEvent, DiscoveredDevice, EventSender, NativeConnectionStage, RxIngress,
+    TransportRx,
 };
 use uuid::Uuid;
 
@@ -58,7 +59,7 @@ pub(super) struct DirectHciSession {
 impl DirectHciSession {
     pub(super) async fn connect(
         generation: u64,
-        events: mpsc::UnboundedSender<DeviceEvent>,
+        events: EventSender,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportRx>), BleError> {
         let (rx_tx, rx) = mpsc::unbounded_channel();
         let ingress = RxIngress::new(generation, rx_tx);

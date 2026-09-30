@@ -317,6 +317,11 @@ impl PassiveHandshakePipeline {
                         ));
                     }
                 }
+                SessionAction::Warning(warning) => logger.line(format!(
+                    "timestamp_ms={stamp} backend={} {} decode_or_reassembly=WARNING warning={warning} raw_retained=true evidence=VERIFIED_FROM_DEVICE",
+                    self.result.backend,
+                    probe_elapsed(connected_at),
+                )),
                 SessionAction::Error(error) => logger.line(format!(
                     "timestamp_ms={stamp} backend={} {} decode_or_reassembly=FAIL error={error} raw_retained=true evidence=VERIFIED_FROM_DEVICE",
                     self.result.backend,
@@ -1318,6 +1323,7 @@ async fn send_one(command: TxCommand) -> Result<(), Box<dyn std::error::Error>> 
                     }
                 }
                 SessionAction::Phase(phase) => println!("session={phase:?}"),
+                SessionAction::Warning(warning) => eprintln!("decode/session warning: {warning}"),
                 SessionAction::Error(error) => return Err(error.into()),
             }
         }
@@ -1411,6 +1417,12 @@ async fn observe(
                         println!("session={phase:?}");
                         if let Some(file) = capture.as_deref_mut() {
                             writeln!(file, "{stamp} SESSION {phase:?}")?;
+                        }
+                    }
+                    SessionAction::Warning(warning) => {
+                        eprintln!("decode/session warning: {warning}");
+                        if let Some(file) = capture.as_deref_mut() {
+                            writeln!(file, "{stamp} WARNING {warning} raw_retained=true")?;
                         }
                     }
                     SessionAction::Error(error) => eprintln!("decode/session error: {error}"),

@@ -50,7 +50,8 @@ use windows_collections::IIterable;
 use windows::core::HRESULT;
 
 use super::{
-    BleError, DeviceEvent, NativeConnectionError, NativeConnectionStage, RxIngress, TransportRx,
+    BleError, DeviceEvent, EventSender, NativeConnectionError, NativeConnectionStage, RxIngress,
+    TransportRx,
 };
 
 const FLOW_SERVICE_GUID: GUID = GUID::from_u128(0x14839ad4_8d7e_415c_9a42_167340cf2339);
@@ -142,26 +143,35 @@ impl Drop for CallbackUse<'_> {
 
 struct NativeEventRegistration {
     handle: isize,
-    context: Box<CallbackContext>,
+    context: Option<Box<CallbackContext>>,
 }
 
 impl NativeEventRegistration {
     fn invalidate(&self) {
-        self.context.ingress.invalidate();
+        if let Some(context) = &self.context {
+            context.ingress.invalidate();
+        }
     }
 }
 
 impl Drop for NativeEventRegistration {
     fn drop(&mut self) {
         self.invalidate();
+        let Some(context) = self.context.take() else {
+            return;
+        };
         // SAFETY: handle came from BluetoothGATTRegisterEvent and is
         // unregistered exactly once before callback context destruction.
         if let Err(error) =
             unsafe { BluetoothGATTUnregisterEvent(self.handle, BLUETOOTH_GATT_FLAG_NONE) }
         {
-            warn!(error = %native_error(&error), "unregistering FLOW 8 native RX event failed");
+            // Native callbacks can still arrive if unregister did not succeed.
+            // Retain the callback context instead of freeing reachable memory.
+            warn!(error = %native_error(&error), "unregistering FLOW 8 native RX event failed; retaining callback context to avoid use-after-free");
+            let _ = Box::into_raw(context);
+            return;
         }
-        self.context.wait_until_drained();
+        context.wait_until_drained();
     }
 }
 
@@ -184,7 +194,7 @@ pub(super) struct WindowsNativeSession {
 impl WindowsNativeSession {
     pub(super) async fn connect(
         generation: u64,
-        events: mpsc::UnboundedSender<DeviceEvent>,
+        events: EventSender,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportRx>), BleError> {
         debug_assert!(!PRODUCTION_USES_GLOBAL_GATT_SERVICE_ENUMERATION);
         let (tx, rx) = mpsc::unbounded_channel();
@@ -605,12 +615,12 @@ fn register_value_changes(
     })?;
     Ok(NativeEventRegistration {
         handle: event_handle,
-        context,
+        context: Some(context),
     })
 }
 
 async fn find_flow8_device(
-    events: &mpsc::UnboundedSender<DeviceEvent>,
+    events: &EventSender,
 ) -> Result<(BluetoothLEDevice, FlowDeviceIdentity), BleError> {
     info!(backend = "windows-native-gatt", "searching for FLOW 8 LE");
     let selector = BluetoothLEDevice::GetDeviceSelectorFromDeviceName(&HSTRING::from("FLOW 8 LE"))
@@ -1415,7 +1425,7 @@ mod legacy_global_service_enumeration {
 
     fn open_flow_service_interface(
         flow_identity: &FlowDeviceIdentity,
-        _events: &mpsc::UnboundedSender<DeviceEvent>,
+        _events: &EventSender,
     ) -> Result<NativeGattCandidate, BleError> {
         let mut interfaces =
             enumerate_device_interfaces(GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE)?;
@@ -1876,7 +1886,7 @@ fn is_flow_characteristic(characteristic: &BTH_LE_GATT_CHARACTERISTIC) -> bool {
     bth_uuid_eq(&characteristic.CharacteristicUuid, FLOW_CHARACTERISTIC_GUID)
 }
 
-fn report_stage(events: &mpsc::UnboundedSender<DeviceEvent>, stage: NativeConnectionStage) {
+fn report_stage(events: &EventSender, stage: NativeConnectionStage) {
     info!(
         backend = "windows-native-gatt",
         stage = stage.as_str(),

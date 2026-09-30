@@ -559,6 +559,10 @@ impl SemanticCommandQueue {
     pub fn pop(&mut self) -> Option<SemanticCommand> {
         self.commands.pop_front()
     }
+    /// Restores an unsent command at the head after runtime backpressure.
+    pub fn push_front(&mut self, command: SemanticCommand) {
+        self.commands.push_front(command);
+    }
     pub fn len(&self) -> usize {
         self.commands.len()
     }
