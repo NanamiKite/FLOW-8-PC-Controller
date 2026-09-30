@@ -12,8 +12,8 @@ use eframe::egui::{
 use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage, SessionPhase};
 use flow8_core::{Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState};
 use flow8_model::{
-    EvidenceStatus, FX_PRESET_COUNT, FxId, HeadphoneSource, InputChannelState, InputId, MixBusId,
-    MixDestination, MonitorRoutingSource, ParameterSpec, TapPoint, fx_preset_info, specs,
+    EqState, EvidenceStatus, FX_PRESET_COUNT, FxId, HeadphoneSource, InputChannelState, InputId,
+    MixBusId, MixDestination, MonitorRoutingSource, ParameterSpec, TapPoint, fx_preset_info, specs,
 };
 
 const BG: Color32 = Color32::from_rgb(17, 19, 23);
@@ -86,7 +86,8 @@ impl LayoutMetrics {
         let channels = visible_channels.max(1) as f32;
         let gaps = ui.spacing * (channels - 1.0);
         let natural_channel_width = ((channel_area - gaps) / channels).max(0.0);
-        let fader_height = 260.0 * ui.ui_scale;
+        let fader_height =
+            (available.y - 290.0 * ui.ui_scale).clamp(160.0 * ui.ui_scale, 320.0 * ui.ui_scale);
         Self {
             fader_height,
             channel_width: natural_channel_width.clamp(channel_min_width, channel_max_width),
@@ -180,6 +181,8 @@ struct Flow8App {
     last_ble_error: Option<String>,
     preferences: AppPreferences,
     metrics: UiMetrics,
+    inspector_open: bool,
+    inspector_input: bool,
 }
 
 impl Flow8App {
@@ -213,6 +216,8 @@ impl Flow8App {
             last_ble_error: None,
             preferences: AppPreferences::default(),
             metrics,
+            inspector_open: true,
+            inspector_input: true,
         }
     }
 
@@ -313,6 +318,10 @@ impl Flow8App {
             }
         }
 
+        self.flush_commands();
+    }
+
+    fn flush_commands(&mut self) {
         while let Some(command) = self.store.queue.pop() {
             if let Err(error) = self
                 .runtime
@@ -329,6 +338,8 @@ impl Flow8App {
             .fill(SURFACE)
             .inner_margin(egui::Margin::symmetric(18, 10))
             .show(ui, |ui| {
+                // The outer page uses zero spacing between bars; controls need their own gaps.
+                ui.spacing_mut().item_spacing.x = self.metrics.spacing;
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("FLOW 8")
@@ -342,15 +353,37 @@ impl Flow8App {
                             .color(SECONDARY),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .button(self.language.tr("Preferences", "偏好设置"))
+                        ui.menu_button(self.language.tr("Setup", "设置"), |ui| {
+                            if ui
+                                .button(self.language.tr("Preferences", "偏好设置"))
+                                .clicked()
+                            {
+                                self.page = Page::Settings;
+                                ui.close();
+                            }
+                            if small_tab(
+                                ui,
+                                self.page == Page::Snapshots,
+                                self.language.tr("Snapshots", "快照"),
+                                TEXT,
+                            )
                             .clicked()
-                        {
-                            self.page = Page::Settings;
-                        }
-                        if ui.button(self.language.tr("Setup", "设置")).clicked() {
-                            self.page = Page::Routing;
-                        }
+                            {
+                                self.page = Page::Snapshots;
+                                ui.close();
+                            }
+                            if small_tab(
+                                ui,
+                                self.page == Page::Routing,
+                                self.language.tr("Routing", "路由"),
+                                TEXT,
+                            )
+                            .clicked()
+                            {
+                                self.page = Page::Routing;
+                                ui.close();
+                            }
+                        });
                         let language_label = match self.language {
                             Language::English => "中文",
                             Language::Chinese => "English",
@@ -416,6 +449,9 @@ impl Flow8App {
                                 Err(error) => self.message = error,
                             }
                         }
+                        ui.add_space(self.metrics.spacing);
+                        ui.separator();
+                        ui.add_space(self.metrics.spacing);
                         ui.label(
                             egui::RichText::new(self.language.tr("Direct Bluetooth", "直连蓝牙"))
                                 .color(SECONDARY),
@@ -458,9 +494,10 @@ impl Flow8App {
             .fill(Color32::from_rgb(20, 23, 27))
             .inner_margin(egui::Margin::symmetric(18, 7))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     self.layer_button(ui, Page::Mixer, self.language.tr("MIXER", "混音器"), YELLOW);
                     self.layer_button(ui, Page::Stage, self.language.tr("STAGE", "舞台"), YELLOW);
+                    ui.separator();
                     self.layer_button(ui, Page::Fx1, "FX1", PURPLE);
                     self.layer_button(ui, Page::Fx2, "FX2", PURPLE);
                     self.layer_button(ui, Page::Monitor1, "MON1", GREEN);
@@ -472,28 +509,6 @@ impl Flow8App {
                         self.language.tr("MAIN OUT", "主输出"),
                         TEXT,
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if small_tab(
-                            ui,
-                            self.page == Page::Snapshots,
-                            self.language.tr("Snapshots", "快照"),
-                            TEXT,
-                        )
-                        .clicked()
-                        {
-                            self.page = Page::Snapshots;
-                        }
-                        if small_tab(
-                            ui,
-                            self.page == Page::Routing,
-                            self.language.tr("Routing", "路由"),
-                            TEXT,
-                        )
-                        .clicked()
-                        {
-                            self.page = Page::Routing;
-                        }
-                    });
                 });
             });
         ui.painter().hline(
@@ -504,16 +519,30 @@ impl Flow8App {
     }
 
     fn layer_button(&mut self, ui: &mut egui::Ui, page: Page, label: &str, accent: Color32) {
-        if small_tab(ui, self.page == page, label, accent).clicked() {
-            self.page = page;
-            let destination = match page {
-                Page::Fx1 => Some(MixDestination::Fx1),
-                Page::Fx2 => Some(MixDestination::Fx2),
-                Page::Monitor1 => Some(MixDestination::Monitor1),
-                Page::Monitor2 => Some(MixDestination::Monitor2),
-                Page::Main | Page::Mixer => Some(MixDestination::Main),
-                _ => None,
-            };
+        let destination = match page {
+            Page::Fx1 => Some(MixDestination::Fx1),
+            Page::Fx2 => Some(MixDestination::Fx2),
+            Page::Monitor1 => Some(MixDestination::Monitor1),
+            Page::Monitor2 => Some(MixDestination::Monitor2),
+            Page::Main => Some(MixDestination::Main),
+            _ => None,
+        };
+        let is_mix_view = matches!(
+            self.page,
+            Page::Mixer | Page::Main | Page::Monitor1 | Page::Monitor2 | Page::Fx1 | Page::Fx2
+        );
+        let selected = match destination {
+            Some(destination) => {
+                (is_mix_view || self.page == Page::Stage)
+                    && self.store.state.selected_destination == destination
+            }
+            None if page == Page::Mixer => is_mix_view,
+            None => self.page == page,
+        };
+        if small_tab(ui, selected, label, accent).clicked() {
+            if destination.is_none() || self.page != Page::Stage {
+                self.page = page;
+            }
             if let Some(destination) = destination {
                 self.store.state.selected_destination = destination;
             }
@@ -521,90 +550,144 @@ impl Flow8App {
     }
 
     fn mixer(&mut self, ui: &mut egui::Ui) {
+        // Keep frame strokes, meter labels and scroll bars away from the window edge.
+        egui::Frame::new().inner_margin(12).show(ui, |ui| {
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+            self.mixer_contents(ui);
+        });
+    }
+
+    fn mixer_contents(&mut self, ui: &mut egui::Ui) {
         let metrics = self.metrics;
         ui.add_space(metrics.spacing);
-        egui::ScrollArea::horizontal()
-            .id_salt("mixer-destination-scroll")
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(metrics.spacing * 2.0);
-                    ui.label(
-                        egui::RichText::new(self.language.tr("MIX DESTINATION", "混音目标"))
-                            .size(metrics.small_font)
-                            .strong()
-                            .color(SECONDARY),
-                    );
-                    for destination in MixDestination::ALL {
-                        let selected = self.store.state.selected_destination == destination;
-                        if destination_button(ui, selected, destination_name(destination)).clicked()
-                        {
-                            self.store.state.selected_destination = destination;
-                        }
-                    }
-                    ui.label(
-                        egui::RichText::new(self.language.tr(
-                            "7 conventional inputs · USB returns are configured in Routing",
-                            "7 个常规输入 · USB 回放在路由中配置",
-                        ))
-                        .size(metrics.secondary_font)
-                        .color(SECONDARY),
-                    );
-                });
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} → {}",
+                    self.language.tr("INPUTS", "输入"),
+                    destination_name(self.store.state.selected_destination),
+                ))
+                .strong()
+                .color(YELLOW),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.toggle_value(
+                    &mut self.inspector_open,
+                    self.language.tr("Details", "详情"),
+                );
             });
+        });
         ui.add_space(metrics.spacing);
 
-        let available = ui.available_size();
+        // Reserve space for the existing status line. Each column owns its scrolling.
+        let available = Vec2::new(
+            ui.available_width(),
+            (ui.available_height() - 40.0).max(80.0),
+        );
         let visible_channels = InputId::ALL
             .iter()
             .filter(|id| self.preferences.channel_visible[id.index()])
             .count();
         let layout = LayoutMetrics::calculate(available, metrics, visible_channels);
-        let inspector_width = layout.inspector_width;
-        let stack_inspector = layout.compact;
-        let fader_height = layout.fader_height;
-
-        egui::ScrollArea::vertical()
-            .id_salt("mixer-vertical")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if stack_inspector {
-                    let channel_area = ui.available_width();
-                    self.render_channel_strips(ui, channel_area, visible_channels, fader_height);
-                    ui.add_space(metrics.spacing);
-                    let inspector_width = ui
-                        .available_width()
-                        .min((760.0 * metrics.ui_scale).max(layout.inspector_width));
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(inspector_width, 0.0),
-                        Layout::top_down(Align::Min),
-                        |ui| self.master_and_inspector(ui, layout),
-                    );
-                } else {
-                    ui.horizontal_top(|ui| {
-                        let channel_area =
-                            (ui.available_width() - inspector_width - metrics.spacing).max(0.0);
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(channel_area, 0.0),
-                            Layout::top_down(Align::Min),
-                            |ui| {
-                                self.render_channel_strips(
-                                    ui,
-                                    channel_area,
-                                    visible_channels,
-                                    fader_height,
-                                );
-                            },
-                        );
-                        ui.add_space(metrics.spacing);
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(inspector_width, 0.0),
-                            Layout::top_down(Align::Min),
-                            |ui| self.master_and_inspector(ui, layout),
-                        );
-                    });
-                }
-            });
+        let master_width = 166.0 * metrics.ui_scale;
+        let show_inspector = self.inspector_open;
+        let inspector_width = if show_inspector {
+            layout.inspector_width
+        } else {
+            0.0
+        };
+        let divider_width = 24.0 * metrics.ui_scale;
+        let gaps = divider_width * if show_inspector { 2.0 } else { 1.0 };
+        let channel_area = (available.x - master_width - inspector_width - gaps).max(80.0);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let strip_height = ui
+                .allocate_ui_with_layout(
+                    Vec2::new(channel_area, available.y),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = metrics.spacing;
+                        self.render_channel_strips(
+                            ui,
+                            channel_area,
+                            visible_channels,
+                            layout.fader_height,
+                        )
+                    },
+                )
+                .inner;
+            mixer_divider(ui, divider_width, available.y);
+            ui.allocate_ui_with_layout(
+                Vec2::new(master_width, available.y),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = metrics.spacing;
+                    egui::ScrollArea::vertical()
+                        .id_salt("master-scroll")
+                        .max_width(master_width)
+                        .max_height(available.y)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Frame::new().inner_margin(4).show(ui, |ui| {
+                                self.destination_master(ui, layout.fader_height, strip_height);
+                            });
+                        });
+                },
+            );
+            if show_inspector {
+                mixer_divider(ui, divider_width, available.y);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(inspector_width, available.y),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = metrics.spacing;
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.inspector_input,
+                                true,
+                                self.language.tr("Input", "输入详情"),
+                            );
+                            ui.selectable_value(
+                                &mut self.inspector_input,
+                                false,
+                                self.language.tr("Output / FX", "输出 / FX"),
+                            );
+                        });
+                        ui.separator();
+                        let scroll_height = ui.available_height().max(40.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("inspector-scroll", self.inspector_input))
+                            .max_width(inspector_width)
+                            .max_height(scroll_height)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                egui::Frame::new().inner_margin(4).show(ui, |ui| {
+                                    if self.inspector_input {
+                                        if let Some(id) = self.store.state.selected_input {
+                                            ui.push_id(id.index(), |ui| {
+                                                self.input_inspector(ui, id)
+                                            });
+                                        } else {
+                                            ui.label(self.language.tr(
+                                                "Select an input channel to edit.",
+                                                "选择输入通道以查看详情。",
+                                            ));
+                                        }
+                                    } else {
+                                        ui.push_id(
+                                            (
+                                                "output",
+                                                self.store.state.selected_destination.index(),
+                                            ),
+                                            |ui| self.output_inspector(ui),
+                                        );
+                                    }
+                                });
+                            });
+                    },
+                );
+            }
+        });
     }
 
     fn render_channel_strips(
@@ -613,50 +696,65 @@ impl Flow8App {
         available_width: f32,
         visible_channels: usize,
         fader_height: f32,
-    ) {
+    ) -> f32 {
         let metrics = self.metrics;
-        let layout = LayoutMetrics::calculate(
-            Vec2::new(available_width, ui.available_height()),
-            metrics,
-            visible_channels,
-        );
-        let strip_width = layout.channel_width;
-        egui::ScrollArea::horizontal()
+        let mut strip_height: f32 = 0.0;
+        let channels = visible_channels.max(1) as f32;
+        let strip_width = ((available_width - 8.0 - metrics.spacing * (channels - 1.0)) / channels)
+            .clamp(
+                (144.0 * metrics.ui_scale).max(132.0),
+                164.0 * metrics.ui_scale,
+            );
+        egui::ScrollArea::both()
             .id_salt("mixer-strips")
+            .max_width(available_width)
+            .max_height(ui.available_height())
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = metrics.spacing;
-                    for id in InputId::ALL {
-                        if !self.preferences.channel_visible[id.index()] {
-                            continue;
+                egui::Frame::new().inner_margin(4).show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = metrics.spacing;
+                        for id in InputId::ALL {
+                            if !self.preferences.channel_visible[id.index()] {
+                                continue;
+                            }
+                            let channel = self.store.state.channels[id.index()].clone();
+                            let selected = self.store.state.selected_input == Some(id);
+                            let strip = ui.push_id(
+                                (id.index(), self.store.state.selected_destination.index()),
+                                |ui| {
+                                    channel_strip(
+                                        ui,
+                                        &channel,
+                                        self.store.state.selected_destination,
+                                        selected,
+                                        self.language,
+                                        self.preferences.show_channel_icons,
+                                        self.preferences.show_mute_buttons,
+                                        metrics,
+                                        strip_width,
+                                        fader_height,
+                                    )
+                                },
+                            );
+                            strip_height = strip_height.max(strip.response.rect.height());
+                            if let Some(action) = strip.inner {
+                                self.apply_strip_action(id, action);
+                            }
                         }
-                        let channel = self.store.state.channels[id.index()].clone();
-                        let selected = self.store.state.selected_input == Some(id);
-                        let action = channel_strip(
-                            ui,
-                            &channel,
-                            self.store.state.selected_destination,
-                            selected,
-                            self.language,
-                            self.preferences.show_channel_icons,
-                            self.preferences.show_mute_buttons,
-                            metrics,
-                            strip_width,
-                            fader_height,
-                        );
-                        if let Some(action) = action {
-                            self.apply_strip_action(id, action);
-                        }
-                    }
+                    });
                 });
             });
+        strip_height
     }
 
     fn apply_strip_action(&mut self, id: InputId, action: StripAction) {
         self.store.state.selected_input = Some(id);
         match action {
-            StripAction::Select => {}
+            StripAction::Select => {
+                self.inspector_input = true;
+                self.inspector_open = true;
+            }
             StripAction::Route(value) => self.dispatch(SemanticCommand::SetRouteLevel {
                 source: id,
                 destination: self.store.state.selected_destination,
@@ -674,65 +772,109 @@ impl Flow8App {
         }
     }
 
-    fn master_and_inspector(&mut self, ui: &mut egui::Ui, _layout: LayoutMetrics) {
+    fn destination_master(&mut self, ui: &mut egui::Ui, fader_height: f32, strip_height: f32) {
         let destination = self.store.state.selected_destination;
-        card(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} {}",
-                    destination_name(destination),
-                    self.language.tr("MASTER", "主控")
-                ))
-                .size(14.0)
-                .strong()
-                .color(TEXT),
-            );
-            ui.label(
-                egui::RichText::new(self.language.tr("Destination master", "目标总线主控"))
-                    .size(10.0)
-                    .color(SECONDARY),
-            );
-            let (mut master, meter) = if let Some(bus) =
-                self.store.state.bus_for_destination(destination)
-            {
-                (
-                    *bus.master_level.effective().unwrap_or(&0.75),
-                    *bus.meter.level_db.effective().unwrap_or(&-60.0),
-                )
-            } else {
-                let fx = &self.store.state.effects[usize::from(destination == MixDestination::Fx2)];
-                (*fx.master_level.effective().unwrap_or(&0.75), -18.0)
-            };
-            let master_height = 220.0 * self.metrics.ui_scale;
-            ui.horizontal(|ui| {
-                if fader_sized(
+        egui::Frame::new()
+            .fill(Color32::from_rgb(29, 35, 45))
+            .stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.7)))
+            .corner_radius(8)
+            .inner_margin(8)
+            .show(ui, |ui| {
+                // Match the input strip's actual outer height, including its footer.
+                // Both frames have 8-point margins and a 1-point stroke on each edge.
+                ui.set_min_height((strip_height - 18.0).max(0.0));
+                strip_controls(
                     ui,
-                    &mut master,
-                    70.0 * self.metrics.ui_scale,
-                    master_height,
-                    0.75,
-                )
-                .changed()
-                {
-                    self.dispatch(SemanticCommand::SetDestinationMaster {
-                        destination,
-                        normalized: master,
-                    });
-                }
-                meter_widget_sized(
-                    ui,
-                    meter,
-                    50.0 * self.metrics.ui_scale,
-                    master_height,
+                    ui.available_width(),
                     self.metrics,
+                    self.preferences.show_channel_icons,
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {}",
+                                destination_name(destination),
+                                self.language.tr("MASTER", "主控")
+                            ))
+                            .size(self.metrics.body_font)
+                            .strong()
+                            .color(BLUE),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                self.language.tr("Destination master", "目标总线主控"),
+                            )
+                            .size(10.0)
+                            .color(SECONDARY),
+                        );
+                        if ui
+                            .button(self.language.tr("Output / FX", "输出 / FX"))
+                            .clicked()
+                        {
+                            self.inspector_open = true;
+                            self.inspector_input = false;
+                        }
+                    },
+                );
+                let (mut master, meter, confirmed_master) =
+                    if let Some(bus) = self.store.state.bus_for_destination(destination) {
+                        (
+                            *bus.master_level.effective().unwrap_or(&0.75),
+                            *bus.meter.level_db.effective().unwrap_or(&-60.0),
+                            bus.master_level.confirmed,
+                        )
+                    } else {
+                        let fx = &self.store.state.effects
+                            [usize::from(destination == MixDestination::Fx2)];
+                        (
+                            *fx.master_level.effective().unwrap_or(&0.75),
+                            -18.0,
+                            fx.master_level.confirmed,
+                        )
+                    };
+                ui.push_id(destination.index(), |ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), fader_height),
+                        Layout::left_to_right(Align::Min),
+                        |ui| {
+                            if fader_sized(
+                                ui,
+                                &mut master,
+                                58.0 * self.metrics.ui_scale,
+                                fader_height,
+                                0.75,
+                                confirmed_master,
+                            )
+                            .on_hover_text(self.language.tr(
+                                "Drag to adjust · Shift: fine adjustment · Double-click: 0 dB",
+                                "拖动调节 · Shift 精调 · 双击回到 0 dB",
+                            ))
+                            .changed()
+                            {
+                                self.dispatch(SemanticCommand::SetDestinationMaster {
+                                    destination,
+                                    normalized: master,
+                                });
+                            }
+                            meter_widget_sized(
+                                ui,
+                                meter,
+                                42.0 * self.metrics.ui_scale,
+                                fader_height,
+                                self.metrics,
+                            );
+                        },
+                    )
+                });
+                ui.label(
+                    egui::RichText::new(format!("{} dB", fader_level_text(master)))
+                        .strong()
+                        .color(TEXT),
                 );
             });
-            ui.label(
-                egui::RichText::new(format!("{:.1} dB", normalized_to_display_db(master)))
-                    .strong()
-                    .color(TEXT),
-            );
-        });
+    }
+
+    fn output_inspector(&mut self, ui: &mut egui::Ui) {
+        let destination = self.store.state.selected_destination;
         if let Some(bus_id) = bus_id_for_destination(destination)
             && let Some(bus) = self.store.state.bus_for_destination(destination).cloned()
         {
@@ -801,7 +943,29 @@ impl Flow8App {
                         threshold_db: limiter,
                     });
                 }
-                ui.collapsing(self.language.tr("9-band GEQ", "9 段图示均衡"), |ui| {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(self.language.tr("9-band GEQ", "9 段图示均衡")).strong(),
+                );
+                if let Some((index, gain_db)) = output_eq_graph(ui, &bus.eq, self.metrics) {
+                    let band = &bus.eq.bands[index];
+                    self.dispatch(SemanticCommand::SetGeqBand {
+                        bus: bus_id,
+                        band: index as u8,
+                        frequency_hz: band.frequency_hz.effective().copied().unwrap_or(0.0) as u16,
+                        q: band.q.effective().copied().unwrap_or(1.0),
+                        gain_db,
+                    });
+                }
+                ui.label(
+                    egui::RichText::new(self.language.tr(
+                        "Drag a point · Shift: fine · Double-click: 0 dB",
+                        "拖动节点 · Shift 精调 · 双击归零",
+                    ))
+                    .size(self.metrics.small_font)
+                    .color(SECONDARY),
+                );
+                ui.collapsing(self.language.tr("Band values", "各频段数值"), |ui| {
                     for (index, band) in bus.eq.bands.iter().enumerate() {
                         let mut gain = band.gain_db.effective().copied().unwrap_or(0.0);
                         if parameter_row(
@@ -978,10 +1142,6 @@ impl Flow8App {
                 }
             });
         }
-        ui.add_space(8.0);
-        if let Some(id) = self.store.state.selected_input {
-            self.input_inspector(ui, id);
-        }
     }
 
     fn input_inspector(&mut self, ui: &mut egui::Ui, id: InputId) {
@@ -1010,7 +1170,10 @@ impl Flow8App {
                 .unwrap_or_else(|| display_name(id, self.language).into());
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(self.language.tr("Label", "名称")).color(TEXT));
-                if ui.text_edit_singleline(&mut label).changed() {
+                if ui
+                    .add(egui::TextEdit::singleline(&mut label).desired_width(ui.available_width()))
+                    .changed()
+                {
                     self.dispatch(SemanticCommand::SetLabel {
                         input: id,
                         icon: channel.icon.effective().copied().unwrap_or(0),
@@ -1057,21 +1220,23 @@ impl Flow8App {
                 .effective()
                 .copied()
                 .unwrap_or(specs::ROUTE_LEVEL.default);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} → {}",
+                    display_name(id, self.language),
+                    destination_name(destination)
+                ))
+                .color(TEXT),
+            );
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} → {}",
-                        display_name(id, self.language),
-                        destination_name(destination)
-                    ))
-                    .color(TEXT),
-                );
+                ui.spacing_mut().slider_width =
+                    (ui.available_width() - 80.0 * self.metrics.ui_scale).max(40.0);
                 let response = ui.add(
                     egui::Slider::new(&mut route, specs::ROUTE_LEVEL.min..=specs::ROUTE_LEVEL.max)
                         .show_value(false),
                 );
                 ui.label(
-                    egui::RichText::new(format!("{:+.1} dB", normalized_to_display_db(route)))
+                    egui::RichText::new(format!("{} dB", fader_level_text(route)))
                         .monospace()
                         .color(TEXT),
                 );
@@ -1410,7 +1575,7 @@ impl Flow8App {
             ui.painter().text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                format!("{:+.1}", normalized_to_display_db(route)),
+                fader_level_text(route),
                 FontId::proportional(13.0),
                 TEXT,
             );
@@ -2445,7 +2610,7 @@ impl eframe::App for Flow8App {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             self.connection_bar(ui);
             self.layer_bar(ui);
-            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            ui.spacing_mut().item_spacing = Vec2::splat(self.metrics.spacing);
             let device_ready = self.store.state.session == SessionState::Ready;
             if !device_ready && self.page != Page::Settings {
                 device_unsynced_notice(ui, self.store.state.session, self.language);
@@ -2501,6 +2666,9 @@ impl eframe::App for Flow8App {
                     });
             });
         });
+        // Send this frame's intents now, rather than waiting for the next repaint.
+        // The Store's semantic queue still coalesces continuous edits within the frame.
+        self.flush_commands();
     }
 }
 
@@ -2511,6 +2679,42 @@ enum StripAction {
     Pan(f32),
     Mute(bool),
     Solo(bool),
+}
+
+fn mixer_divider(ui: &mut egui::Ui, width: f32, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        Stroke::new(1.0, Color32::from_rgb(78, 88, 103)),
+    );
+}
+
+fn strip_controls_height(metrics: UiMetrics, show_icons: bool) -> f32 {
+    (if show_icons { 182.0 } else { 152.0 }) * metrics.ui_scale
+}
+
+fn strip_controls(
+    ui: &mut egui::Ui,
+    width: f32,
+    metrics: UiMetrics,
+    show_icons: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    // Allocate the same fixed header for inputs and master. Unlike a minimum
+    // height, this cannot move the fader endpoints when header contents differ.
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(width, strip_controls_height(metrics, show_icons)),
+        Sense::hover(),
+    );
+    let mut controls = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("strip-controls")
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Center)),
+    );
+    controls.set_clip_rect(ui.clip_rect().intersect(rect));
+    add(&mut controls);
 }
 
 fn channel_strip(
@@ -2528,97 +2732,120 @@ fn channel_strip(
     let mut action = None;
     egui::Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(
-            if selected { 1.5 } else { 1.0 },
-            if selected { YELLOW } else { BORDER },
-        ))
+        .stroke(Stroke::new(1.0, if selected { YELLOW } else { BORDER }))
         .corner_radius(8)
         .inner_margin(8)
         .show(ui, |ui| {
-            ui.set_width(strip_width);
+            // strip_width includes the frame margin and stroke.
+            let content_width = (strip_width - 18.0).max(100.0);
+            ui.set_width(content_width);
             ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new(channel_number(channel.id))
-                        .size(metrics.small_font)
-                        .strong()
-                        .color(SECONDARY),
-                );
-                let icon = if channel.id == InputId::UsbBluetooth {
-                    "▣"
-                } else if channel.id.is_stereo() {
-                    "◫"
-                } else {
-                    "●"
-                };
-                if show_channel_icons {
+                strip_controls(ui, content_width, metrics, show_channel_icons, |ui| {
                     ui.label(
-                        egui::RichText::new(icon)
-                            .size(20.0 * metrics.ui_scale)
-                            .color(if selected { YELLOW } else { TEXT }),
-                    );
-                }
-                if ui
-                    .selectable_label(
-                        selected,
-                        egui::RichText::new(display_name(channel.id, language))
-                            .size(metrics.body_font)
-                            .strong()
-                            .color(TEXT),
-                    )
-                    .clicked()
-                {
-                    action = Some(StripAction::Select);
-                }
-                if channel.id.is_stereo() {
-                    ui.label(
-                        egui::RichText::new(language.tr("STEREO", "立体声"))
-                            .size(metrics.small_font)
-                            .color(BLUE),
-                    );
-                }
-                if channel.capabilities.phantom
-                    && *channel.phantom_48v.effective().unwrap_or(&false)
-                {
-                    ui.label(
-                        egui::RichText::new("48 V")
+                        egui::RichText::new(channel_number(channel.id))
                             .size(metrics.small_font)
                             .strong()
-                            .color(RED),
+                            .color(SECONDARY),
                     );
-                }
-                ui.add_space(4.0);
-                let mut pan = *channel.pan.effective().unwrap_or(&0.0);
-                let pan_response = pan_control(
-                    ui,
-                    &mut pan,
-                    (strip_width - 14.0 * metrics.ui_scale).max(72.0),
-                    metrics,
-                );
-                if pan_response.changed() {
-                    action = Some(StripAction::Pan(pan));
-                }
-                ui.label(
-                    egui::RichText::new(pan_text(pan, channel.id.is_stereo()))
-                        .size(metrics.small_font)
-                        .color(SECONDARY),
-                );
-                ui.add_space(4.0);
-                let mut route = *channel.route_levels[destination.index()]
-                    .effective()
-                    .unwrap_or(&0.0);
-                let meter = *channel.meter.level_db.effective().unwrap_or(&-60.0);
-                ui.horizontal(|ui| {
-                    let fader_width = (strip_width * 0.49).clamp(54.0, 76.0);
-                    let meter_width = (strip_width - fader_width - metrics.spacing).max(38.0);
-                    let changed =
-                        fader_sized(ui, &mut route, fader_width, fader_height, 0.75).changed();
-                    meter_widget_sized(ui, meter, meter_width, fader_height, metrics);
-                    if changed {
-                        action = Some(StripAction::Route(route));
+                    let icon = if channel.id == InputId::UsbBluetooth {
+                        "▣"
+                    } else if channel.id.is_stereo() {
+                        "◫"
+                    } else {
+                        "●"
+                    };
+                    if show_channel_icons {
+                        ui.label(
+                            egui::RichText::new(icon)
+                                .size(20.0 * metrics.ui_scale)
+                                .color(if selected { YELLOW } else { TEXT }),
+                        );
                     }
+                    let name = channel
+                        .name
+                        .effective()
+                        .map(String::as_str)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| display_name(channel.id, language));
+                    if ui
+                        .add_sized(
+                            [content_width, metrics.control_height],
+                            egui::Button::new(
+                                egui::RichText::new(name)
+                                    .size(metrics.body_font)
+                                    .strong()
+                                    .color(TEXT),
+                            )
+                            .selected(selected)
+                            .truncate(),
+                        )
+                        .on_hover_text(name)
+                        .clicked()
+                    {
+                        action = Some(StripAction::Select);
+                    }
+                    let phantom = channel.capabilities.phantom
+                        && *channel.phantom_48v.effective().unwrap_or(&false);
+                    let status = if phantom {
+                        "48 V"
+                    } else if channel.id.is_stereo() {
+                        language.tr("STEREO", "立体声")
+                    } else {
+                        " "
+                    };
+                    ui.label(
+                        egui::RichText::new(status)
+                            .size(metrics.small_font)
+                            .color(if phantom { RED } else { BLUE }),
+                    );
+                    ui.add_space(4.0);
+                    let mut pan = *channel.pan.effective().unwrap_or(&0.0);
+                    let pan_response = pan_control(
+                        ui,
+                        &mut pan,
+                        (content_width - 14.0 * metrics.ui_scale).max(72.0),
+                        metrics,
+                    );
+                    if pan_response.changed() {
+                        action = Some(StripAction::Pan(pan));
+                    }
+                    ui.label(
+                        egui::RichText::new(pan_text(pan, channel.id.is_stereo()))
+                            .size(metrics.small_font)
+                            .color(SECONDARY),
+                    );
+                    ui.add_space(4.0);
                 });
+                let route_state = &channel.route_levels[destination.index()];
+                let mut route = *route_state.effective().unwrap_or(&0.0);
+                let meter = *channel.meter.level_db.effective().unwrap_or(&-60.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(content_width, fader_height),
+                    Layout::left_to_right(Align::Min),
+                    |ui| {
+                        let fader_width = (content_width * 0.49).clamp(46.0, 76.0);
+                        let meter_width = (content_width - fader_width - metrics.spacing).max(38.0);
+                        let changed = fader_sized(
+                            ui,
+                            &mut route,
+                            fader_width,
+                            fader_height,
+                            0.75,
+                            route_state.confirmed,
+                        )
+                        .on_hover_text(language.tr(
+                            "Drag to adjust · Shift: fine adjustment · Double-click: 0 dB",
+                            "拖动调节 · Shift 精调 · 双击回到 0 dB",
+                        ))
+                        .changed();
+                        meter_widget_sized(ui, meter, meter_width, fader_height, metrics);
+                        if changed {
+                            action = Some(StripAction::Route(route));
+                        }
+                    },
+                );
                 ui.label(
-                    egui::RichText::new(format!("{:.1} dB", normalized_to_display_db(route)))
+                    egui::RichText::new(format!("{} dB", fader_level_text(route)))
                         .strong()
                         .color(TEXT),
                 );
@@ -2659,35 +2886,159 @@ fn channel_strip(
     action
 }
 
+const FADER_CONFIRM_GRACE_SECONDS: f64 = 3.0;
+
+// A gesture is editing intent, not another copy of device state. The confirmed
+// Store remains authoritative once the device catches up or the grace expires.
+#[derive(Clone, Copy)]
+struct FaderGesture {
+    target: f32,
+    last_sent: f32,
+    last_pointer_y: f32,
+    grab_offset_y: f32,
+    fine: bool,
+    released_at: Option<f64>,
+}
+
+impl FaderGesture {
+    fn begin(value: f32, pointer_y: f32, track: Rect, on_thumb: bool, fine: bool) -> Self {
+        let grab_offset_y = if on_thumb {
+            fader_thumb_y(track, value) - pointer_y
+        } else {
+            0.0
+        };
+        Self {
+            target: if on_thumb {
+                value
+            } else {
+                fader_value_at_y(track, pointer_y)
+            },
+            last_sent: value,
+            last_pointer_y: pointer_y,
+            grab_offset_y,
+            fine,
+            released_at: None,
+        }
+    }
+
+    fn update(&mut self, pointer_y: f32, track: Rect, fine: bool) -> bool {
+        if self.fine != fine {
+            // Switching precision must not move the thumb on its own.
+            self.grab_offset_y = fader_thumb_y(track, self.target) - pointer_y;
+        }
+        self.target = if fine {
+            (self.target - (pointer_y - self.last_pointer_y) / track.height() * 0.1).clamp(0.0, 1.0)
+        } else {
+            fader_value_at_y(track, pointer_y + self.grab_offset_y)
+        };
+        self.last_pointer_y = pointer_y;
+        self.fine = fine;
+        if (self.target - self.last_sent).abs() > 1.0e-4 {
+            self.last_sent = self.target;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn released(value: f32, time: f64) -> Self {
+        Self {
+            target: value,
+            last_sent: value,
+            last_pointer_y: 0.0,
+            grab_offset_y: 0.0,
+            fine: false,
+            released_at: Some(time),
+        }
+    }
+
+    fn awaiting_confirmation(&self, confirmed: Option<f32>, now: f64) -> bool {
+        let released_at = self.released_at.unwrap_or(now);
+        let confirmed_target =
+            confirmed.is_some_and(|device_value| (device_value - self.target).abs() <= 0.01);
+        !confirmed_target && now - released_at < FADER_CONFIRM_GRACE_SECONDS
+    }
+}
+
+fn fader_thumb_y(track: Rect, value: f32) -> f32 {
+    egui::lerp(track.bottom()..=track.top(), value)
+}
+
+fn fader_value_at_y(track: Rect, y: f32) -> f32 {
+    ((track.bottom() - y) / track.height()).clamp(0.0, 1.0)
+}
+
 fn fader_sized(
     ui: &mut egui::Ui,
     value: &mut f32,
     width: f32,
     height: f32,
     default: f32,
+    confirmed: Option<f32>,
 ) -> Response {
     let (rect, mut response) =
         ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
-    if (response.dragged() || response.clicked())
-        && let Some(pointer) = response.interact_pointer_pos()
-    {
-        let next = ((rect.bottom() - pointer.y) / rect.height()).clamp(0.0, 1.0);
-        if (*value - next).abs() > f32::EPSILON {
-            *value = next;
-            response.mark_changed();
+    let track = Rect::from_center_size(
+        rect.center(),
+        Vec2::new(5.0, (rect.height() - 24.0).max(1.0)),
+    );
+    let pointer_held =
+        response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down());
+    if response.clicked() || pointer_held {
+        response.request_focus();
+    }
+    let drag_id = response.id.with("fader-drag");
+    let time = ui.input(|input| input.time);
+    if !ui.is_enabled() {
+        ui.ctx()
+            .data_mut(|data| data.remove::<FaderGesture>(drag_id));
+    } else if pointer_held {
+        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
+            let started =
+                ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary));
+            let previous = if started {
+                None
+            } else {
+                ui.ctx().data(|data| data.get_temp::<FaderGesture>(drag_id))
+            };
+            let fine = ui.input(|input| input.modifiers.shift);
+            let thumb = Rect::from_center_size(
+                Pos2::new(track.center().x, fader_thumb_y(track, *value)),
+                Vec2::new(29.0, 15.0),
+            );
+            let mut gesture = previous.unwrap_or_else(|| {
+                FaderGesture::begin(
+                    *value,
+                    pointer.y,
+                    track,
+                    thumb.expand(3.0).contains(pointer),
+                    fine,
+                )
+            });
+            if gesture.update(pointer.y, track, fine) {
+                response.mark_changed();
+            }
+            *value = gesture.target;
+            ui.ctx().data_mut(|data| data.insert_temp(drag_id, gesture));
+        }
+    } else if let Some(mut gesture) = ui.ctx().data(|data| data.get_temp::<FaderGesture>(drag_id)) {
+        gesture.released_at.get_or_insert(time);
+        if gesture.awaiting_confirmation(confirmed, time) {
+            // Hide an older in-flight echo briefly after release; never emit TX from it.
+            *value = gesture.target;
+            ui.ctx().data_mut(|data| data.insert_temp(drag_id, gesture));
+        } else {
+            ui.ctx()
+                .data_mut(|data| data.remove::<FaderGesture>(drag_id));
         }
     }
-    if response.double_clicked() {
+    if response.double_clicked() && (*value - default).abs() > f32::EPSILON {
         *value = default;
         response.mark_changed();
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(drag_id, FaderGesture::released(default, time)));
     }
-    if response.hovered() {
-        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            *value = (*value + scroll.signum() * 0.005).clamp(0.0, 1.0);
-            response.mark_changed();
-        }
-    }
+    // Wheel input belongs to the scroll area, never to a merely hovered fader.
     if response.has_focus() {
         let delta = ui.input(|input| {
             if input.key_pressed(egui::Key::ArrowUp) {
@@ -2698,22 +3049,32 @@ fn fader_sized(
                 0.0
             }
         });
-        if delta != 0.0 {
-            *value = (*value + delta).clamp(0.0, 1.0);
+        let sensitivity = ui.input(|input| if input.modifiers.shift { 0.1 } else { 1.0 });
+        let next = (*value + delta * sensitivity).clamp(0.0, 1.0);
+        if (*value - next).abs() > f32::EPSILON {
+            *value = next;
             response.mark_changed();
+            if !pointer_held {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(drag_id, FaderGesture::released(next, time)));
+            }
         }
     }
-    let cursor = if response.dragged() {
+    let cursor = if pointer_held {
         egui::CursorIcon::Grabbing
     } else {
         egui::CursorIcon::Grab
     };
     response = response.on_hover_cursor(cursor);
     let painter = ui.painter();
-    let track = Rect::from_center_size(
-        Pos2::new(rect.center().x, rect.center().y),
-        Vec2::new(5.0, rect.height() - 24.0),
-    );
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.shrink(1.0),
+            4.0,
+            Stroke::new(1.0, BLUE),
+            StrokeKind::Inside,
+        );
+    }
     painter.rect_filled(track, 2.0, Color32::from_rgb(52, 57, 67));
     let fill_top = egui::lerp(track.bottom()..=track.top(), *value);
     painter.rect_filled(
@@ -2736,7 +3097,7 @@ fn fader_sized(
     painter.rect_filled(
         thumb,
         4.0,
-        if response.dragged() {
+        if pointer_held {
             YELLOW
         } else if response.hovered() {
             Color32::WHITE
@@ -2873,21 +3234,35 @@ fn parameter_row(
     spec: ParameterSpec,
 ) -> ParameterRowResponse {
     let original = *value;
+    let scale = ui.spacing().interact_size.y / 30.0;
+    let stacked = ui.available_width() < 330.0 * scale;
     let response = ui
-        .horizontal(|ui| {
-            ui.label(egui::RichText::new(label).color(TEXT));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let suffix = match spec.unit {
-                    flow8_model::Unit::Decibels => " dB",
-                    flow8_model::Unit::Hertz => " Hz",
-                    _ => "",
-                };
-                ui.add(
-                    egui::Slider::new(value, spec.min..=spec.max)
-                        .step_by(spec.step.unwrap_or(0.01) as f64)
-                        .suffix(suffix)
-                        .show_value(true),
-                )
+        .vertical(|ui| {
+            if stacked {
+                ui.label(egui::RichText::new(label).color(TEXT));
+            }
+            // horizontal() bounds vertical centering to one control row. A bare
+            // with_layout() here would center the slider in the remaining viewport.
+            ui.horizontal(|ui| {
+                if !stacked {
+                    ui.label(egui::RichText::new(label).color(TEXT));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().slider_width =
+                        (ui.available_width() - 100.0 * scale).clamp(36.0, 140.0 * scale);
+                    let suffix = match spec.unit {
+                        flow8_model::Unit::Decibels => " dB",
+                        flow8_model::Unit::Hertz => " Hz",
+                        _ => "",
+                    };
+                    ui.add(
+                        egui::Slider::new(value, spec.min..=spec.max)
+                            .step_by(spec.step.unwrap_or(0.01) as f64)
+                            .suffix(suffix)
+                            .show_value(true),
+                    )
+                })
+                .inner
             })
             .inner
         })
@@ -2951,6 +3326,126 @@ fn eq_gain_graph(ui: &mut egui::Ui, channel: &InputChannelState) -> Option<(usiz
         return Some((band.min(3), gain));
     }
     None
+}
+
+fn output_eq_graph(ui: &mut egui::Ui, eq: &EqState, metrics: UiMetrics) -> Option<(usize, f32)> {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), 176.0 * metrics.ui_scale),
+        Sense::hover(),
+    );
+    ui.painter()
+        .rect_filled(rect, 5.0, Color32::from_rgb(13, 15, 18));
+    // Inset both end points and their labels so the scroll viewport never cuts them off.
+    let plot = Rect::from_min_max(
+        rect.min + Vec2::new(30.0, 14.0) * metrics.ui_scale,
+        rect.max - Vec2::new(18.0, 34.0) * metrics.ui_scale,
+    );
+    if eq.bands.is_empty() || plot.width() <= 0.0 || plot.height() <= 0.0 {
+        return None;
+    }
+    let gain_range = specs::EQ_GAIN.max - specs::EQ_GAIN.min;
+    for gain in [specs::EQ_GAIN.min, 0.0, specs::EQ_GAIN.max] {
+        let y = egui::lerp(
+            plot.bottom()..=plot.top(),
+            (gain - specs::EQ_GAIN.min) / gain_range,
+        );
+        ui.painter().hline(
+            plot.x_range(),
+            y,
+            Stroke::new(1.0, if gain == 0.0 { SECONDARY } else { BORDER }),
+        );
+        ui.painter().text(
+            Pos2::new(plot.left() - 5.0, y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{gain:+.0}"),
+            FontId::proportional(metrics.small_font),
+            SECONDARY,
+        );
+    }
+    let steps = eq.bands.len().saturating_sub(1).max(1) as f32;
+    let points: Vec<Pos2> = eq
+        .bands
+        .iter()
+        .enumerate()
+        .map(|(index, band)| {
+            let gain = band.gain_db.effective().copied().unwrap_or(0.0);
+            Pos2::new(
+                egui::lerp(plot.left()..=plot.right(), index as f32 / steps),
+                egui::lerp(
+                    plot.bottom()..=plot.top(),
+                    ((gain - specs::EQ_GAIN.min) / gain_range).clamp(0.0, 1.0),
+                ),
+            )
+        })
+        .collect();
+    // This is a band-gain line, not an invented DSP frequency response.
+    ui.painter()
+        .add(egui::Shape::line(points.clone(), Stroke::new(2.0, BLUE)));
+    let mut edit = None;
+    for (index, (point, band)) in points.iter().zip(&eq.bands).enumerate() {
+        let frequency = band.frequency_hz.effective().copied();
+        let gain = band.gain_db.effective().copied().unwrap_or(0.0);
+        let frequency_text = match frequency {
+            Some(hz) if hz >= 1000.0 => format!("{}k", hz / 1000.0),
+            Some(hz) => format!("{hz:.0}"),
+            None => "—".to_owned(),
+        };
+        ui.painter()
+            .vline(point.x, plot.y_range(), Stroke::new(1.0, BORDER));
+        let label_row = if index % 2 == 0 {
+            0.0
+        } else {
+            metrics.small_font + 2.0
+        };
+        ui.painter().text(
+            Pos2::new(point.x, plot.bottom() + 5.0 + label_row),
+            egui::Align2::CENTER_TOP,
+            frequency_text,
+            FontId::proportional(metrics.small_font),
+            SECONDARY,
+        );
+        let hit_size = Vec2::splat((plot.width() / (steps + 1.0)).min(20.0 * metrics.ui_scale));
+        let editable = frequency.is_some()
+            && band.gain_db.effective().is_some()
+            && band.q.effective().is_some();
+        let response = ui
+            .interact(
+                Rect::from_center_size(*point, hit_size),
+                ui.id().with(("output-eq-band", index)),
+                if editable {
+                    Sense::click_and_drag()
+                } else {
+                    Sense::hover()
+                },
+            )
+            .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+            .on_hover_text(format!(
+                "{} Hz · {gain:+.1} dB",
+                frequency
+                    .map(|hz| format!("{hz:.0}"))
+                    .unwrap_or_else(|| "—".into())
+            ));
+        ui.painter().circle_filled(
+            *point,
+            4.0 * metrics.ui_scale,
+            if response.hovered() || response.dragged() {
+                Color32::WHITE
+            } else {
+                BLUE
+            },
+        );
+        if response.dragged() {
+            let fine = ui.input(|input| if input.modifiers.shift { 0.1 } else { 1.0 });
+            let next = (gain - response.drag_delta().y / plot.height() * gain_range * fine)
+                .clamp(specs::EQ_GAIN.min, specs::EQ_GAIN.max);
+            if (next - gain).abs() > f32::EPSILON {
+                edit = Some((index, next));
+            }
+        } else if response.double_clicked() && gain != 0.0 {
+            edit = Some((index, 0.0));
+        }
+    }
+    edit
 }
 
 fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -3138,6 +3633,14 @@ fn pan_text(value: f32, balance: bool) -> String {
         format!("R {:.0}", value * 100.0)
     }
 }
+fn fader_level_text(value: f32) -> String {
+    if value <= 0.0 {
+        "−∞".into()
+    } else {
+        format!("{:+.1}", normalized_to_display_db(value))
+    }
+}
+
 fn normalized_to_display_db(value: f32) -> f32 {
     flow8_protocol_curve(value).max(-60.0)
 }
@@ -3478,6 +3981,113 @@ fn find_font_by_file_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headless_fader_ignores_delayed_rx_during_drag_and_after_release() {
+        fn render(
+            context: &egui::Context,
+            events: Vec<egui::Event>,
+            store_value: f32,
+            time: f64,
+        ) -> (f32, bool, Rect) {
+            let mut displayed = store_value;
+            let mut changed = false;
+            let mut rect = Rect::NOTHING;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = context.run_ui(raw, |ui| {
+                let response =
+                    fader_sized(ui, &mut displayed, 50.0, 200.0, 0.75, Some(store_value));
+                changed = response.changed();
+                rect = response.rect;
+            });
+            output.textures_delta.clear();
+            (displayed, changed, rect)
+        }
+
+        let context = egui::Context::default();
+        let (_, _, rect) = render(&context, vec![], 0.5, 0.0);
+        let thumb = Pos2::new(rect.center().x, rect.center().y);
+        let press = egui::Event::PointerButton {
+            pos: thumb,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        };
+        let (pressed, _, _) = render(
+            &context,
+            vec![egui::Event::PointerMoved(thumb), press],
+            0.5,
+            0.1,
+        );
+        assert!((pressed - 0.5).abs() < 1.0e-6);
+
+        let moved = Pos2::new(thumb.x, thumb.y - 40.0);
+        let (dragged, changed, _) =
+            render(&context, vec![egui::Event::PointerMoved(moved)], 0.5, 0.2);
+        assert!(changed);
+        assert!(dragged > 0.6);
+
+        let (held, repeated, _) = render(&context, vec![], 0.2, 0.3);
+        assert!(
+            !repeated,
+            "stale RX must not enqueue another identical fader TX"
+        );
+        assert!((held - dragged).abs() < 1.0e-6);
+
+        let release = egui::Event::PointerButton {
+            pos: moved,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        };
+        let (released, _, _) = render(&context, vec![release], 0.2, 0.4);
+        assert!((released - dragged).abs() < 1.0e-6);
+        let (confirmed, _, _) = render(&context, vec![], dragged, 0.5);
+        assert!((confirmed - dragged).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fader_drag_tracks_pointer_without_reusing_stale_device_values() {
+        let track = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(5.0, 200.0));
+        let mut gesture = FaderGesture::begin(0.5, 100.0, track, true, false);
+        assert!(!gesture.update(100.0, track, false));
+        assert!(gesture.update(60.0, track, false));
+        assert!((gesture.target - 0.7).abs() < 1.0e-6);
+        // A delayed RX might replace the Store value with 0.2. The active
+        // gesture still displays 0.7 and does not enqueue another TX.
+        let stale_confirmed = 0.2;
+        assert!((gesture.target - stale_confirmed).abs() > 0.4);
+        assert!(!gesture.update(60.0, track, false));
+        assert!((gesture.target - 0.7).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fader_track_click_and_fine_drag_preserve_pointer_position() {
+        let track = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(5.0, 200.0));
+        let mut click = FaderGesture::begin(0.25, 20.0, track, false, false);
+        assert!(click.update(20.0, track, false));
+        assert!((click.target - 0.9).abs() < 1.0e-6);
+
+        let mut fine = FaderGesture::begin(0.5, 100.0, track, true, false);
+        assert!(!fine.update(100.0, track, false));
+        assert!(fine.update(80.0, track, true));
+        assert!((fine.target - 0.51).abs() < 1.0e-6);
+        assert!(!fine.update(80.0, track, false));
+        assert!((fine.target - 0.51).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fader_release_reconciles_to_device_or_expires() {
+        let gesture = FaderGesture::released(0.7, 10.0);
+        assert!(gesture.awaiting_confirmation(Some(0.2), 10.5));
+        assert!(!gesture.awaiting_confirmation(Some(0.7), 10.5));
+        assert!(!gesture.awaiting_confirmation(Some(0.2), 13.1));
+    }
 
     #[test]
     fn production_gui_starts_disconnected_without_simulator_source() {
