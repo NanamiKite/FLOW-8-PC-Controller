@@ -1512,6 +1512,17 @@ impl Flow8App {
                 egui::Frame::new().inner_margin(4).show(ui, |ui| {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = metrics.spacing;
+                        let settings = &self.store.state.routing.settings;
+                        let usb12_on_input56 = settings
+                            .input56_from_usb12
+                            .effective()
+                            .copied()
+                            .unwrap_or(false);
+                        let usb34_on_input78 = settings
+                            .input78_from_usb34
+                            .effective()
+                            .copied()
+                            .unwrap_or(false);
                         for id in InputId::ALL {
                             if !self.preferences.channel_visible[id.index()] {
                                 continue;
@@ -1521,6 +1532,11 @@ impl Flow8App {
                             let eq_modified =
                                 input_eq_modified(&channel, self.eq_initial[id.index()].as_ref());
                             let selected = self.store.state.selected_input == Some(id);
+                            let source_heading = match id {
+                                InputId::Input56 if usb12_on_input56 => "USB 1/2",
+                                InputId::Input78 if usb34_on_input78 => "USB 3/4",
+                                _ => channel_number(id),
+                            };
                             let strip = ui.push_id(
                                 (id.index(), self.store.state.selected_destination.index()),
                                 |ui| {
@@ -1531,6 +1547,7 @@ impl Flow8App {
                                         eq_modified,
                                         self.store.state.selected_destination,
                                         selected,
+                                        source_heading,
                                         self.language,
                                         self.preferences.show_channel_icons,
                                         self.preferences.show_mute_buttons,
@@ -3640,6 +3657,7 @@ fn channel_strip(
     eq_modified: bool,
     destination: MixDestination,
     selected: bool,
+    source_heading: &'static str,
     language: Language,
     show_channel_icons: bool,
     show_mute_buttons: bool,
@@ -3660,7 +3678,7 @@ fn channel_strip(
             ui.vertical_centered(|ui| {
                 strip_controls(ui, content_width, metrics, show_channel_icons, |ui| {
                     ui.label(
-                        egui::RichText::new(channel_number(channel.id))
+                        egui::RichText::new(source_heading)
                             .size(metrics.small_font)
                             .strong()
                             .color(SECONDARY),
