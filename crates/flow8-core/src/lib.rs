@@ -205,6 +205,7 @@ pub enum SemanticCommand {
         destination: MixDestination,
     },
     RequestFullState,
+    RequestSnapshotNames,
     FactoryReset,
 }
 
@@ -353,6 +354,7 @@ impl SemanticCommand {
                 endpoint: destination.endpoint(),
             },
             Self::RequestFullState => TxCommand::GetMixerState,
+            Self::RequestSnapshotNames => TxCommand::GetSnapshotNames,
             Self::FactoryReset => TxCommand::FactoryReset,
         }
     }
@@ -484,6 +486,7 @@ impl SemanticCommand {
             | Self::RenameSnapshot { .. }
             | Self::SelectDeviceOutput { .. }
             | Self::RequestFullState
+            | Self::RequestSnapshotNames
             | Self::FactoryReset => None,
         }
     }
@@ -1231,7 +1234,7 @@ impl Flow8Store {
                         .observe(Some(destination), EvidenceStatus::Synthetic);
                 }
             }
-            SemanticCommand::RequestFullState => {}
+            SemanticCommand::RequestFullState | SemanticCommand::RequestSnapshotNames => {}
             SemanticCommand::FactoryReset => {
                 if synthetic {
                     let destination = self.state.selected_destination;

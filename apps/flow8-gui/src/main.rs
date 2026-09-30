@@ -14,7 +14,8 @@ use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage
 use flow8_core::{Flow8Store, KnownSetting, MuteTarget, SemanticCommand, SessionState};
 use flow8_model::{
     EqState, EvidenceStatus, FX_PRESET_COUNT, FxId, HeadphoneSource, InputChannelState, InputId,
-    MixBusId, MixDestination, MonitorRoutingSource, ParameterSpec, TapPoint, fx_preset_info, specs,
+    MixBusId, MixDestination, MonitorRoutingSource, ParameterSpec, SnapshotSlotState, TapPoint,
+    fx_preset_info, specs,
 };
 
 const BG: Color32 = Color32::from_rgb(17, 19, 23);
@@ -135,6 +136,47 @@ enum Page {
     Settings,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeviceSlotStatus {
+    Unknown,
+    Free,
+    Occupied(String),
+}
+
+fn device_slot_status(slot: &SnapshotSlotState) -> DeviceSlotStatus {
+    match slot.name.confirmed.as_deref() {
+        None => DeviceSlotStatus::Unknown,
+        Some("") => DeviceSlotStatus::Free,
+        Some(name) => DeviceSlotStatus::Occupied(name.to_owned()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConfirmationAction {
+    EnablePhantom(InputId),
+    SaveDeviceSnapshot {
+        slot: u8,
+        name: String,
+        observed_name: Option<String>,
+    },
+    LoadDeviceSnapshot {
+        slot: u8,
+        observed_name: Option<String>,
+    },
+    DeleteDeviceSnapshot {
+        slot: u8,
+        observed_name: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingConfirmation {
+    action: ConfirmationAction,
+    page: Page,
+    selected_input: Option<InputId>,
+    session: SessionState,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlGesture {
     Linear,
@@ -181,8 +223,8 @@ struct Flow8App {
     discovered_devices: Vec<flow8_ble::DiscoveredDevice>,
     stage_layout_mode: bool,
     stage_positions: [Vec2; 7],
-    phantom_confirmation: Option<InputId>,
-    snapshot_delete_confirmation: Option<u8>,
+    pending_confirmation: Option<PendingConfirmation>,
+    snapshot_names_requested: bool,
     state_sync_applied: bool,
     native_stage: Option<NativeConnectionStage>,
     last_ble_error: Option<String>,
@@ -216,8 +258,8 @@ impl Flow8App {
                     42.0 + (index / 4) as f32 * 210.0,
                 )
             }),
-            phantom_confirmation: None,
-            snapshot_delete_confirmation: None,
+            pending_confirmation: None,
+            snapshot_names_requested: false,
             state_sync_applied: false,
             native_stage: None,
             last_ble_error: None,
@@ -244,10 +286,207 @@ impl Flow8App {
         }
     }
 
+    fn request_confirmation(&mut self, action: ConfirmationAction) {
+        if self.store.state.session != SessionState::Ready {
+            return;
+        }
+        self.pending_confirmation = Some(PendingConfirmation {
+            action,
+            page: self.page,
+            selected_input: self.store.state.selected_input,
+            session: self.store.state.session,
+        });
+    }
+
+    fn confirmation_is_valid(&self, pending: &PendingConfirmation) -> bool {
+        if self.page != pending.page
+            || self.store.state.selected_input != pending.selected_input
+            || self.store.state.session != pending.session
+            || pending.session != SessionState::Ready
+        {
+            return false;
+        }
+        match &pending.action {
+            ConfirmationAction::EnablePhantom(input) => {
+                self.store.state.selected_input == Some(*input)
+                    && self.store.state.channels[input.index()]
+                        .capabilities
+                        .phantom
+                    && self.store.state.channels[input.index()]
+                        .phantom_48v
+                        .effective()
+                        == Some(&false)
+            }
+            ConfirmationAction::SaveDeviceSnapshot {
+                slot,
+                observed_name,
+                ..
+            }
+            | ConfirmationAction::LoadDeviceSnapshot {
+                slot,
+                observed_name,
+            }
+            | ConfirmationAction::DeleteDeviceSnapshot {
+                slot,
+                observed_name,
+            } => self
+                .store
+                .state
+                .snapshots
+                .device_slots
+                .get(*slot as usize)
+                .is_some_and(|current| current.name.confirmed == *observed_name),
+        }
+    }
+
+    fn clear_stale_confirmation(&mut self) {
+        if self
+            .pending_confirmation
+            .as_ref()
+            .is_some_and(|pending| !self.confirmation_is_valid(pending))
+        {
+            self.pending_confirmation = None;
+        }
+    }
+
+    fn confirm_pending_action(&mut self) {
+        let Some(pending) = self.pending_confirmation.take() else {
+            return;
+        };
+        if !self.confirmation_is_valid(&pending) {
+            self.message = self
+                .language
+                .tr(
+                    "The device or selected context changed. Choose the action again.",
+                    "设备状态或选择已变化，请重新选择操作。",
+                )
+                .into();
+            return;
+        }
+        let command = match pending.action {
+            ConfirmationAction::EnablePhantom(input) => SemanticCommand::SetPhantom {
+                input,
+                enabled: true,
+            },
+            ConfirmationAction::SaveDeviceSnapshot { slot, name, .. } => {
+                SemanticCommand::SaveSnapshot { slot, name }
+            }
+            ConfirmationAction::LoadDeviceSnapshot { slot, .. } => {
+                SemanticCommand::LoadSnapshot { slot }
+            }
+            ConfirmationAction::DeleteDeviceSnapshot { slot, .. } => {
+                SemanticCommand::DeleteSnapshot { slot }
+            }
+        };
+        self.dispatch(command);
+    }
+
+    fn confirmation_dialog(&mut self, context: &egui::Context) {
+        self.clear_stale_confirmation();
+        let Some(pending) = self.pending_confirmation.clone() else {
+            return;
+        };
+        if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.pending_confirmation = None;
+            return;
+        }
+        let (title, description) = match pending.action {
+            ConfirmationAction::EnablePhantom(input) => (
+                self.language.tr("Enable 48 V?", "开启 48 V？").to_owned(),
+                format!(
+                    "{} {}. {}",
+                    self.language.tr("Input", "输入"),
+                    input.index() + 1,
+                    self.language.tr(
+                        "48 V may damage incompatible microphones or connected equipment. Only this input will change.",
+                        "48 V 可能损坏不兼容的麦克风或连接设备；仅此输入通道会改变。",
+                    )
+                ),
+            ),
+            ConfirmationAction::SaveDeviceSnapshot { slot, observed_name, .. } => (
+                self.language.tr("Save device snapshot?", "保存设备快照？").to_owned(),
+                format!(
+                    "{} {:02}. {}",
+                    self.language.tr("FLOW 8 device slot", "FLOW 8 设备槽位"),
+                    slot + 1,
+                    match observed_name.as_deref() {
+                        Some("") => self.language.tr(
+                            "Current mixer settings will be saved to this free device slot. This does not save a PC file.",
+                            "当前混音设置将保存到此空闲设备槽位；不会保存电脑文件。",
+                        ),
+                        Some(_) => self.language.tr(
+                            "Current mixer settings will replace the snapshot stored in this slot. This does not save a PC file.",
+                            "当前混音设置会覆盖此槽位中的快照；不会保存电脑文件。",
+                        ),
+                        None => self.language.tr(
+                            "Slot occupancy is unknown. Saving may overwrite a device snapshot. This does not save a PC file.",
+                            "槽位占用状态未知；保存可能覆盖设备快照，也不会保存电脑文件。",
+                        ),
+                    }
+                ),
+            ),
+            ConfirmationAction::LoadDeviceSnapshot { slot, .. } => (
+                self.language.tr("Load device snapshot?", "载入设备快照？").to_owned(),
+                format!(
+                    "{} {:02}. {}",
+                    self.language.tr("FLOW 8 device slot", "FLOW 8 设备槽位"),
+                    slot + 1,
+                    self.language.tr(
+                        "This applies the saved snapshot to the live FLOW 8 mixer. Current settings may change according to the snapshot scope; this does not load a PC file.",
+                        "这会将快照应用到 FLOW 8 当前混音；具体设置可能按快照范围改变，不会载入电脑文件。",
+                    )
+                ),
+            ),
+            ConfirmationAction::DeleteDeviceSnapshot { slot, .. } => (
+                self.language.tr("Delete device snapshot?", "删除设备快照？").to_owned(),
+                format!(
+                    "{} {:02}. {}",
+                    self.language.tr("FLOW 8 device slot", "FLOW 8 设备槽位"),
+                    slot + 1,
+                    self.language.tr(
+                        "The snapshot stored on FLOW 8 will be deleted. This cannot be undone here; PC files are unaffected.",
+                        "FLOW 8 上保存的快照将被删除，此处无法撤销；电脑文件不受影响。",
+                    )
+                ),
+            ),
+        };
+        let mut open = true;
+        let mut decision = None;
+        egui::Window::new(title)
+            .id(egui::Id::new("device-action-confirmation"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(context, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(description);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button(self.language.tr("Cancel", "取消")).clicked() {
+                        decision = Some(false);
+                    }
+                    if ui.button(self.language.tr("Confirm", "确认")).clicked() {
+                        decision = Some(true);
+                    }
+                });
+            });
+        match decision {
+            Some(true) => self.confirm_pending_action(),
+            Some(false) => self.pending_confirmation = None,
+            None if !open => self.pending_confirmation = None,
+            None => {}
+        }
+    }
+
     fn poll_runtime(&mut self) {
         while let Some(event) = self.runtime.try_recv() {
             match event {
                 DeviceEvent::Phase(phase) => {
+                    if phase != SessionPhase::Ready {
+                        self.pending_confirmation = None;
+                        self.snapshot_names_requested = false;
+                    }
                     if matches!(phase, SessionPhase::Connecting | SessionPhase::StateSyncing) {
                         self.state_sync_applied = false;
                     }
@@ -318,6 +557,8 @@ impl Flow8App {
                 | DeviceEvent::Backend(_)
                 | DeviceEvent::Mtu(_) => {}
                 DeviceEvent::Error(error) => {
+                    self.pending_confirmation = None;
+                    self.snapshot_names_requested = false;
                     self.store.state.session = SessionState::Error;
                     self.last_ble_error = Some(error.clone());
                     self.message = format!("BLE: {error}");
@@ -406,6 +647,8 @@ impl Flow8App {
                             ui.ctx().request_repaint();
                         }
                         if ui.button(self.language.tr("Disconnect", "断开")).clicked() {
+                            self.pending_confirmation = None;
+                            self.snapshot_names_requested = false;
                             let _ = self.runtime.send(DeviceCommand::Disconnect);
                         }
                         let can_connect = matches!(
@@ -421,6 +664,8 @@ impl Flow8App {
                         {
                             // A fresh session must not expose stale values from the prior device.
                             self.store = Flow8Store::disconnected();
+                            self.pending_confirmation = None;
+                            self.snapshot_names_requested = false;
                             self.state_sync_applied = false;
                             match self.runtime.send(DeviceCommand::Connect) {
                                 Ok(()) => {
@@ -1260,34 +1505,15 @@ impl Flow8App {
             ui.horizontal_wrapped(|ui| {
                 if channel.capabilities.phantom {
                     let enabled = *channel.phantom_48v.effective().unwrap_or(&false);
-                    let confirming = self.phantom_confirmation == Some(id);
-                    let label = if confirming && !enabled {
-                        self.language.tr("CONFIRM 48 V", "确认开启 48 V")
-                    } else {
-                        "48 V"
-                    };
-                    if state_button(ui, enabled || confirming, label, RED).clicked() {
+                    if state_button(ui, enabled, "48 V", RED).clicked() {
                         if enabled {
-                            self.phantom_confirmation = None;
+                            self.pending_confirmation = None;
                             self.dispatch(SemanticCommand::SetPhantom {
                                 input: id,
                                 enabled: false,
                             });
-                        } else if confirming {
-                            self.phantom_confirmation = None;
-                            self.dispatch(SemanticCommand::SetPhantom {
-                                input: id,
-                                enabled: true,
-                            });
                         } else {
-                            self.phantom_confirmation = Some(id);
-                            self.message = self
-                                .language
-                                .tr(
-                                    "48 V can damage incompatible equipment. Click CONFIRM 48 V to enable it.",
-                                    "48 V 可能损坏不兼容设备。请再次点击“确认开启 48 V”。",
-                                )
-                                .into();
+                            self.request_confirmation(ConfirmationAction::EnablePhantom(id));
                         }
                     }
                 }
@@ -1651,11 +1877,17 @@ impl Flow8App {
                 );
                 ui.label(
                     egui::RichText::new(self.language.tr(
-                        "Snapshots stored on the connected FLOW 8.",
-                        "已连接 FLOW 8 上保存的快照。",
+                        "These slots are stored on FLOW 8, not on this computer.",
+                        "这些槽位保存在 FLOW 8 上，不在本机。",
                     ))
                     .color(SECONDARY),
                 );
+                if ui
+                    .button(self.language.tr("Refresh slots", "刷新槽位"))
+                    .clicked()
+                {
+                    self.dispatch(SemanticCommand::RequestSnapshotNames);
+                }
                 ui.add_space(10.0);
                 let snapshots = self.store.state.snapshots.device_slots.clone();
                 egui::Grid::new("device-snapshots")
@@ -1670,45 +1902,81 @@ impl Flow8App {
                                         .strong()
                                         .color(YELLOW),
                                 );
-                                ui.label(snapshot.name.effective().cloned().unwrap_or_default());
+                                let status = device_slot_status(&snapshot);
+                                let busy = snapshot.name.pending.is_some();
+                                let occupied =
+                                    matches!(status, DeviceSlotStatus::Occupied(_)) && !busy;
+                                let status_label = match &status {
+                                    DeviceSlotStatus::Unknown => {
+                                        self.language.tr("Unknown", "未知")
+                                    }
+                                    DeviceSlotStatus::Free => self.language.tr("Free", "空闲"),
+                                    DeviceSlotStatus::Occupied(_) => {
+                                        self.language.tr("Occupied", "已占用")
+                                    }
+                                };
+                                ui.label(egui::RichText::new(status_label).color(SECONDARY));
+                                if let DeviceSlotStatus::Occupied(name) = &status {
+                                    ui.label(name);
+                                }
+                                if snapshot.name.pending.is_some() {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            self.language.tr("Waiting for device", "等待设备回报"),
+                                        )
+                                        .color(SECONDARY),
+                                    );
+                                }
                                 ui.horizontal(|ui| {
-                                    if ui.small_button(self.language.tr("Load", "载入")).clicked()
-                                    {
-                                        self.dispatch(SemanticCommand::LoadSnapshot {
-                                            slot: snapshot.slot,
-                                        });
-                                    }
-                                    if ui.small_button(self.language.tr("Save", "保存")).clicked()
-                                    {
-                                        self.dispatch(SemanticCommand::SaveSnapshot {
-                                            slot: snapshot.slot,
-                                            name: snapshot
-                                                .name
-                                                .effective()
-                                                .cloned()
-                                                .unwrap_or_else(|| {
-                                                    format!("Snapshot {:02}", snapshot.slot + 1)
-                                                }),
-                                        });
-                                    }
-                                    let confirming =
-                                        self.snapshot_delete_confirmation == Some(snapshot.slot);
                                     if ui
-                                        .small_button(if confirming {
-                                            self.language.tr("Confirm", "确认")
-                                        } else {
-                                            self.language.tr("Delete", "删除")
-                                        })
+                                        .add_enabled(
+                                            occupied,
+                                            egui::Button::new(self.language.tr("Load", "载入"))
+                                                .small(),
+                                        )
                                         .clicked()
                                     {
-                                        if confirming {
-                                            self.dispatch(SemanticCommand::DeleteSnapshot {
+                                        self.request_confirmation(
+                                            ConfirmationAction::LoadDeviceSnapshot {
                                                 slot: snapshot.slot,
-                                            });
-                                            self.snapshot_delete_confirmation = None;
-                                        } else {
-                                            self.snapshot_delete_confirmation = Some(snapshot.slot);
-                                        }
+                                                observed_name: snapshot.name.confirmed.clone(),
+                                            },
+                                        );
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            egui::Button::new(self.language.tr("Save", "保存"))
+                                                .small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        let name = match &status {
+                                            DeviceSlotStatus::Occupied(name) => name.clone(),
+                                            _ => format!("Snapshot {:02}", snapshot.slot + 1),
+                                        };
+                                        self.request_confirmation(
+                                            ConfirmationAction::SaveDeviceSnapshot {
+                                                slot: snapshot.slot,
+                                                name,
+                                                observed_name: snapshot.name.confirmed.clone(),
+                                            },
+                                        );
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            occupied,
+                                            egui::Button::new(self.language.tr("Delete", "删除"))
+                                                .small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.request_confirmation(
+                                            ConfirmationAction::DeleteDeviceSnapshot {
+                                                slot: snapshot.slot,
+                                                observed_name: snapshot.name.confirmed.clone(),
+                                            },
+                                        );
                                     }
                                 });
                             });
@@ -2610,6 +2878,7 @@ impl eframe::App for Flow8App {
             configure_style(ui.ctx(), metrics);
         }
         self.poll_runtime();
+        self.clear_stale_confirmation();
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
 
@@ -2619,6 +2888,15 @@ impl eframe::App for Flow8App {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             self.connection_bar(ui);
             self.layer_bar(ui);
+            self.clear_stale_confirmation();
+            if self.store.state.session == SessionState::Ready && self.page == Page::Snapshots {
+                if !self.snapshot_names_requested {
+                    self.dispatch(SemanticCommand::RequestSnapshotNames);
+                    self.snapshot_names_requested = true;
+                }
+            } else {
+                self.snapshot_names_requested = false;
+            }
             ui.spacing_mut().item_spacing = Vec2::splat(self.metrics.spacing);
             let device_ready = self.store.state.session == SessionState::Ready;
             if !device_ready && self.page != Page::Settings {
@@ -2675,6 +2953,7 @@ impl eframe::App for Flow8App {
                     });
             });
         });
+        self.confirmation_dialog(ui.ctx());
         // Send this frame's intents now, rather than waiting for the next repaint.
         // The Store's semantic queue still coalesces continuous edits within the frame.
         self.flush_commands();
@@ -4113,6 +4392,97 @@ mod tests {
         assert!(gesture.awaiting_confirmation(Some(0.2), 10.5));
         assert!(!gesture.awaiting_confirmation(Some(0.7), 10.5));
         assert!(!gesture.awaiting_confirmation(Some(0.2), 13.1));
+    }
+
+    #[test]
+    fn snapshot_slots_use_only_confirmed_device_names_for_occupancy() {
+        let mut slot = Flow8Store::disconnected().state.snapshots.device_slots[0].clone();
+        assert_eq!(device_slot_status(&slot), DeviceSlotStatus::Unknown);
+        slot.name.set_pending("Proposed name".into());
+        assert_eq!(device_slot_status(&slot), DeviceSlotStatus::Unknown);
+        slot.name
+            .observe(String::new(), EvidenceStatus::VerifiedFromDevice);
+        assert_eq!(device_slot_status(&slot), DeviceSlotStatus::Free);
+        slot.name
+            .observe("Vocal".into(), EvidenceStatus::VerifiedFromDevice);
+        assert_eq!(
+            device_slot_status(&slot),
+            DeviceSlotStatus::Occupied("Vocal".into())
+        );
+    }
+
+    #[test]
+    fn device_snapshot_actions_require_confirmation_and_cancel_is_safe() {
+        let context = egui::Context::default();
+        let mut app = Flow8App::from_context(&context);
+        app.store.state.session = SessionState::Ready;
+        app.page = Page::Snapshots;
+        app.store.state.snapshots.device_slots[0]
+            .name
+            .observe("Vocal".into(), EvidenceStatus::VerifiedFromDevice);
+        let observed_name = Some("Vocal".into());
+        app.request_confirmation(ConfirmationAction::LoadDeviceSnapshot {
+            slot: 0,
+            observed_name: observed_name.clone(),
+        });
+        assert!(app.store.queue.is_empty());
+        app.pending_confirmation = None; // Explicit Cancel.
+        assert!(app.store.queue.is_empty());
+
+        app.request_confirmation(ConfirmationAction::DeleteDeviceSnapshot {
+            slot: 0,
+            observed_name: observed_name.clone(),
+        });
+        app.page = Page::Settings;
+        app.clear_stale_confirmation();
+        assert!(app.pending_confirmation.is_none());
+        app.confirm_pending_action();
+        assert!(app.store.queue.is_empty());
+
+        app.page = Page::Snapshots;
+        app.request_confirmation(ConfirmationAction::SaveDeviceSnapshot {
+            slot: 0,
+            name: "Vocal".into(),
+            observed_name,
+        });
+        assert!(app.store.queue.is_empty());
+        app.confirm_pending_action();
+        assert!(matches!(
+            app.store.queue.pop(),
+            Some(SemanticCommand::SaveSnapshot { slot: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn phantom_confirmation_expires_when_input_or_session_changes() {
+        let context = egui::Context::default();
+        let mut app = Flow8App::from_context(&context);
+        app.store.state.session = SessionState::Ready;
+        app.store.state.channels[0]
+            .phantom_48v
+            .observe(false, EvidenceStatus::VerifiedFromDevice);
+        app.request_confirmation(ConfirmationAction::EnablePhantom(InputId::Input1));
+        assert!(app.store.queue.is_empty());
+        app.store.state.selected_input = Some(InputId::Input2);
+        app.clear_stale_confirmation();
+        assert!(app.pending_confirmation.is_none());
+        app.confirm_pending_action();
+        assert!(app.store.queue.is_empty());
+
+        app.store.state.selected_input = Some(InputId::Input1);
+        app.request_confirmation(ConfirmationAction::EnablePhantom(InputId::Input1));
+        app.store.state.session = SessionState::Disconnected;
+        app.clear_stale_confirmation();
+        assert!(app.pending_confirmation.is_none());
+        assert!(app.store.queue.is_empty());
+    }
+
+    #[test]
+    fn snapshot_name_refresh_uses_existing_read_only_protocol_request() {
+        assert!(matches!(
+            SemanticCommand::RequestSnapshotNames.to_protocol(),
+            flow8_protocol::TxCommand::GetSnapshotNames
+        ));
     }
 
     #[test]
