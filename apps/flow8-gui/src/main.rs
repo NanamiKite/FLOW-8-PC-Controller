@@ -443,6 +443,156 @@ fn parse_delay_ms(value: &str) -> Option<u32> {
         .then_some(ticks as u32)
 }
 
+#[derive(Clone, Copy)]
+struct SettingsGridLayout {
+    two_columns: bool,
+    column_width: f32,
+    label_width: f32,
+    gap: f32,
+    scale: f32,
+}
+
+impl SettingsGridLayout {
+    fn calculate(
+        ui: &egui::Ui,
+        content_width: f32,
+        metrics: UiMetrics,
+        language: Language,
+    ) -> Self {
+        let gap = (12.0 * metrics.ui_scale).round_ui();
+        let label_width = [
+            language.tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
+            language.tr("Device-linked Output Selection", "设备联动输出选择"),
+            language.tr("Show Output Delay Indicator", "显示输出延迟指示"),
+            language.tr("Connection progress", "连接进度"),
+        ]
+        .into_iter()
+        .map(|label| {
+            ui.painter()
+                .layout_no_wrap(
+                    label.to_owned(),
+                    FontId::proportional(metrics.body_font),
+                    TEXT,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max)
+            + gap;
+        // The breakpoint follows actual form needs: measured labels, a usable
+        // value/control area, card margins, and the gutter between columns.
+        let min_control_width = 220.0 * metrics.ui_scale;
+        let min_column_width = label_width + min_control_width + 26.0 + gap;
+        let two_columns = content_width >= 2.0 * min_column_width + gap;
+        let column_width = if two_columns {
+            ((content_width - gap) / 2.0).floor()
+        } else {
+            content_width
+        };
+        Self {
+            two_columns,
+            column_width,
+            label_width,
+            gap,
+            scale: metrics.ui_scale,
+        }
+    }
+}
+
+fn settings_grid_row(
+    app: &mut Flow8App,
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    row_id: u8,
+    left: impl FnOnce(&mut Flow8App, &mut egui::Ui),
+    right: impl FnOnce(&mut Flow8App, &mut egui::Ui),
+) {
+    if layout.two_columns {
+        // Both cards start at the same top edge. Advance the parent only once,
+        // by the taller card's actual height; Grid centers zero-height child
+        // Uis within its previous row height and leaves a large empty band.
+        let available = ui.available_rect_before_wrap();
+        let top = available.top();
+        let left_x = available.left();
+        let right_x = left_x + layout.column_width + layout.gap;
+        let height = available.height().max(0.0);
+        let mut left_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("settings-left", row_id))
+                .max_rect(egui::Rect::from_min_size(
+                    egui::pos2(left_x, top),
+                    Vec2::new(layout.column_width, height),
+                ))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        left(app, &mut left_ui);
+        let left_bottom = left_ui.min_rect().bottom();
+
+        let mut right_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("settings-right", row_id))
+                .max_rect(egui::Rect::from_min_size(
+                    egui::pos2(right_x, top),
+                    Vec2::new(layout.column_width, height),
+                ))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        right(app, &mut right_ui);
+        let right_bottom = right_ui.min_rect().bottom();
+
+        ui.advance_cursor_after_rect(egui::Rect::from_min_max(
+            egui::pos2(left_x, top),
+            egui::pos2(right_x + layout.column_width, left_bottom.max(right_bottom)),
+        ));
+    } else {
+        left(app, ui);
+        ui.add_space(layout.gap);
+        right(app, ui);
+    }
+}
+
+fn settings_card<R>(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    card(ui, |ui| {
+        ui.set_width((layout.column_width - 26.0).max(0.0));
+        add(ui)
+    })
+}
+
+fn setting_switch_text(language: Language, enabled: bool) -> &'static str {
+    if enabled {
+        language.tr("On", "开启")
+    } else {
+        language.tr("Off", "关闭")
+    }
+}
+
+fn settings_form_row(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    label: &str,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let min_value_width = 220.0 * layout.scale;
+    if ui.available_width() < layout.label_width + min_value_width + layout.gap {
+        ui.vertical(|ui| {
+            ui.label(label);
+            add(ui);
+        });
+    } else {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [layout.label_width, ui.spacing().interact_size.y],
+                egui::Label::new(label),
+            );
+            add(ui);
+        });
+    }
+}
+
 struct Flow8App {
     store: Flow8Store,
     page: Page,
@@ -2464,52 +2614,51 @@ impl Flow8App {
                             );
                             ui.add_space(10.0);
                             let settings = self.store.state.routing.settings.clone();
+                            let grid = SettingsGridLayout::calculate(ui, content_width, self.metrics, self.language);
 
-                            ui.columns(2, |columns| {
-                                card(&mut columns[0], |ui| {
+                            settings_grid_row(self, ui, grid, 0, |this, ui| {
+                                settings_card(ui, grid, |ui| {
                                     ui.label(
                                         egui::RichText::new(
-                                            self.language.tr("APPLICATION", "应用"),
+                                            this.language.tr("APPLICATION", "应用"),
                                         )
                                         .strong()
                                         .color(BLUE),
                                     );
-                                    ui.horizontal(|ui| {
-                                        ui.label(self.language.tr("Language", "语言"));
+                                    settings_form_row(ui, grid, this.language.tr("Language", "语言"), |ui| {
                                         if ui
                                             .selectable_label(
-                                                self.language == Language::English,
+                                                this.language == Language::English,
                                                 "English",
                                             )
                                             .clicked()
                                         {
-                                            self.language = Language::English;
-                                            self.message = localized_status_message(
-                                                self.store.state.session,
-                                                self.language,
+                                            this.language = Language::English;
+                                            this.message = localized_status_message(
+                                                this.store.state.session,
+                                                this.language,
                                             );
                                             ui.ctx().request_repaint();
                                         }
                                         if ui
                                             .selectable_label(
-                                                self.language == Language::Chinese,
+                                                this.language == Language::Chinese,
                                                 "简体中文",
                                             )
                                             .clicked()
                                         {
-                                            self.language = Language::Chinese;
-                                            self.message = localized_status_message(
-                                                self.store.state.session,
-                                                self.language,
+                                            this.language = Language::Chinese;
+                                            this.message = localized_status_message(
+                                                this.store.state.session,
+                                                this.language,
                                             );
                                             ui.ctx().request_repaint();
                                         }
                                     });
-                                    ui.horizontal(|ui| {
-                                        ui.label(self.language.tr("UI Scale", "界面缩放"));
+                                    settings_form_row(ui, grid, this.language.tr("UI Scale", "界面缩放"), |ui| {
                                         let response = ui.add(
                                             egui::Slider::new(
-                                                &mut self.preferences.ui_scale,
+                                                &mut this.preferences.ui_scale,
                                                 UI_SCALE_MIN..=UI_SCALE_MAX,
                                             )
                                             .step_by(0.05)
@@ -2522,93 +2671,125 @@ impl Flow8App {
                                             ui.ctx().request_repaint();
                                         }
                                     });
+                                    ui.add_enabled_ui(false, |ui| {
+                                        settings_form_row(ui, grid, this.language.tr("Control Gesture", "控制手势"), |ui| {
+                                            for (mode, label) in [
+                                                (
+                                                    ControlGesture::Linear,
+                                                    this.language.tr("Linear", "线性"),
+                                                ),
+                                                (
+                                                    ControlGesture::Rotary,
+                                                    this.language.tr("Rotary", "旋转"),
+                                                ),
+                                            ] {
+                                                let _ = ui.selectable_label(
+                                                    this.preferences.control_gesture == mode,
+                                                    label,
+                                                );
+                                            }
+                                        });
+                                        settings_form_row(ui, grid, this.language.tr("EQ Editing Mode", "EQ 编辑模式"), |ui| {
+                                            for (mode, label) in [
+                                                (
+                                                    EqEditingMode::Standard,
+                                                    this.language.tr("Standard", "标准"),
+                                                ),
+                                                (
+                                                    EqEditingMode::Parametric,
+                                                    this.language.tr("Parametric", "参数"),
+                                                ),
+                                            ] {
+                                                let _ = ui.selectable_label(
+                                                    this.preferences.eq_editing_mode == mode,
+                                                    label,
+                                                );
+                                            }
+                                        });
+                                    });
                                     ui.separator();
                                     ui.label(
-                                        egui::RichText::new(self.language.tr("CONNECTION", "连接"))
+                                        egui::RichText::new(this.language.tr("CONNECTION", "连接"))
                                             .strong()
                                             .color(BLUE),
                                     );
-                                    ui.label(format!(
-                                        "{}: {}",
-                                        self.language.tr("Mode", "模式"),
-                                        self.language.tr("Direct Bluetooth", "直连蓝牙")
-                                    ));
-                                    ui.label(format!(
-                                        "{}: {}",
-                                        self.language.tr("Status", "状态"),
-                                        session_state_text(self.store.state.session, self.language,)
-                                    ));
-                                    if let Some(stage) = self.native_stage {
-                                        ui.label(format!(
-                                            "{}: {}",
-                                            self.language.tr("Connection progress", "连接进度"),
-                                            native_stage_text(stage, self.language)
-                                        ));
-                                    }
-                                    if let Some(error) = &self.last_ble_error {
+                                    settings_form_row(ui, grid, this.language.tr("Mode", "模式"), |ui| {
+                                        ui.label(this.language.tr("Direct Bluetooth", "直连蓝牙"));
+                                    });
+                                    settings_form_row(ui, grid, this.language.tr("Status", "状态"), |ui| {
+                                        ui.label(session_state_text(this.store.state.session, this.language));
+                                    });
+                                    if this.store.state.session != SessionState::Ready {
                                         ui.label(
-                                            egui::RichText::new(format!(
-                                                "{}: {}",
-                                                self.language
-                                                    .tr("Last connection error", "最近连接错误"),
-                                                error
+                                            egui::RichText::new(this.language.tr(
+                                                "Device settings are available when the connection is ready.",
+                                                "连接就绪后可编辑设备设置。",
                                             ))
-                                            .color(RED),
+                                            .size(this.metrics.small_font)
+                                            .color(SECONDARY),
                                         );
                                     }
+                                    if let Some(stage) = this.native_stage {
+                                        settings_form_row(ui, grid, this.language.tr("Connection progress", "连接进度"), |ui| {
+                                            ui.label(native_stage_text(stage, this.language));
+                                        });
+                                    }
+                                    if let Some(error) = &this.last_ble_error {
+                                        settings_form_row(ui, grid, this.language.tr("Last connection error", "最近连接错误"), |ui| {
+                                            ui.label(egui::RichText::new(error).color(RED));
+                                        });
+                                    }
                                 });
-
-                                card(&mut columns[1], |ui| {
+                            }, |this, ui| {
+                                settings_card(ui, grid, |ui| {
                                     ui.label(
                                         egui::RichText::new(
-                                            self.language.tr("MIXER DISPLAY", "混音器显示"),
+                                            this.language.tr("MIXER DISPLAY", "混音器显示"),
                                         )
                                         .strong()
                                         .color(YELLOW),
                                     );
-                                    ui.checkbox(
-                                        &mut self.preferences.show_mute_buttons,
-                                        self.language.tr("Show Mute Buttons", "显示静音按钮"),
-                                    );
-                                    ui.checkbox(
-                                        &mut self.preferences.show_channel_icons,
-                                        self.language.tr("Show Channel Icons", "显示通道图标"),
-                                    );
-                                    ui.checkbox(
-                                        &mut self.preferences.show_output_delay_indicator,
-                                        self.language
-                                            .tr("Show Output Delay Indicator", "显示输出延迟指示"),
-                                    );
+                                    settings_form_row(ui, grid, this.language.tr("Show Mute Buttons", "显示静音按钮"), |ui| {
+                                        ui.checkbox(&mut this.preferences.show_mute_buttons, "");
+                                    });
+                                    settings_form_row(ui, grid, this.language.tr("Show Channel Icons", "显示通道图标"), |ui| {
+                                        ui.checkbox(&mut this.preferences.show_channel_icons, "");
+                                    });
+                                    settings_form_row(ui, grid, this.language.tr("Show Output Delay Indicator", "显示输出延迟指示"), |ui| {
+                                        ui.checkbox(&mut this.preferences.show_output_delay_indicator, "");
+                                    });
                                     ui.separator();
                                     ui.label(
-                                        self.language.tr("Visible mixer inputs", "可见混音输入"),
+                                        this.language.tr("Visible mixer inputs", "可见混音输入"),
                                     );
-                                    for input in InputId::ALL {
-                                        ui.checkbox(
-                                            &mut self.preferences.channel_visible[input.index()],
-                                            display_name(input, self.language),
-                                        );
-                                    }
+                                    egui::Grid::new("settings-visible-inputs")
+                                        .num_columns(2)
+                                        .spacing(Vec2::new(grid.gap, 4.0 * grid.scale))
+                                        .show(ui, |ui| {
+                                            for (index, input) in InputId::ALL.into_iter().enumerate() {
+                                                ui.checkbox(
+                                                    &mut this.preferences.channel_visible[input.index()],
+                                                    display_name(input, this.language),
+                                                );
+                                                if index % 2 == 1 {
+                                                    ui.end_row();
+                                                }
+                                            }
+                                            if InputId::ALL.len() % 2 != 0 {
+                                                ui.end_row();
+                                            }
+                                        });
                                 });
                             });
 
                             let device_ready = self.store.state.session == SessionState::Ready;
-                            if !device_ready {
-                                ui.add_space(8.0);
-                                card(ui, |ui| {
-                                    ui.label(self.language.tr(
-                                        "Connect to FLOW 8 to view and change device settings.",
-                                        "连接 FLOW 8 后即可查看和调整设备设置。",
-                                    ));
-                                });
-                            }
                             ui.add_enabled_ui(device_ready, |ui| {
-                                ui.add_space(8.0);
-                                ui.columns(2, |columns| {
-                                    card(&mut columns[0], |ui| {
+                                ui.add_space(grid.gap);
+                                settings_grid_row(self, ui, grid, 1, |this, ui| {
+                                    settings_card(ui, grid, |ui| {
                                         ui.label(
                                             egui::RichText::new(
-                                                self.language.tr("DEVICE / CONTROL", "设备 / 控制"),
+                                                this.language.tr("DEVICE / CONTROL", "设备 / 控制"),
                                             )
                                             .strong()
                                             .color(BLUE),
@@ -2618,10 +2799,9 @@ impl Flow8App {
                                             .effective()
                                             .cloned()
                                             .unwrap_or_else(|| "FLOW 8".into());
-                                        ui.horizontal(|ui| {
-                                            ui.label(self.language.tr("Device Name", "设备名称"));
+                                        settings_form_row(ui, grid, this.language.tr("Device Name", "设备名称"), |ui| {
                                             if ui.text_edit_singleline(&mut name).changed() {
-                                                self.dispatch(SemanticCommand::SetSetting(
+                                                this.dispatch(SemanticCommand::SetSetting(
                                                     KnownSetting::DeviceName(name.clone()),
                                                 ));
                                             }
@@ -2631,13 +2811,10 @@ impl Flow8App {
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                self.language.tr("Footswitch Mode", "脚踏开关模式"),
-                                            );
+                                        settings_form_row(ui, grid, this.language.tr("Footswitch Mode", "脚踏开关模式"), |ui| {
                                             for (fx_mode, label) in [
                                                 (true, "FX"),
-                                                (false, self.language.tr("Snapshot", "快照")),
+                                                (false, this.language.tr("Snapshot", "快照")),
                                             ] {
                                                 if state_button(
                                                     ui,
@@ -2647,7 +2824,7 @@ impl Flow8App {
                                                 )
                                                 .clicked()
                                                 {
-                                                    self.dispatch(SemanticCommand::SetSetting(
+                                                    this.dispatch(SemanticCommand::SetSetting(
                                                         KnownSetting::FootswitchFxMode(fx_mode),
                                                     ));
                                                 }
@@ -2658,70 +2835,19 @@ impl Flow8App {
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        if state_button(
-                                            ui,
-                                            linked,
-                                            self.language.tr(
-                                                "Device-linked Output Selection",
-                                                "设备联动输出选择",
-                                            ),
-                                            BLUE,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::DeviceLinkedSelection(!linked),
-                                            ));
-                                        }
-                                        ui.add_enabled_ui(false, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    self.language.tr("Control Gesture", "控制手势"),
-                                                );
-                                                for (mode, label) in [
-                                                    (
-                                                        ControlGesture::Linear,
-                                                        self.language.tr("Linear", "线性"),
-                                                    ),
-                                                    (
-                                                        ControlGesture::Rotary,
-                                                        self.language.tr("Rotary", "旋转"),
-                                                    ),
-                                                ] {
-                                                    let _ = ui.selectable_label(
-                                                        self.preferences.control_gesture == mode,
-                                                        label,
-                                                    );
-                                                }
-                                            });
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    self.language
-                                                        .tr("EQ Editing Mode", "EQ 编辑模式"),
-                                                );
-                                                for (mode, label) in [
-                                                    (
-                                                        EqEditingMode::Standard,
-                                                        self.language.tr("Standard", "标准"),
-                                                    ),
-                                                    (
-                                                        EqEditingMode::Parametric,
-                                                        self.language.tr("Parametric", "参数"),
-                                                    ),
-                                                ] {
-                                                    let _ = ui.selectable_label(
-                                                        self.preferences.eq_editing_mode == mode,
-                                                        label,
-                                                    );
-                                                }
-                                            });
+                                        settings_form_row(ui, grid, this.language.tr("Device-linked Output Selection", "设备联动输出选择"), |ui| {
+                                            if state_button(ui, linked, setting_switch_text(this.language, linked), BLUE).clicked() {
+                                                this.dispatch(SemanticCommand::SetSetting(
+                                                    KnownSetting::DeviceLinkedSelection(!linked),
+                                                ));
+                                            }
                                         });
                                     });
-
-                                    card(&mut columns[1], |ui| {
+                                }, |this, ui| {
+                                    settings_card(ui, grid, |ui| {
                                         ui.label(
                                             egui::RichText::new(
-                                                self.language.tr("MONITOR ROUTING", "监听路由"),
+                                                this.language.tr("MONITOR ROUTING", "监听路由"),
                                             )
                                             .strong()
                                             .color(GREEN),
@@ -2731,37 +2857,30 @@ impl Flow8App {
                                             .effective()
                                             .copied()
                                             .unwrap_or(MonitorRoutingSource::MonitorMix);
-                                        for (candidate, label, raw) in [
-                                            (MonitorRoutingSource::MonitorMix, "MON", 0),
-                                            (MonitorRoutingSource::Usb12, "USB 1/2", 1),
-                                            (MonitorRoutingSource::Usb34, "USB 3/4", 2),
-                                        ] {
-                                            if state_button(ui, current == candidate, label, GREEN)
-                                                .clicked()
-                                            {
-                                                self.dispatch(SemanticCommand::SetSetting(
-                                                    KnownSetting::MonitorRouting(raw),
-                                                ));
-                                            }
-                                        }
+                                        settings_form_row(ui, grid, this.language.tr("Monitor Source", "监听来源"), |ui| {
+                                            ui.horizontal_wrapped(|ui| {
+                                                for (candidate, label, raw) in [
+                                                    (MonitorRoutingSource::MonitorMix, "MON", 0),
+                                                    (MonitorRoutingSource::Usb12, "USB 1/2", 1),
+                                                    (MonitorRoutingSource::Usb34, "USB 3/4", 2),
+                                                ] {
+                                                    if state_button(ui, current == candidate, label, GREEN).clicked() {
+                                                        this.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorRouting(raw)));
+                                                    }
+                                                }
+                                            });
+                                        });
                                         let post = settings
                                             .monitor_post_fader
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        if state_button(
-                                            ui,
-                                            post,
-                                            if post { "POST" } else { "PRE" },
-                                            GREEN,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::MonitorPostFader(!post),
-                                            ));
-                                        }
-                                        let linked = self
+                                        settings_form_row(ui, grid, this.language.tr("Monitor Tap", "监听取样点"), |ui| {
+                                            if state_button(ui, post, if post { "POST" } else { "PRE" }, GREEN).clicked() {
+                                                this.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorPostFader(!post)));
+                                            }
+                                        });
+                                        let linked = this
                                             .store
                                             .state
                                             .routing
@@ -2770,28 +2889,20 @@ impl Flow8App {
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        if state_button(
-                                            ui,
-                                            linked,
-                                            self.language
-                                                .tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
-                                            GREEN,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::MonitorStereoLink(!linked),
-                                            ));
-                                        }
+                                        settings_form_row(ui, grid, this.language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"), |ui| {
+                                            if state_button(ui, linked, setting_switch_text(this.language, linked), GREEN).clicked() {
+                                                this.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorStereoLink(!linked)));
+                                            }
+                                        });
                                     });
                                 });
 
-                                ui.add_space(8.0);
-                                ui.columns(2, |columns| {
-                                    card(&mut columns[0], |ui| {
+                                ui.add_space(grid.gap);
+                                settings_grid_row(self, ui, grid, 2, |this, ui| {
+                                    settings_card(ui, grid, |ui| {
                                         ui.label(
                                             egui::RichText::new(
-                                                self.language.tr("USB / HEADPHONES", "USB / 耳机"),
+                                                this.language.tr("USB / HEADPHONES", "USB / 耳机"),
                                             )
                                             .strong()
                                             .color(GREEN),
@@ -2803,7 +2914,7 @@ impl Flow8App {
                                                     .effective()
                                                     .copied()
                                                     .unwrap_or(false),
-                                                self.language.tr("USB Streaming", "USB 推流"),
+                                                this.language.tr("USB Streaming", "USB 推流"),
                                                 0_u8,
                                             ),
                                             (
@@ -2812,7 +2923,7 @@ impl Flow8App {
                                                     .effective()
                                                     .copied()
                                                     .unwrap_or(false),
-                                                self.language.tr(
+                                                this.language.tr(
                                                     "USB 1/2 → Input 5/6",
                                                     "USB 1/2 → 输入 5/6",
                                                 ),
@@ -2824,7 +2935,7 @@ impl Flow8App {
                                                     .effective()
                                                     .copied()
                                                     .unwrap_or(false),
-                                                self.language.tr(
+                                                this.language.tr(
                                                     "USB 3/4 → Input 7/8",
                                                     "USB 3/4 → 输入 7/8",
                                                 ),
@@ -2836,44 +2947,36 @@ impl Flow8App {
                                                     .effective()
                                                     .copied()
                                                     .unwrap_or(false),
-                                                self.language.tr(
+                                                this.language.tr(
                                                     "Bluetooth / USB to Headphones Only",
                                                     "蓝牙 / USB 仅送耳机",
                                                 ),
                                                 3_u8,
                                             ),
                                         ] {
-                                            if state_button(ui, active, label, GREEN).clicked() {
-                                                let setting = match command {
-                                                    0 => KnownSetting::UsbStreaming(!active),
-                                                    1 => KnownSetting::Input56FromUsb12(!active),
-                                                    2 => KnownSetting::Input78FromUsb34(!active),
-                                                    _ => KnownSetting::PhonesOnly(!active),
-                                                };
-                                                self.dispatch(SemanticCommand::SetSetting(setting));
-                                            }
+                                            settings_form_row(ui, grid, label, |ui| {
+                                                if state_button(ui, active, setting_switch_text(this.language, active), GREEN).clicked() {
+                                                    let setting = match command {
+                                                        0 => KnownSetting::UsbStreaming(!active),
+                                                        1 => KnownSetting::Input56FromUsb12(!active),
+                                                        2 => KnownSetting::Input78FromUsb34(!active),
+                                                        _ => KnownSetting::PhonesOnly(!active),
+                                                    };
+                                                    this.dispatch(SemanticCommand::SetSetting(setting));
+                                                }
+                                            });
                                         }
                                         let bt_usb_switch = settings
                                             .bt_usb_switch
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        if state_button(
-                                            ui,
-                                            bt_usb_switch,
-                                            self.language.tr(
-                                                "Bluetooth / USB source switch",
-                                                "蓝牙 / USB 信号源切换",
-                                            ),
-                                            GREEN,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::BtUsbSwitch(!bt_usb_switch),
-                                            ));
-                                        }
-                                        let headphone_source = self
+                                        settings_form_row(ui, grid, this.language.tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"), |ui| {
+                                            if state_button(ui, bt_usb_switch, setting_switch_text(this.language, bt_usb_switch), GREEN).clicked() {
+                                                this.dispatch(SemanticCommand::SetSetting(KnownSetting::BtUsbSwitch(!bt_usb_switch)));
+                                            }
+                                        });
+                                        let headphone_source = this
                                             .store
                                             .state
                                             .routing
@@ -2882,10 +2985,7 @@ impl Flow8App {
                                             .effective()
                                             .copied()
                                             .unwrap_or(HeadphoneSource::Main);
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                self.language.tr("Headphone Source", "耳机信号源"),
-                                            );
+                                        settings_form_row(ui, grid, this.language.tr("Headphone Source", "耳机信号源"), |ui| {
                                             for (source, label) in [
                                                 (HeadphoneSource::Main, "MAIN"),
                                                 (HeadphoneSource::Monitor, "MON"),
@@ -2898,7 +2998,7 @@ impl Flow8App {
                                                 )
                                                 .clicked()
                                                 {
-                                                    self.dispatch(SemanticCommand::SetSetting(
+                                                    this.dispatch(SemanticCommand::SetSetting(
                                                         KnownSetting::HeadphonesUseMonitor(
                                                             source == HeadphoneSource::Monitor,
                                                         ),
@@ -2906,7 +3006,7 @@ impl Flow8App {
                                                 }
                                             }
                                         });
-                                        let headphone_tap = self
+                                        let headphone_tap = this
                                             .store
                                             .state
                                             .routing
@@ -2915,10 +3015,7 @@ impl Flow8App {
                                             .effective()
                                             .copied()
                                             .unwrap_or(TapPoint::PostFader);
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                self.language.tr("Headphone Tap", "耳机取样点"),
-                                            );
+                                        settings_form_row(ui, grid, this.language.tr("Headphone Tap", "耳机取样点"), |ui| {
                                             for (tap, label) in [
                                                 (TapPoint::PreFader, "PRE"),
                                                 (TapPoint::PostFader, "POST"),
@@ -2931,7 +3028,7 @@ impl Flow8App {
                                                 )
                                                 .clicked()
                                                 {
-                                                    self.dispatch(SemanticCommand::SetSetting(
+                                                    this.dispatch(SemanticCommand::SetSetting(
                                                         KnownSetting::HeadphonesPostFader(
                                                             tap == TapPoint::PostFader,
                                                         ),
@@ -2940,45 +3037,46 @@ impl Flow8App {
                                             }
                                         });
                                     });
-
-                                    card(&mut columns[1], |ui| {
+                                }, |this, ui| {
+                                    settings_card(ui, grid, |ui| {
                                         ui.label(
-                                            egui::RichText::new(self.language.tr("OUTPUT", "输出"))
+                                            egui::RichText::new(this.language.tr("OUTPUT", "输出"))
                                                 .strong()
                                                 .color(TEXT),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(this.language.tr("OUTPUT LEVEL", "输出电平"))
+                                                .size(this.metrics.small_font)
+                                                .color(SECONDARY),
                                         );
                                         let main_pad = settings
                                             .main_minus_10_dbv
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        if state_button(ui, main_pad, "MAIN -10 dBV", TEXT)
-                                            .clicked()
-                                        {
-                                            self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::MainMinus10Dbv(!main_pad),
-                                            ));
-                                        }
+                                        settings_form_row(ui, grid, "MAIN -10 dBV", |ui| {
+                                            if state_button(ui, main_pad, setting_switch_text(this.language, main_pad), TEXT).clicked() {
+                                                this.dispatch(SemanticCommand::SetSetting(KnownSetting::MainMinus10Dbv(!main_pad)));
+                                            }
+                                        });
                                         let monitor_pad = settings
                                             .monitor_minus_10_dbv
                                             .effective()
                                             .copied()
                                             .unwrap_or(false);
-                                        if state_button(ui, monitor_pad, "MON -10 dBV", TEXT)
-                                            .clicked()
-                                        {
-                                            self.dispatch(SemanticCommand::SetSetting(
-                                                KnownSetting::MonitorMinus10Dbv(!monitor_pad),
-                                            ));
-                                        }
+                                        settings_form_row(ui, grid, "MON -10 dBV", |ui| {
+                                            if state_button(ui, monitor_pad, setting_switch_text(this.language, monitor_pad), TEXT).clicked() {
+                                                this.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorMinus10Dbv(!monitor_pad)));
+                                            }
+                                        });
+                                        ui.separator();
+                                        this.output_delay_settings(ui, grid);
                                     });
                                 });
-                                ui.add_space(8.0);
-                                card(ui, |ui| self.output_delay_settings(ui));
                             });
 
                             if !self.discovered_devices.is_empty() {
-                                ui.add_space(8.0);
+                                ui.add_space(grid.gap);
                                 card(ui, |ui| {
                                     ui.label(
                                         egui::RichText::new(
@@ -3005,7 +3103,7 @@ impl Flow8App {
             });
     }
 
-    fn output_delay_settings(&mut self, ui: &mut egui::Ui) {
+    fn output_delay_settings(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
         ui.label(
             egui::RichText::new(self.language.tr("OUTPUT DELAY", "输出延迟"))
                 .strong()
@@ -3027,8 +3125,7 @@ impl Flow8App {
             if !self.delay_ms_dirty[index] {
                 self.delay_ms_draft[index] = current_ticks.map(format_delay_ms).unwrap_or_default();
             }
-            ui.horizontal(|ui| {
-                ui.label(destination_name(destination));
+            settings_form_row(ui, grid, destination_name(destination), |ui| {
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut self.delay_ms_draft[index])
