@@ -207,6 +207,7 @@ pub enum SemanticCommand {
     RequestMeters {
         destination: MixDestination,
     },
+    RequestChannelLabels,
     RequestFullState,
     RequestSnapshotNames,
     FactoryReset,
@@ -371,6 +372,7 @@ impl SemanticCommand {
                     channel_codes,
                 })
             }
+            Self::RequestChannelLabels => TxCommand::GetChannelLabels,
             Self::RequestFullState => TxCommand::GetMixerState,
             Self::RequestSnapshotNames => TxCommand::GetSnapshotNames,
             Self::FactoryReset => TxCommand::FactoryReset,
@@ -504,6 +506,7 @@ impl SemanticCommand {
             | Self::RenameSnapshot { .. }
             | Self::SelectDeviceOutput { .. }
             | Self::RequestMeters { .. }
+            | Self::RequestChannelLabels
             | Self::RequestFullState
             | Self::RequestSnapshotNames
             | Self::FactoryReset => None,
@@ -1259,7 +1262,9 @@ impl Flow8Store {
             SemanticCommand::RequestMeters { destination } => {
                 self.meter_output_target = Some(destination);
             }
-            SemanticCommand::RequestFullState | SemanticCommand::RequestSnapshotNames => {}
+            SemanticCommand::RequestChannelLabels
+            | SemanticCommand::RequestFullState
+            | SemanticCommand::RequestSnapshotNames => {}
             SemanticCommand::FactoryReset => {
                 if synthetic {
                     let destination = self.state.selected_destination;

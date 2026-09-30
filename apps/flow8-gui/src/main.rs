@@ -3,7 +3,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use eframe::egui::emath::GuiRounding as _;
@@ -347,6 +347,89 @@ impl Default for AppPreferences {
     }
 }
 
+#[derive(Clone, Copy)]
+struct MeterSmoother {
+    display_db: f32,
+}
+
+impl Default for MeterSmoother {
+    fn default() -> Self {
+        Self {
+            display_db: specs::METER_DISPLAY.min,
+        }
+    }
+}
+
+impl MeterSmoother {
+    fn advance(&mut self, target_db: Option<f32>, elapsed_seconds: f32) {
+        let Some(target_db) = target_db else {
+            *self = Self::default();
+            return;
+        };
+        let target_db = if target_db.is_nan() {
+            specs::METER_DISPLAY.min
+        } else {
+            target_db.clamp(specs::METER_DISPLAY.min, specs::METER_DISPLAY.max)
+        };
+        // Fast attack, slower release. This changes only the painted bar.
+        let time_constant = if target_db > self.display_db {
+            0.08
+        } else {
+            0.35
+        };
+        let blend = 1.0 - (-elapsed_seconds / time_constant).exp();
+        self.display_db += (target_db - self.display_db) * blend;
+        if (target_db - self.display_db).abs() < 0.05 {
+            self.display_db = target_db;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EqBandSnapshot {
+    frequency_hz: f32,
+    gain_db: f32,
+    q: f32,
+}
+
+fn confirmed_eq_snapshot(channel: &InputChannelState) -> Option<[EqBandSnapshot; 4]> {
+    if !channel.capabilities.peq || channel.eq.bands.len() != 4 {
+        return None;
+    }
+    let mut snapshot = [EqBandSnapshot {
+        frequency_hz: 0.0,
+        gain_db: 0.0,
+        q: 0.0,
+    }; 4];
+    for (value, band) in snapshot.iter_mut().zip(&channel.eq.bands) {
+        *value = EqBandSnapshot {
+            frequency_hz: band.frequency_hz.confirmed?,
+            gain_db: band.gain_db.confirmed?,
+            q: band.q.confirmed?,
+        };
+    }
+    Some(snapshot)
+}
+
+fn input_eq_modified(channel: &InputChannelState, initial: Option<&[EqBandSnapshot; 4]>) -> bool {
+    let Some(current) = confirmed_eq_snapshot(channel) else {
+        return false;
+    };
+    // A non-flat gain is meaningful even when it was already present at connect.
+    if current.iter().any(|band| band.gain_db.abs() > 0.05) {
+        return true;
+    }
+    // Factory frequency/Q defaults are not verified. Compare those parameters
+    // only with the first complete state received in this connection.
+    initial.is_some_and(|initial| {
+        current.iter().zip(initial).any(|(now, before)| {
+            (now.frequency_hz - before.frequency_hz).abs() > 0.5
+                || (now.q - before.q).abs() > 0.01
+                || (now.gain_db - before.gain_db).abs() > 0.05
+        })
+    })
+}
+
 struct Flow8App {
     store: Flow8Store,
     page: Page,
@@ -358,8 +441,13 @@ struct Flow8App {
     stage_positions: [Vec2; 7],
     pending_confirmation: Option<PendingConfirmation>,
     snapshot_names_requested: bool,
+    channel_labels_requested: bool,
     meter_request_target: Option<MixDestination>,
+    input_meter_display: [MeterSmoother; 7],
+    output_meter_display: [MeterSmoother; 5],
+    meter_frame_at: Option<Instant>,
     state_sync_applied: bool,
+    eq_initial: [Option<[EqBandSnapshot; 4]>; 7],
     native_stage: Option<NativeConnectionStage>,
     last_ble_error: Option<String>,
     preferences: AppPreferences,
@@ -394,8 +482,13 @@ impl Flow8App {
             }),
             pending_confirmation: None,
             snapshot_names_requested: false,
+            channel_labels_requested: false,
             meter_request_target: None,
+            input_meter_display: [MeterSmoother::default(); 7],
+            output_meter_display: [MeterSmoother::default(); 5],
+            meter_frame_at: None,
             state_sync_applied: false,
+            eq_initial: [None; 7],
             native_stage: None,
             last_ble_error: None,
             preferences: AppPreferences::default(),
@@ -678,9 +771,18 @@ impl Flow8App {
         while let Some(event) = self.runtime.try_recv() {
             match event {
                 DeviceEvent::Phase(phase) => {
+                    if matches!(
+                        phase,
+                        SessionPhase::Disconnected
+                            | SessionPhase::Scanning
+                            | SessionPhase::Connecting
+                    ) {
+                        self.eq_initial = [None; 7];
+                    }
                     if phase != SessionPhase::Ready {
                         self.pending_confirmation = None;
                         self.snapshot_names_requested = false;
+                        self.channel_labels_requested = false;
                         self.meter_request_target = None;
                     }
                     if matches!(phase, SessionPhase::Connecting | SessionPhase::StateSyncing) {
@@ -735,6 +837,13 @@ impl Flow8App {
                             self.language.tr("RX state error", "接收状态错误")
                         );
                     } else if is_mixer_state {
+                        if self.eq_initial.iter().all(Option::is_none) {
+                            for (initial, channel) in
+                                self.eq_initial.iter_mut().zip(&self.store.state.channels)
+                            {
+                                *initial = confirmed_eq_snapshot(channel);
+                            }
+                        }
                         self.state_sync_applied = true;
                         tracing::info!(
                             evidence = "VERIFIED_FROM_DEVICE",
@@ -755,6 +864,7 @@ impl Flow8App {
                 DeviceEvent::Error(error) => {
                     self.pending_confirmation = None;
                     self.snapshot_names_requested = false;
+                    self.channel_labels_requested = false;
                     self.store.state.session = SessionState::Error;
                     self.last_ble_error = Some(error.clone());
                     self.message = format!("BLE: {error}");
@@ -763,6 +873,15 @@ impl Flow8App {
         }
 
         self.flush_commands();
+    }
+
+    fn sync_channel_labels_request(&mut self) {
+        if self.store.state.session != SessionState::Ready {
+            self.channel_labels_requested = false;
+        } else if !self.channel_labels_requested {
+            self.dispatch(SemanticCommand::RequestChannelLabels);
+            self.channel_labels_requested = true;
+        }
     }
 
     fn sync_meter_request(&mut self) {
@@ -774,6 +893,41 @@ impl Flow8App {
         if self.meter_request_target != Some(destination) {
             self.dispatch(SemanticCommand::RequestMeters { destination });
             self.meter_request_target = Some(destination);
+        }
+    }
+
+    fn advance_meter_display(&mut self) {
+        if self.store.state.session != SessionState::Ready {
+            self.input_meter_display = [MeterSmoother::default(); 7];
+            self.output_meter_display = [MeterSmoother::default(); 5];
+            self.meter_frame_at = None;
+            return;
+        }
+
+        let now = Instant::now();
+        let elapsed_seconds = self
+            .meter_frame_at
+            .replace(now)
+            .map(|previous| now.saturating_duration_since(previous).as_secs_f32())
+            .unwrap_or(1.0 / 30.0)
+            .clamp(0.0, 0.25);
+
+        for (index, smoother) in self.input_meter_display.iter_mut().enumerate() {
+            smoother.advance(
+                self.store.state.channels[index].meter.level_db.confirmed,
+                elapsed_seconds,
+            );
+        }
+        for destination in MixDestination::ALL {
+            let target = if let Some(bus) = self.store.state.bus_for_destination(destination) {
+                bus.meter.level_db.confirmed
+            } else {
+                self.store.state.effects[usize::from(destination == MixDestination::Fx2)]
+                    .meter
+                    .level_db
+                    .confirmed
+            };
+            self.output_meter_display[destination.index()].advance(target, elapsed_seconds);
         }
     }
 
@@ -874,8 +1028,10 @@ impl Flow8App {
                             self.store = Flow8Store::disconnected();
                             self.pending_confirmation = None;
                             self.snapshot_names_requested = false;
+                            self.channel_labels_requested = false;
                             self.meter_request_target = None;
                             self.state_sync_applied = false;
+                            self.eq_initial = [None; 7];
                             match self.runtime.send(DeviceCommand::Connect) {
                                 Ok(()) => {
                                     self.store.state.session = SessionState::Connecting;
@@ -1183,6 +1339,9 @@ impl Flow8App {
                                 continue;
                             }
                             let channel = self.store.state.channels[id.index()].clone();
+                            let meter_db = self.input_meter_display[id.index()].display_db;
+                            let eq_modified =
+                                input_eq_modified(&channel, self.eq_initial[id.index()].as_ref());
                             let selected = self.store.state.selected_input == Some(id);
                             let strip = ui.push_id(
                                 (id.index(), self.store.state.selected_destination.index()),
@@ -1190,6 +1349,8 @@ impl Flow8App {
                                     channel_strip(
                                         ui,
                                         &channel,
+                                        meter_db,
+                                        eq_modified,
                                         self.store.state.selected_destination,
                                         selected,
                                         self.language,
@@ -1283,7 +1444,7 @@ impl Flow8App {
                     if let Some(bus) = self.store.state.bus_for_destination(destination) {
                         (
                             *bus.master_level.effective().unwrap_or(&0.75),
-                            *bus.meter.level_db.effective().unwrap_or(&-60.0),
+                            self.output_meter_display[destination.index()].display_db,
                             bus.master_level.confirmed,
                         )
                     } else {
@@ -1291,7 +1452,7 @@ impl Flow8App {
                             [usize::from(destination == MixDestination::Fx2)];
                         (
                             *fx.master_level.effective().unwrap_or(&0.75),
-                            *fx.meter.level_db.effective().unwrap_or(&-60.0),
+                            self.output_meter_display[destination.index()].display_db,
                             fx.master_level.confirmed,
                         )
                     };
@@ -1976,7 +2137,7 @@ impl Flow8App {
                 .effective()
                 .copied()
                 .unwrap_or(0.0);
-            let meter = channel.meter.level_db.effective().copied().unwrap_or(-60.0);
+            let meter = self.input_meter_display[index].display_db;
             let selected = self.store.state.selected_input == Some(id);
             ui.painter().rect_filled(
                 rect,
@@ -3103,6 +3264,7 @@ impl eframe::App for Flow8App {
             configure_style(ui.ctx(), metrics);
         }
         self.poll_runtime();
+        self.advance_meter_display();
         self.clear_stale_confirmation();
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
@@ -3181,6 +3343,7 @@ impl eframe::App for Flow8App {
         self.confirmation_dialog(ui.ctx());
         // Request the APK-defined meter sources once after Ready and when the
         // displayed destination changes. 0x38 itself contains no meter values.
+        self.sync_channel_labels_request();
         self.sync_meter_request();
         // Send this frame's intents now, rather than waiting for the next repaint.
         // The Store's semantic queue still coalesces continuous edits within the frame.
@@ -3238,6 +3401,8 @@ fn strip_controls(
 fn channel_strip(
     ui: &mut egui::Ui,
     channel: &InputChannelState,
+    meter_db: f32,
+    eq_modified: bool,
     destination: MixDestination,
     selected: bool,
     language: Language,
@@ -3336,7 +3501,6 @@ fn channel_strip(
                 });
                 let route_state = &channel.route_levels[destination.index()];
                 let mut route = *route_state.effective().unwrap_or(&0.0);
-                let meter = *channel.meter.level_db.effective().unwrap_or(&-60.0);
                 ui.allocate_ui_with_layout(
                     Vec2::new(content_width, fader_height),
                     Layout::left_to_right(Align::Min),
@@ -3359,7 +3523,7 @@ fn channel_strip(
                             "拖动调节 · Shift 精调 · 双击回到 0 dB",
                         ))
                         .changed();
-                        meter_widget_sized(ui, meter, meter_width, fader_height);
+                        meter_widget_sized(ui, meter_db, meter_width, fader_height);
                         if changed {
                             action = Some(StripAction::Route(route));
                         }
@@ -3385,11 +3549,7 @@ fn channel_strip(
                 });
                 ui.add_space(3.0);
                 ui.horizontal(|ui| {
-                    badge(
-                        ui,
-                        "EQ",
-                        channel.eq.enabled.effective().copied().unwrap_or(false),
-                    );
+                    badge(ui, "EQ", eq_modified);
                     badge(
                         ui,
                         "COMP",
