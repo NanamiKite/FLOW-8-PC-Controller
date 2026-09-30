@@ -432,6 +432,17 @@ fn input_eq_modified(channel: &InputChannelState, initial: Option<&[EqBandSnapsh
     })
 }
 
+fn format_delay_ms(ticks: u32) -> String {
+    format!("{:.3}", ticks as f64 / 48.0)
+}
+
+fn parse_delay_ms(value: &str) -> Option<u32> {
+    let milliseconds = value.trim().parse::<f64>().ok()?;
+    let ticks = (milliseconds * 48.0).round();
+    (milliseconds.is_finite() && milliseconds >= 0.0 && ticks <= u32::MAX as f64)
+        .then_some(ticks as u32)
+}
+
 struct Flow8App {
     store: Flow8Store,
     page: Page,
@@ -450,6 +461,8 @@ struct Flow8App {
     meter_frame_at: Option<Instant>,
     state_sync_applied: bool,
     eq_initial: [Option<[EqBandSnapshot; 4]>; 7],
+    delay_ms_draft: [String; 3],
+    delay_ms_dirty: [bool; 3],
     native_stage: Option<NativeConnectionStage>,
     last_ble_error: Option<String>,
     preferences: AppPreferences,
@@ -491,6 +504,8 @@ impl Flow8App {
             meter_frame_at: None,
             state_sync_applied: false,
             eq_initial: [None; 7],
+            delay_ms_draft: std::array::from_fn(|_| String::new()),
+            delay_ms_dirty: [false; 3],
             native_stage: None,
             last_ble_error: None,
             preferences: AppPreferences::default(),
@@ -780,6 +795,8 @@ impl Flow8App {
                             | SessionPhase::Connecting
                     ) {
                         self.eq_initial = [None; 7];
+                        self.delay_ms_draft = std::array::from_fn(|_| String::new());
+                        self.delay_ms_dirty = [false; 3];
                     }
                     if phase != SessionPhase::Ready {
                         self.pending_confirmation = None;
@@ -1034,6 +1051,8 @@ impl Flow8App {
                             self.meter_request_target = None;
                             self.state_sync_applied = false;
                             self.eq_initial = [None; 7];
+                            self.delay_ms_draft = std::array::from_fn(|_| String::new());
+                            self.delay_ms_dirty = [false; 3];
                             match self.runtime.send(DeviceCommand::Connect) {
                                 Ok(()) => {
                                     self.store.state.session = SessionState::Connecting;
@@ -2954,6 +2973,8 @@ impl Flow8App {
                                         }
                                     });
                                 });
+                                ui.add_space(8.0);
+                                card(ui, |ui| self.output_delay_settings(ui));
                             });
 
                             if !self.discovered_devices.is_empty() {
@@ -2982,6 +3003,79 @@ impl Flow8App {
                     );
                 });
             });
+    }
+
+    fn output_delay_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new(self.language.tr("OUTPUT DELAY", "输出延迟"))
+                .strong()
+                .color(TEXT),
+        );
+        for (index, bus, destination) in [
+            (0, MixBusId::Main, MixDestination::Main),
+            (1, MixBusId::Monitor1, MixDestination::Monitor1),
+            (2, MixBusId::Monitor2, MixDestination::Monitor2),
+        ] {
+            let delay = &self
+                .store
+                .state
+                .bus_for_destination(destination)
+                .expect("MAIN and MON outputs have bus state")
+                .delay_ticks;
+            let current_ticks = delay.effective().copied();
+            let confirmed_ticks = delay.confirmed;
+            if !self.delay_ms_dirty[index] {
+                self.delay_ms_draft[index] = current_ticks.map(format_delay_ms).unwrap_or_default();
+            }
+            ui.horizontal(|ui| {
+                ui.label(destination_name(destination));
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.delay_ms_draft[index])
+                            .id_salt(("output-delay-ms", index))
+                            .desired_width(100.0 * self.metrics.ui_scale),
+                    )
+                    .changed()
+                {
+                    self.delay_ms_dirty[index] = true;
+                }
+                ui.label("ms");
+                if ui
+                    .add_enabled(
+                        self.delay_ms_dirty[index],
+                        egui::Button::new(self.language.tr("Apply", "应用")),
+                    )
+                    .clicked()
+                {
+                    match parse_delay_ms(&self.delay_ms_draft[index]) {
+                        Some(ticks) => {
+                            if current_ticks != Some(ticks) {
+                                self.dispatch(SemanticCommand::SetDelay { bus, ticks });
+                            }
+                            self.delay_ms_dirty[index] = false;
+                        }
+                        None => {
+                            self.message = self.language.tr(
+                                "Enter a non-negative delay within the protocol's numeric capacity.",
+                                "请输入非负延迟值，且不超过协议数字字段可表示的范围。",
+                            ).into();
+                        }
+                    }
+                }
+            });
+            if let Some(ticks) = confirmed_ticks {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}: {} ms · {} ticks",
+                        self.language.tr("Device reported", "设备回报"),
+                        format_delay_ms(ticks),
+                        ticks,
+                    ))
+                    .size(self.metrics.small_font)
+                    .color(SECONDARY),
+                );
+            }
+        }
     }
 
     fn main_out_page(&mut self, ui: &mut egui::Ui) {
