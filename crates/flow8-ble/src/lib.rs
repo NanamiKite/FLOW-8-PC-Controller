@@ -871,6 +871,7 @@ enum ContinuousKey {
     ParametricEq(u8, u8),
     Compressor(u8),
     Limiter(u8),
+    FxSetup(u8, u8),
     Tempo,
     Delay(u8),
 }
@@ -895,9 +896,14 @@ impl ContinuousKey {
             }
             TxCommand::Compressor { input, .. } => Some(Self::Compressor(input.endpoint())),
             TxCommand::Limiter { endpoint, .. } => Some(Self::Limiter(*endpoint)),
+            TxCommand::FxSetup {
+                endpoint,
+                route_flags,
+                ..
+            } => Some(Self::FxSetup(*endpoint, *route_flags)),
             TxCommand::FxTempo { .. } => Some(Self::Tempo),
             TxCommand::ChannelDelay { endpoint, .. } => Some(Self::Delay(*endpoint)),
-            // Discrete commands and mixed continuous/discrete payloads remain FIFO.
+            // Other discrete commands remain FIFO.
             _ => None,
         }
     }
@@ -961,6 +967,16 @@ impl WriterMailbox {
                         } if *existing == key => {
                             *queued = frame;
                             return Ok(QueueDisposition::Replaced);
+                        }
+                        WriterCommand::Write {
+                            key: Some(ContinuousKey::FxSetup(endpoint, route_flags)),
+                            ..
+                        } if matches!(key, ContinuousKey::FxSetup(target, flags)
+                            if *endpoint == target && *route_flags != flags) =>
+                        {
+                            // Preserve every FX return-routing transition. Parameter
+                            // drags may replace only writes with the same route flags.
+                            break;
                         }
                         WriterCommand::Write { key: None, .. } | WriterCommand::MarkHandshakeRx => {
                             break;
