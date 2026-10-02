@@ -16,7 +16,7 @@ FLOW 8 PC Controller 是一款使用 Rust 编写的非官方 Behringer FLOW 8 �
 
 Windows x64 安装包将作为版本 Release 附件发布。
 
-FLOW 8 安装包只安装图形程序。Windows 蓝牙控制还需要单独安装 DirectHCI：连接前须在 DirectHCI Control Panel 中启动服务、选择受支持的控制器；如果面板显示 **Not prepared**，请按照 DirectHCI 的说明准备控制器。FLOW 8 安装包不会代为完成这些操作。当前 DirectHCI SDK 获取控制器会话时还要求以管理员权限运行 FLOW 8 程序。详见 [Windows 安装说明](docs/installation.md)。
+FLOW 8 安装包只安装图形程序。Windows 蓝牙控制还需要单独安装 [DirectHCI](https://github.com/NanamiKite/DirectHCI)：连接前须在 DirectHCI Control Panel 中启动服务、选择受支持的控制器；如果面板显示 **Not prepared**，请按照 DirectHCI 的说明准备控制器。FLOW 8 安装包不会代为完成这些操作。当前 DirectHCI SDK 获取控制器会话时还要求以管理员权限运行 FLOW 8 程序。详见 [Windows 安装说明](docs/installation.md)。
 
 首次使用新的客户端身份连接时，请先在调音台上启用 **PAIR REMOTE / PAIR APP**，再在程序中连接。程序会在 `%LOCALAPPDATA%\FLOW 8 PC Controller\client-id.txt` 创建并复用客户端身份。请妥善保管此文件；删除后会生成新身份，可能需要重新配对。常规日志位于 `%LOCALAPPDATA%\FLOW 8 PC Controller\logs`。
 

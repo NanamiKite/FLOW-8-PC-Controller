@@ -16,7 +16,7 @@ The mixer interface is visible while disconnected; device controls become availa
 
 Versioned Windows x64 installers will be distributed as release assets. 
 
-The FLOW 8 installer installs the GUI only. Windows Bluetooth control also requires the separately installed DirectHCI runtime. Before connecting, start its service and select a supported controller in DirectHCI Control Panel; if the panel reports **Not prepared**, follow DirectHCI's controller preparation instructions. The installer does not do this setup. The current DirectHCI SDK also requires administrator rights when the GUI acquires a controller session. See [Windows installation](docs/installation.md).
+The FLOW 8 installer installs the GUI only. Windows Bluetooth control also requires the separately installed [DirectHCI runtime](https://github.com/NanamiKite/DirectHCI). Before connecting, start its service and select a supported controller in DirectHCI Control Panel; if the panel reports **Not prepared**, follow DirectHCI's controller preparation instructions. The installer does not do this setup. The current DirectHCI SDK also requires administrator rights when the GUI acquires a controller session. See [Windows installation](docs/installation.md).
 
 On the first connection with a new client identity, enable **PAIR REMOTE / PAIR APP** on the mixer, then connect in the GUI. The application creates and reuses a client identity at `%LOCALAPPDATA%\FLOW 8 PC Controller\client-id.txt`. Keep this file private; deleting it creates a new identity and may require pairing again. Normal GUI logs are written under `%LOCALAPPDATA%\FLOW 8 PC Controller\logs`.
 
