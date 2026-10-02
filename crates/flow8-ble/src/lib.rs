@@ -311,6 +311,7 @@ pub enum DeviceEvent {
     Backend(&'static str),
     Mtu(u16),
     ProtocolWarning(String),
+    CommandError(String),
     Error(String),
 }
 
@@ -436,6 +437,7 @@ pub struct Flow8Session {
     phase: SessionPhase,
     client_id: [u8; 16],
     sequence: u8,
+    max_tx_frame_size: usize,
     decoder: CommandStreamDecoder,
     awaiting_state_apply: bool,
     received_host_hello: bool,
@@ -449,6 +451,7 @@ impl Flow8Session {
             phase: SessionPhase::Disconnected,
             client_id,
             sequence: 0,
+            max_tx_frame_size: flow8_protocol::MAX_RAW_PACKET_SIZE,
             decoder: CommandStreamDecoder::default(),
             awaiting_state_apply: false,
             received_host_hello: false,
@@ -470,6 +473,7 @@ impl Flow8Session {
         if phase == SessionPhase::Disconnected {
             self.decoder.clear();
             self.sequence = 0;
+            self.max_tx_frame_size = flow8_protocol::MAX_RAW_PACKET_SIZE;
             self.awaiting_state_apply = false;
             self.received_host_hello = false;
             self.handshake_response_pending_or_sent = false;
@@ -490,9 +494,27 @@ impl Flow8Session {
         self.transition(SessionPhase::Handshaking)
     }
 
+    /// A characteristic write carries at most ATT_MTU - 3 value bytes.
+    /// Keep the FLOW framing limit as a separate upper bound.
+    pub fn set_att_mtu(&mut self, mtu: u16) -> Result<(), BleError> {
+        let max_size = usize::from(mtu)
+            .saturating_sub(3)
+            .min(flow8_protocol::MAX_RAW_PACKET_SIZE);
+        if max_size < 6 {
+            return Err(BleError::Transport(format!(
+                "negotiated ATT MTU {mtu} is too small for FLOW 8 framing"
+            )));
+        }
+        self.max_tx_frame_size = max_size;
+        Ok(())
+    }
+
     /// Completes the Ready gate only after the consumer has atomically
     /// applied the decoded composite state to its authoritative Store.
     pub fn state_applied(&mut self) -> Result<SessionAction, BleError> {
+        if self.phase == SessionPhase::Ready {
+            return Ok(SessionAction::Phase(SessionPhase::Ready));
+        }
         if self.phase != SessionPhase::StateSyncing || !self.awaiting_state_apply {
             return Err(BleError::UnexpectedSessionState(
                 "state apply acknowledgment without a decoded 0x38".into(),
@@ -504,7 +526,7 @@ impl Flow8Session {
     }
 
     pub fn encode_command(&mut self, command: &TxCommand) -> Result<Vec<SessionAction>, BleError> {
-        let frames = encode_frames(command, flow8_protocol::MAX_RAW_PACKET_SIZE, self.sequence)
+        let frames = encode_frames(command, self.max_tx_frame_size, self.sequence)
             .map_err(BleError::Protocol)?;
         self.sequence = self.sequence.wrapping_add(1) & 0x03;
         Ok(frames.into_iter().map(SessionAction::Send).collect())
@@ -610,7 +632,9 @@ impl Flow8Session {
                         }
                     }
                     RxCommand::MixerState(_) => {
-                        self.awaiting_state_apply = true;
+                        if self.phase == SessionPhase::StateSyncing {
+                            self.awaiting_state_apply = true;
+                        }
                     }
                     event @ (RxCommand::SnapshotLoad { .. } | RxCommand::FactoryReset) => {
                         let source = if matches!(event, RxCommand::FactoryReset) {
@@ -1225,7 +1249,7 @@ async fn run_writer(
                         let _ = events.send(DeviceEvent::RawTx(frame));
                     }
                     Err(error) => {
-                        let _ = events.send(DeviceEvent::Error(error.to_string()));
+                        let _ = events.send(DeviceEvent::CommandError(error.to_string()));
                     }
                 }
             }
@@ -1304,7 +1328,7 @@ fn execute_actions_with_key(
                         );
                     }
                     Err(error) => {
-                        let _ = events.send(DeviceEvent::Error(error.to_string()));
+                        let _ = events.send(DeviceEvent::CommandError(error.to_string()));
                     }
                 }
             }
@@ -1353,6 +1377,8 @@ async fn handle_device_command(
                     let _ = events.send(DeviceEvent::Phase(coordinator.phase()));
                 }
                 Err(error) => {
+                    coordinator.transition(SessionPhase::Error);
+                    let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
                     let _ = events.send(DeviceEvent::Error(error.to_string()));
                 }
             }
@@ -1385,7 +1411,14 @@ async fn handle_device_command(
             let _ = events.send(DeviceEvent::Phase(SessionPhase::Connecting));
             coordinator.transition(SessionPhase::Connecting);
             match RuntimeSession::connect(*generation, events.clone()).await {
-                Ok((connected, rx)) => {
+                Ok((mut connected, rx)) => {
+                    if let Err(error) = coordinator.set_att_mtu(connected.mtu()) {
+                        let _ = connected.disconnect("invalid_att_mtu").await;
+                        coordinator.transition(SessionPhase::Error);
+                        let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
+                        let _ = events.send(DeviceEvent::Error(error.to_string()));
+                        return true;
+                    }
                     let connected = match ActiveSession::new(connected, events.clone()).await {
                         Ok(connected) => connected,
                         Err(error) => {
@@ -1435,7 +1468,7 @@ async fn handle_device_command(
         DeviceCommand::Send(command) => {
             if coordinator.phase() != SessionPhase::Ready {
                 warn!(command = ?command, phase = ?coordinator.phase(), "FLOW user command ignored before Ready");
-                let _ = events.send(DeviceEvent::Error(format!(
+                let _ = events.send(DeviceEvent::CommandError(format!(
                     "FLOW 8 command rejected while session is {:?}; wait for Ready",
                     coordinator.phase()
                 )));
@@ -1455,9 +1488,12 @@ async fn handle_device_command(
                     execute_actions_with_key(actions, session.as_ref(), events, key);
                 }
                 Err(error) => {
-                    let _ = events.send(DeviceEvent::Error(error.to_string()));
+                    let _ = events.send(DeviceEvent::CommandError(error.to_string()));
                 }
             }
+        }
+        DeviceCommand::StateApplied if coordinator.phase() == SessionPhase::Ready => {
+            debug!("ignoring redundant FLOW 8 state apply acknowledgment after Ready");
         }
         DeviceCommand::StateApplied => match coordinator.state_applied() {
             Ok(action) => {
@@ -1465,7 +1501,7 @@ async fn handle_device_command(
                 execute_actions(vec![action], session.as_ref(), events);
             }
             Err(error) => {
-                let _ = events.send(DeviceEvent::Error(error.to_string()));
+                let _ = events.send(DeviceEvent::ProtocolWarning(error.to_string()));
             }
         },
     }
@@ -1603,7 +1639,7 @@ async fn handle_transport_rx(
                 retry = false,
                 "{message}"
             );
-            let _ = events.send(DeviceEvent::Error(message.into()));
+            let _ = events.send(DeviceEvent::ProtocolWarning(message.into()));
         }
     }
 }
@@ -2108,6 +2144,40 @@ mod tests {
             Err(BleError::UnexpectedSessionState(_))
         ));
         assert_eq!(session.phase(), SessionPhase::StateSyncing);
+    }
+
+    #[test]
+    fn duplicate_state_apply_acknowledgment_does_not_leave_ready() {
+        let mut session = Flow8Session::new(*b"FLOW8-PC-RUST001");
+        session.transition(SessionPhase::Ready);
+        assert_eq!(
+            session.state_applied().unwrap(),
+            SessionAction::Phase(SessionPhase::Ready)
+        );
+        assert_eq!(session.phase(), SessionPhase::Ready);
+    }
+
+    #[test]
+    fn outbound_frames_obey_the_negotiated_att_mtu() {
+        let mut session = Flow8Session::new(*b"FLOW8-PC-RUST001");
+        let command = TxCommand::Label(flow8_protocol::ChannelLabel {
+            endpoint: 0,
+            icon: 0,
+            text: "x".repeat(20),
+        });
+        session.set_att_mtu(23).unwrap();
+        let small_frames = session.encode_command(&command).unwrap();
+        assert_eq!(small_frames.len(), 2);
+        assert!(small_frames.iter().all(|action| matches!(action,
+            SessionAction::Send(frame) if frame.len() <= 20
+        )));
+
+        session.set_att_mtu(131).unwrap();
+        let large_frames = session.encode_command(&command).unwrap();
+        assert!(
+            matches!(large_frames.as_slice(), [SessionAction::Send(frame)] if frame.len() == 27)
+        );
+        assert!(session.set_att_mtu(8).is_err());
     }
 
     #[test]

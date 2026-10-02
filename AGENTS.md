@@ -20,7 +20,7 @@ FLOW 8's confirmed device state wins over pending local edits. Atomic RX, compos
 
 ## Evidence
 
-Priority for device behavior: real FLOW 8 capture > `docs/reverse-engineering.md`/APK evidence > explicitly labelled inference. Never fabricate packet bytes, BLE UUIDs, parameter ranges, handshake results, or hardware verification. The old UI can be consulted on the `c++` branch for visual reference, not protocol truth. Keep `docs/reverse-engineering.md` independent unless the user specifically requests changes to it.
+Priority for device behavior: real FLOW 8 capture > documented official-app evidence > explicitly labelled inference. Never fabricate packet bytes, BLE UUIDs, parameter ranges, handshake results, or hardware verification. The old UI can be consulted on the `c++` branch for visual reference, not protocol truth. Keep local research notes independent and untracked unless the user specifically requests changes to them.
 
 ## BLE and DirectHCI
 

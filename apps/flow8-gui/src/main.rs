@@ -1041,6 +1041,12 @@ impl Flow8App {
                         self.language.tr("Protocol warning", "协议告警")
                     );
                 }
+                DeviceEvent::CommandError(error) => {
+                    self.message = format!(
+                        "{}: {error}",
+                        self.language.tr("Command failed", "命令失败")
+                    );
+                }
                 DeviceEvent::Error(error) => {
                     self.pending_confirmation = None;
                     self.snapshot_names_requested = false;

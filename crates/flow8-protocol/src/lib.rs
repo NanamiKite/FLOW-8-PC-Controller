@@ -1325,6 +1325,9 @@ pub fn decode_payload(command: u8, payload: &[u8]) -> Result<RxCommand, Protocol
                         .ok_or(ProtocolError::InvalidPayload(command))?,
                 );
             }
+            // The packet has ten fixed slots, but only `count` are entries.
+            // Padding can contain endpoint zero and must not overwrite it.
+            labels.truncate(count as usize);
             RxCommand::ChannelLabels(labels)
         }
         0x25 => RxCommand::Setting {
@@ -2152,8 +2155,25 @@ mod tests {
         let packet = parse_packet(&channel_labels).unwrap();
         assert!(matches!(
             decode_payload(packet.command, &packet.payload).unwrap(),
-            RxCommand::ChannelLabels(labels) if labels.len() == 10
+            RxCommand::ChannelLabels(labels) if labels.is_empty()
         ));
+    }
+
+    #[test]
+    fn channel_label_count_excludes_fixed_layout_padding() {
+        let mut payload = vec![1, 0, 0x12, 0x34, 5];
+        payload.extend(b"Vocal");
+        payload.extend([0; 9 * 4]);
+        let frame = frame_single(0x24, &payload);
+        let packet = parse_packet(&frame).unwrap();
+        let RxCommand::ChannelLabels(labels) =
+            decode_payload(packet.command, &packet.payload).unwrap()
+        else {
+            panic!("expected channel labels");
+        };
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].endpoint, 0);
+        assert_eq!(labels[0].text, "Vocal");
     }
 
     #[test]

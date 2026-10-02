@@ -549,6 +549,9 @@ impl SemanticCommandQueue {
                 .commands
                 .iter_mut()
                 .rev()
+                // A discrete command observes the values before it. Never
+                // move a newer continuous value across that boundary.
+                .take_while(|item| item.coalesce_key().is_some())
                 .find(|item| item.coalesce_key() == Some(key))
         {
             *existing = command;
@@ -914,17 +917,24 @@ impl Flow8Store {
         self.simulator_mode
     }
 
-    pub fn dispatch(&mut self, command: SemanticCommand) -> Result<(), CoreError> {
+    pub fn dispatch(&mut self, mut command: SemanticCommand) -> Result<(), CoreError> {
         let synthetic = self.simulator_mode;
         match command.clone() {
             SemanticCommand::SetGain { input, db } => {
                 if !input.has_analog_gain() {
                     return Err(CoreError::UnsupportedCapability);
                 }
-                if !db.is_finite() {
+                if !db.is_finite()
+                    || !(specs::INPUT_GAIN_WIRE.min..=specs::INPUT_GAIN_WIRE.max).contains(&db)
+                {
                     return Err(CoreError::InvalidValue);
                 }
-                let value = specs::INPUT_GAIN_DISPLAY.clamp(db);
+                // Keep the pending value and queued command at the exact
+                // half-decibel value represented by the production codec.
+                let wire = flow8_protocol::encode_fix8(flow8_protocol::Fix8Format::GainDb, db)
+                    .ok_or(CoreError::InvalidValue)?;
+                let value = flow8_protocol::decode_fix8(flow8_protocol::Fix8Format::GainDb, wire);
+                command = SemanticCommand::SetGain { input, db: value };
                 self.state.channels[input.index()]
                     .gain_db
                     .set_pending(value);
@@ -1237,6 +1247,10 @@ impl Flow8Store {
                 }
             }
             SemanticCommand::SetSetting(ref setting) => {
+                if matches!(setting, KnownSetting::DeviceName(name) if name.len() > u8::MAX as usize)
+                {
+                    return Err(CoreError::InvalidValue);
+                }
                 self.set_setting_pending(setting, synthetic);
             }
             SemanticCommand::SaveSnapshot { slot, ref name }
@@ -2374,6 +2388,65 @@ mod tests {
             enabled: false,
         });
         assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_save_is_a_barrier_for_gain_coalescing() {
+        let mut queue = SemanticCommandQueue::default();
+        let gain = |db| SemanticCommand::SetGain {
+            input: InputId::Input1,
+            db,
+        };
+        let save = SemanticCommand::SaveSnapshot {
+            slot: 0,
+            name: "Before change".into(),
+        };
+        queue.push(gain(10.0));
+        queue.push(save.clone());
+        queue.push(gain(20.0));
+        assert_eq!(queue.pop(), Some(gain(10.0)));
+        assert_eq!(queue.pop(), Some(save));
+        assert_eq!(queue.pop(), Some(gain(20.0)));
+    }
+
+    #[test]
+    fn gain_pending_matches_the_queued_wire_value() {
+        let mut store = Flow8Store::disconnected();
+        store
+            .dispatch(SemanticCommand::SetGain {
+                input: InputId::Input1,
+                db: -30.0,
+            })
+            .unwrap();
+        assert_eq!(store.state.channels[0].gain_db.pending, Some(-30.0));
+        assert_eq!(
+            store.queue.pop(),
+            Some(SemanticCommand::SetGain {
+                input: InputId::Input1,
+                db: -30.0,
+            })
+        );
+        assert_eq!(
+            store.dispatch(SemanticCommand::SetGain {
+                input: InputId::Input1,
+                db: -61.0,
+            }),
+            Err(CoreError::InvalidValue)
+        );
+        assert!(store.queue.is_empty());
+    }
+
+    #[test]
+    fn oversized_device_name_is_rejected_before_pending_or_enqueue() {
+        let mut store = Flow8Store::disconnected();
+        assert_eq!(
+            store.dispatch(SemanticCommand::SetSetting(KnownSetting::DeviceName(
+                "界".repeat(86)
+            ),)),
+            Err(CoreError::InvalidValue)
+        );
+        assert!(store.queue.is_empty());
+        assert!(store.state.routing.settings.device_name.pending.is_none());
     }
 
     #[test]
