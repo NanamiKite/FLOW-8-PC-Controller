@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
@@ -639,7 +641,7 @@ impl Flow8App {
             page: Page::Mixer,
             language: Language::English,
             message: "Disconnected · Connect to FLOW 8 to load the current mixer state".into(),
-            runtime: DeviceRuntime::spawn(*b"FLOW8-PC-RUST001"),
+            runtime: DeviceRuntime::spawn(),
             discovered_devices: Vec::new(),
             stage_layout_mode: false,
             stage_positions: std::array::from_fn(|index| {
@@ -977,7 +979,7 @@ impl Flow8App {
                         self.store.state.session = core_session_state(phase);
                         self.message = format!(
                             "{}: {}",
-                            self.language.tr("Direct Bluetooth", "直连蓝牙"),
+                            self.language.tr("Bluetooth", "蓝牙"),
                             session_phase_text(phase, self.language)
                         );
                     }
@@ -1251,7 +1253,7 @@ impl Flow8App {
                         ui.separator();
                         ui.add_space(self.metrics.spacing);
                         ui.label(
-                            egui::RichText::new(self.language.tr("Direct Bluetooth", "直连蓝牙"))
+                            egui::RichText::new(self.language.tr("Bluetooth", "蓝牙"))
                                 .color(SECONDARY),
                         );
                         let status = format!(
@@ -2741,7 +2743,7 @@ impl Flow8App {
                                             .color(BLUE),
                                     );
                                     settings_form_row(ui, grid, this.language.tr("Mode", "模式"), |ui| {
-                                        ui.label(this.language.tr("Direct Bluetooth", "直连蓝牙"));
+                                        ui.label(this.language.tr("Bluetooth", "蓝牙"));
                                     });
                                     settings_form_row(ui, grid, this.language.tr("Status", "状态"), |ui| {
                                         ui.label(session_state_text(this.store.state.session, this.language));
@@ -4935,7 +4937,7 @@ fn device_unsynced_notice(ui: &mut egui::Ui, state: SessionState, language: Lang
 fn localized_status_message(state: SessionState, language: Language) -> String {
     format!(
         "{}: {}",
-        language.tr("Direct Bluetooth", "直连蓝牙"),
+        language.tr("Bluetooth", "蓝牙"),
         session_state_text(state, language)
     )
 }
@@ -5849,11 +5851,12 @@ struct ProductionLogFile {
 #[derive(Clone)]
 struct ProductionLogWriter {
     file: Arc<Mutex<ProductionLogFile>>,
+    console: bool,
 }
 
 struct ProductionLogSink {
     file: Arc<Mutex<ProductionLogFile>>,
-    stdout: io::Stdout,
+    stdout: Option<io::Stdout>,
 }
 
 impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for ProductionLogWriter {
@@ -5862,24 +5865,29 @@ impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for ProductionLogWrit
     fn make_writer(&'writer self) -> Self::Writer {
         ProductionLogSink {
             file: Arc::clone(&self.file),
-            stdout: io::stdout(),
+            stdout: self.console.then(io::stdout),
         }
     }
 }
 
 impl Write for ProductionLogSink {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let _ = self.stdout.write_all(buffer);
+        if let Some(stdout) = &mut self.stdout {
+            let _ = stdout.write_all(buffer);
+        }
         let mut log = self.file.lock().unwrap_or_else(|error| error.into_inner());
         if !log.capped {
-            if log.written + buffer.len() as u64 <= MAX_PRODUCTION_LOG_BYTES {
+            if log.written.saturating_add(buffer.len() as u64) <= MAX_PRODUCTION_LOG_BYTES {
                 log.file.write_all(buffer)?;
                 log.written += buffer.len() as u64;
             } else {
                 log.capped = true;
-                eprintln!(
-                    "warning: FLOW 8 diagnostic log reached its 16 MiB limit; further output remains on stdout"
+                let _ = log.file.write_all(
+                    b"warning: FLOW 8 log reached its 16 MiB limit; further entries are suppressed until the next launch\n",
                 );
+                if self.stdout.is_some() {
+                    eprintln!("warning: FLOW 8 log reached its 16 MiB limit");
+                }
             }
         }
         Ok(buffer.len())
@@ -5891,7 +5899,9 @@ impl Write for ProductionLogSink {
             .unwrap_or_else(|error| error.into_inner())
             .file
             .flush()?;
-        let _ = self.stdout.flush();
+        if let Some(stdout) = &mut self.stdout {
+            let _ = stdout.flush();
+        }
         Ok(())
     }
 }
@@ -5972,6 +5982,64 @@ fn open_production_log() -> io::Result<(File, PathBuf)> {
     ))
 }
 
+// Routine release logs rotate independently of hardware-evidence captures.
+fn open_application_log() -> io::Result<(File, PathBuf)> {
+    let directory = production_log_directory()?;
+    fs::create_dir_all(&directory)?;
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log directory is not a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+
+    const MAX_RETAINED_APPLICATION_LOGS: usize = 12;
+    let mut old_logs = Vec::new();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("flow8-gui-") && name.ends_with(".log") && entry.file_type()?.is_file()
+        {
+            old_logs.push(entry.path());
+        }
+    }
+    old_logs.sort();
+    let remove_count = old_logs
+        .len()
+        .saturating_sub(MAX_RETAINED_APPLICATION_LOGS - 1);
+    for path in old_logs.into_iter().take(remove_count) {
+        fs::remove_file(path)?;
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..16 {
+        let path = directory.join(format!(
+            "flow8-gui-{timestamp}-{}-{attempt}.log",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique FLOW 8 application log filename",
+    ))
+}
+
 fn flow8_ble_verbose_logging(filter: &str) -> bool {
     filter.split(',').any(|directive| {
         let directive = directive.trim().to_ascii_lowercase();
@@ -5979,17 +6047,27 @@ fn flow8_ble_verbose_logging(filter: &str) -> bool {
     })
 }
 
-fn init_tracing() {
-    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "flow8_ble=info".into());
+fn init_tracing() -> Option<String> {
+    const DEFAULT_FILTER: &str = "flow8_ble=info,flow8_directhci=info,flow8_gui=info";
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_FILTER.into());
     let filter = tracing_subscriber::EnvFilter::try_new(&rust_log)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("flow8_ble=info"));
-    if flow8_ble_verbose_logging(&rust_log) {
-        match open_production_log() {
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_FILTER));
+    let verbose = flow8_ble_verbose_logging(&rust_log);
+    let console = !cfg!(all(windows, not(debug_assertions)));
+    let log_file = if verbose {
+        Some(open_production_log())
+    } else if !console {
+        Some(open_application_log())
+    } else {
+        None
+    };
+    let mut startup_error = None;
+    if let Some(log_file) = log_file {
+        match log_file {
             Ok((file, path)) => {
-                eprintln!("FLOW 8 diagnostic log: {}", path.display());
-                eprintln!(
-                    "warning: verbose FLOW 8 logs contain raw device state and client identifiers; share them only after review"
-                );
+                if console {
+                    eprintln!("FLOW 8 log: {}", path.display());
+                }
                 let _ = tracing_subscriber::fmt()
                     .with_env_filter(filter)
                     .with_writer(ProductionLogWriter {
@@ -5998,23 +6076,41 @@ fn init_tracing() {
                             written: 0,
                             capped: false,
                         })),
+                        console,
                     })
                     .try_init();
-                return;
+                tracing::info!(target: "flow8_ble", path = %path.display(), "FLOW 8 log file opened");
+                if verbose {
+                    tracing::warn!(
+                        target: "flow8_ble",
+                        "verbose logs contain raw device state and client identifiers; review before sharing"
+                    );
+                }
+                return None;
             }
             Err(error) => {
-                eprintln!("warning: could not create private FLOW 8 diagnostic log: {error}")
+                let message = format!("could not create private FLOW 8 log: {error}");
+                if console {
+                    eprintln!("warning: {message}");
+                } else {
+                    startup_error = Some(message);
+                }
             }
         }
     }
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    startup_error
 }
 
 fn main() -> eframe::Result {
-    init_tracing();
+    let logging_error = init_tracing();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FLOW 8 PC Controller")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/flow8.png"))
+                    .expect("bundled FLOW 8 window icon must be a valid PNG"),
+            )
             .with_inner_size([1440.0, 920.0])
             .with_min_inner_size([1040.0, 700.0]),
         renderer: eframe::Renderer::Glow,
@@ -6024,6 +6120,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "FLOW 8 PC Controller",
         options,
-        Box::new(|context| Ok(Box::new(Flow8App::new(context)))),
+        Box::new(move |context| {
+            let mut app = Flow8App::new(context);
+            if let Some(error) = &logging_error {
+                app.message = format!("Logging unavailable: {error}");
+            }
+            Ok(Box::new(app))
+        }),
     )
 }

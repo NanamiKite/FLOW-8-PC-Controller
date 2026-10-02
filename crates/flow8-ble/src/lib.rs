@@ -31,6 +31,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
+mod client_identity;
 #[cfg(target_os = "windows")]
 mod directhci_backend;
 #[cfg(target_os = "windows")]
@@ -361,7 +362,7 @@ impl DeviceRuntime {
     /// Starts the Tokio/BLE worker on its own thread. Constructing this handle
     /// does not touch a Bluetooth adapter, so simulator-only GUI startup works
     /// on hosts without Bluetooth.
-    pub fn spawn(client_id: [u8; 16]) -> Self {
+    pub fn spawn() -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (user_command_tx, user_command_rx) = mpsc::channel(MAX_QUEUED_USER_COMMANDS);
         let (event_tx, event_rx) = mpsc::channel(MAX_QUEUED_GUI_EVENTS);
@@ -379,12 +380,9 @@ impl DeviceRuntime {
                     .worker_threads(2)
                     .build();
                 match runtime {
-                    Ok(runtime) => runtime.block_on(device_actor(
-                        command_rx,
-                        user_command_rx,
-                        events,
-                        client_id,
-                    )),
+                    Ok(runtime) => {
+                        runtime.block_on(device_actor(command_rx, user_command_rx, events))
+                    }
                     Err(error) => {
                         let _ = events.send(DeviceEvent::Error(error.to_string()));
                     }
@@ -463,7 +461,6 @@ impl Flow8Session {
         self.phase
     }
 
-    #[cfg(target_os = "windows")]
     fn set_client_id(&mut self, client_id: [u8; 16]) {
         self.client_id = client_id;
     }
@@ -953,30 +950,6 @@ fn directhci_requested() -> bool {
     })
 }
 
-#[cfg(target_os = "windows")]
-fn directhci_client_id() -> Result<[u8; 16], String> {
-    let value = std::env::var("FLOW8_CLIENT_UUID").map_err(|_| {
-        "DirectHCI requires FLOW8_CLIENT_UUID (the paired 16-byte client UUID; canonical UUID or 32 hex digits)".to_owned()
-    })?;
-    let compact: String = value
-        .chars()
-        .filter(|character| *character != '-')
-        .collect();
-    if compact.len() != 32 || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(
-            "FLOW8_CLIENT_UUID must contain exactly 16 bytes (canonical UUID or 32 hex digits)"
-                .to_owned(),
-        );
-    }
-    let mut client_id = [0_u8; 16];
-    for (index, byte) in client_id.iter_mut().enumerate() {
-        let offset = index * 2;
-        *byte = u8::from_str_radix(&compact[offset..offset + 2], 16)
-            .map_err(|_| "FLOW8_CLIENT_UUID contains invalid hexadecimal data".to_owned())?;
-    }
-    Ok(client_id)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContinuousKey {
     Pan(u8),
@@ -1394,16 +1367,13 @@ async fn handle_device_command(
                 info!(phase = ?coordinator.phase(), "FLOW connect ignored while a session is active");
                 return true;
             }
-            #[cfg(target_os = "windows")]
-            if directhci_requested() {
-                match directhci_client_id() {
-                    Ok(client_id) => coordinator.set_client_id(client_id),
-                    Err(error) => {
-                        coordinator.transition(SessionPhase::Error);
-                        let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
-                        let _ = events.send(DeviceEvent::Error(error));
-                        return true;
-                    }
+            match client_identity::load_or_create() {
+                Ok(client_id) => coordinator.set_client_id(client_id),
+                Err(error) => {
+                    coordinator.transition(SessionPhase::Error);
+                    let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
+                    let _ = events.send(DeviceEvent::Error(error));
+                    return true;
                 }
             }
             if let Some(active) = session.take() {
@@ -1650,9 +1620,16 @@ async fn device_actor(
     mut commands: mpsc::UnboundedReceiver<DeviceCommand>,
     mut user_commands: mpsc::Receiver<TxCommand>,
     events: EventSender,
-    client_id: [u8; 16],
 ) {
-    let mut coordinator = Flow8Session::new(client_id);
+    let startup_client_id = match client_identity::load_or_create() {
+        Ok(client_id) => client_id,
+        Err(error) => {
+            let _ = events.send(DeviceEvent::Error(error));
+            // Connect retries loading the identity and refuses to send if it still fails.
+            [0; 16]
+        }
+    };
+    let mut coordinator = Flow8Session::new(startup_client_id);
     let mut session: Option<ActiveSession> = None;
     let mut transport_rx: Option<mpsc::UnboundedReceiver<TransportRx>> = None;
     let mut generation = 0u64;
