@@ -31,6 +31,8 @@ logs/*
 *.log
 /captures/
 # Local research notes are retained on disk but not published in this branch.
+/docs/private/
+/private-research/
 /docs/reverse-engineering.md
 /docs/reverse-engineering-apk.md
 *.pcap
