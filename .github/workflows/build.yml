@@ -21,8 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2022]
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,7 +44,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check workspace
         working-directory: flow8
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
         run: cargo check --workspace --locked
       - name: Build workspace
         working-directory: flow8
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
         run: cargo build --workspace --locked
