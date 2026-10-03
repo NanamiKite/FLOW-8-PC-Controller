@@ -382,17 +382,14 @@ Public fixtures should contain only the minimum data required for deterministic 
 
 ## CI
 
-CI must account for the current sibling DirectHCI dependency.
+[GitHub Actions](../.github/workflows/build.yml) checks out this repository and the
+public DirectHCI repository as sibling directories. The DirectHCI checkout is pinned
+to a commit; update that ref deliberately when integrating SDK changes.
 
-The workflow currently expects the DirectHCI repository to be checked out next to the FLOW repository before Cargo resolution.
-
-If CI uses a repository variable such as:
-
-```text
-DIRECTHCI_REPOSITORY
-```
-
-that configuration belongs to CI documentation/workflow configuration rather than the project README.
+Pushes to `main`, pull requests, and manual runs check formatting, the locked
+workspace, and the workspace build on Linux and Windows. CI does not start
+`directhcid`, access FLOW 8 hardware, package an installer, or run software tests.
+Hardware acceptance remains a separate manual step.
 
 Once `directhci-ble` has a versioned distribution, remove the sibling-checkout requirement.
 

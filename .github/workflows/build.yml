@@ -1,55 +1,52 @@
-name: Rust
+name: Rust CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
-# The workspace currently uses a sibling path dependency on the independent
-# DirectHCI SDK. Configure DIRECTHCI_REPOSITORY (owner/repo) to enable CI.
+permissions:
+  contents: read
+
+concurrency:
+  group: flow8-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  linux:
-    if: vars.DIRECTHCI_REPOSITORY != ''
-    runs-on: ubuntu-24.04
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
     steps:
       - uses: actions/checkout@v4
         with:
           path: flow8
+          persist-credentials: false
+      # The SDK is a sibling path dependency, not part of this repository.
       - uses: actions/checkout@v4
         with:
-          repository: ${{ vars.DIRECTHCI_REPOSITORY }}
-          token: ${{ secrets.DIRECTHCI_READ_TOKEN || github.token }}
+          repository: NanamiKite/DirectHCI
+          ref: fca149cfd3380b272835c639fb220b17e2b3e35b
           path: DirectHCI
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - name: Linux build dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev libudev-dev
-      - name: Rust validation
+      - name: Check formatting
         working-directory: flow8
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
-        run: |
-          cargo fmt --all -- --check
-          cargo check --workspace
-          cargo test --workspace
-          cargo build --workspace
-
-  windows:
-    if: vars.DIRECTHCI_REPOSITORY != ''
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: flow8
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ vars.DIRECTHCI_REPOSITORY }}
-          token: ${{ secrets.DIRECTHCI_READ_TOKEN || github.token }}
-          path: DirectHCI
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Rust validation
+        run: cargo fmt --all -- --check
+      - name: Check workspace
         working-directory: flow8
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/flow8-target
-        run: |
-          cargo check --workspace
-          cargo test --workspace
-          cargo build --workspace
+        run: cargo check --workspace --locked
+      - name: Build workspace
+        working-directory: flow8
+        run: cargo build --workspace --locked
