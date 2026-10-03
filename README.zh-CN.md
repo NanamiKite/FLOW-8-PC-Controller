@@ -2,53 +2,47 @@
 
 [English](README.md)
 
-FLOW 8 PC Controller 是一款使用 Rust 编写的非官方 Behringer FLOW 8 桌面控制器。它通过蓝牙显示调音台回报的状态，并提供混音、路由、效果器和设备快照控制。
+一款面向 Behringer FLOW 8 数字调音台的非官方原生 BLE 桌面客户端。它通过蓝牙低功耗连接，直接使用 FLOW 8 协议同步调音台状态并发送控制命令，**不通过 USB MIDI 控制调音台**。
 
 本项目与 Behringer、Music Tribe 无关联。
 
-## 当前状态
+## 界面截图
 
-项目仍在开发。在已测试的 Windows／DirectHCI 环境中，真机日志显示程序完成了初始状态同步、进入 Ready，并记录到控制写入和设备通知。这不代表所有 Windows 蓝牙控制器或 FLOW 8 固件均已兼容。Linux 的 btleplug 后端已经存在，但这里尚无 Linux 真机验收记录。具体证据与待验证项见[硬件验证记录](docs/hardware-validation.md)。
+![FLOW 8 PC Controller 混音器界面](docs/images/mixer.png)
 
-未连接时仍可查看混音界面；只有完成设备状态同步后，设备控制才会启用。
+| 输入通道 | 输出详情 | 效果器设置 |
+| :---: | :---: | :---: |
+| <img src="docs/images/channel-details.png" alt="输入通道配置" width="260"> | <img src="docs/images/output-details.png" alt="输出设置" width="260"> | <img src="docs/images/fx-settings.png" alt="效果器设置" width="260"> |
 
-## Windows 安装
+| 路由 | 设备快照 |
+| :---: | :---: |
+| <img src="docs/images/routing.png" alt="路由界面" width="430"> | <img src="docs/images/snapshots.png" alt="设备快照" width="430"> |
 
-Windows x64 安装包将作为版本 Release 附件发布。
+## 主要功能
 
-FLOW 8 安装包只安装图形程序。Windows 蓝牙控制还需要单独安装 [DirectHCI](https://github.com/NanamiKite/DirectHCI)：连接前须在 DirectHCI Control Panel 中启动服务、选择受支持的控制器；如果面板显示 **Not prepared**，请按照 DirectHCI 的说明准备控制器。FLOW 8 安装包不会代为完成这些操作。当前 DirectHCI SDK 获取控制器会话时还要求以管理员权限运行 FLOW 8 程序。详见 [Windows 安装说明](docs/installation.md)。
+- 原生 BLE 连接与握手、完整混音状态同步、实时设备通知。
+- MAIN、MON1/2、FX1/2 混音层，以及输入编辑、路由、舞台视图和设备快照。
+- 英文和简体中文界面。未连接时仍可查看界面；状态同步进入 Ready 后才能操作设备。
+- Windows 通过单独安装的 [DirectHCI](https://github.com/NanamiKite/DirectHCI) 使用蓝牙；Linux 使用 BlueZ／btleplug 系统蓝牙栈。
 
-首次使用新的客户端身份连接时，请先在调音台上启用 **PAIR REMOTE / PAIR APP**，再在程序中连接。程序会在 `%LOCALAPPDATA%\FLOW 8 PC Controller\client-id.txt` 创建并复用客户端身份。请妥善保管此文件；删除后会生成新身份，可能需要重新配对。常规日志位于 `%LOCALAPPDATA%\FLOW 8 PC Controller\logs`。
+## 下载与安装
 
-## 从源码运行
+从本仓库的 [Releases](../../releases) 下载 Windows x64 安装包。FLOW 8 安装包**只包含图形程序**，不包含 DirectHCI 或蓝牙驱动。Windows 用户还须单独安装、准备 DirectHCI；详见 [安装说明](docs/installation.md)。实际控制器兼容性取决于 DirectHCI 与所用电脑。
 
-需要 Rust 1.95 或更新版本。工作区目前通过本地路径依赖独立的 DirectHCI Rust SDK，因此两个仓库需要并列放置：
+## 快速开始
 
-```text
-parent/
-├── FLOW 8 PC Controller/
-└── DirectHCI/
-```
+1. Windows：在 DirectHCI Control Panel 中启动服务，并准备、选择受支持的蓝牙控制器。Linux：确保系统蓝牙服务可用。
+2. 启动 FLOW 8 PC Controller。首次使用新的客户端身份时，在调音台上启用 **PAIR REMOTE / PAIR APP**。
+3. 直接点击 **连接**。程序会在连接过程中自动扫描 `FLOW 8 LE`；如果只想先查看附近设备，可以单独点击 **扫描**。看到 **已就绪（Ready）** 后再操作混音控制。
 
-在本仓库目录运行：
+首次连接会在用户配置目录创建可复用的客户端身份，不要随意删除。各页面、快照、断开重连和常见问题见[用户指南](docs/user-guide.zh-CN.md)。
 
-```sh
-cargo run -p flow8-gui
-```
+## 架构与开发
 
-Windows 需要另外安装并运行 DirectHCI 服务；Linux 通过 BlueZ／btleplug 使用系统蓝牙。如果源码位于 VMware 共享文件夹，请将 Cargo 构建产物放在本机文件系统。平台配置、构建和验证步骤见[开发说明](docs/DEVELOPMENT.md)。
+Rust 图形界面向统一 Store 和会话运行时发送语义操作；公共 FLOW 编解码器处理数据包，平台传输层只转发特征值。Windows 默认使用 DirectHCI SDK 与外部 `directhcid`，FLOW 8 PC Controller 不管理 Windows 驱动或 Raw HCI。参见[架构](docs/architecture.md)、[协议](docs/protocol.md)和[开发说明](docs/DEVELOPMENT.md)。
 
-## 文档
-
-- [Windows 安装与前置要求](docs/installation.md)
-- [开发说明](docs/DEVELOPMENT.md)
-- [架构](docs/architecture.md)
-- [协议实现](docs/protocol.md)
-- [BLE 传输](docs/ble.md)
-- [硬件验证记录](docs/hardware-validation.md)
-
-旧版 C++／Qt 实现保存在独立的 `c++` 分支；当前分支为 Rust 应用。
+旧版 C++／Qt 实现在独立的 `c++` 分支；当前分支是 Rust 应用。
 
 ## 许可证
 
-FLOW 8 PC Controller 采用 GPL-3.0-only 许可证，详见 [LICENSE.txt](LICENSE.txt)。DirectHCI 是独立项目，其发布和依赖许可声明以该项目为准。
+GPL-3.0-only，详见 [LICENSE.txt](LICENSE.txt)。DirectHCI 是独立项目，其发布与依赖许可声明以该项目为准。
