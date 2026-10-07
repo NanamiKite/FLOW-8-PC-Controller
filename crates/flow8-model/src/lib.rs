@@ -2,6 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+pub const CHANNEL_LABEL_MAX_BYTES: usize = 20;
+pub const SNAPSHOT_NAME_MAX_BYTES: usize = 20;
+pub const DEVICE_NAME_MAX_BYTES: usize = u8::MAX as usize;
+pub const DELAY_TICKS_PER_MILLISECOND: f64 = 48.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvidenceStatus {
     VerifiedFromDevice,
