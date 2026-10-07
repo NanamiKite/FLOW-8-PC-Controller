@@ -9,7 +9,7 @@ The Rust GUI starts disconnected. Device pages stay visible but their controls a
 | Advertisement name | `FLOW 8 LE` | real Windows/DirectHCI observation |
 | Service | `14839ad4-8d7e-415c-9a42-167340cf2339` | APK and device discovery |
 | Characteristic | `0034594a-a8e7-4b1a-a6b1-cd5243059a57` | APK and device discovery |
-| Properties | `WRITE | NOTIFY` | real device |
+| Properties | `WRITE \| NOTIFY` | real device |
 | CCCD | absent; standard subscribe fails | Android HCI and Windows diagnostics |
 | Notification behavior | unsolicited ATT notifications | Android HCI and DirectHCI |
 | Example negotiated MTU | 131 | one observed device session; not a constant |

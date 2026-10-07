@@ -27,16 +27,20 @@ enum Command {
     },
 }
 
-fn input(value: u8) -> InputId {
-    InputId::ALL[value.min(6) as usize]
+fn input(value: u8) -> Result<InputId, String> {
+    InputId::ALL
+        .get(value as usize)
+        .copied()
+        .ok_or_else(|| format!("invalid input {value}; expected 0..=6"))
 }
-fn destination(value: &str) -> MixDestination {
+fn destination(value: &str) -> Result<MixDestination, String> {
     match value.to_ascii_lowercase().as_str() {
-        "mon1" => MixDestination::Monitor1,
-        "mon2" => MixDestination::Monitor2,
-        "fx1" => MixDestination::Fx1,
-        "fx2" => MixDestination::Fx2,
-        _ => MixDestination::Main,
+        "main" => Ok(MixDestination::Main),
+        "mon1" => Ok(MixDestination::Monitor1),
+        "mon2" => Ok(MixDestination::Monitor2),
+        "fx1" => Ok(MixDestination::Fx1),
+        "fx2" => Ok(MixDestination::Fx2),
+        _ => Err(format!("invalid destination {value}")),
     }
 }
 fn print_hex(bytes: &[u8]) {
@@ -51,10 +55,17 @@ fn print_hex(bytes: &[u8]) {
 }
 
 fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+}
+
+fn run() -> Result<(), String> {
     let cli = Cli::parse();
     let command = match cli.command {
         Command::EncodeGain { input: id, db } => TxCommand::Gain {
-            input: input(id),
+            input: input(id)?,
             db,
         },
         Command::EncodeRoute {
@@ -62,16 +73,14 @@ fn main() {
             destination: target,
             normalized,
         } => TxCommand::RouteLevel {
-            source: input(id),
-            destination: destination(&target),
+            source: input(id)?,
+            destination: destination(&target)?,
             normalized,
         },
     };
     match encode(&command) {
         Ok(bytes) => print_hex(&bytes),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(2);
-        }
+        Err(error) => return Err(error.to_string()),
     }
+    Ok(())
 }

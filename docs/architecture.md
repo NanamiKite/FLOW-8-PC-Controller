@@ -39,6 +39,6 @@ Disconnected → Scanning → Connecting → TransportReady
 → atomic Store apply → Ready
 ```
 
-Only a complete valid initial MixerState applied to the Store permits Ready. The RX path keeps consuming notifications while one per-session WithResponse TX writer serializes writes. Device-reported state wins over pending GUI edits. Selecting MAIN/MON/FX changes the viewed mix destination; it does not silently select a physical output. Synthetic fixtures are offline-only, never presented as a production connection.
+Only a complete valid initial MixerState applied to the Store permits Ready. The runtime is the live session-phase source; the GUI forwards its phase events to the Store rather than advancing the session on button presses or individual RX commands. The RX path keeps consuming notifications while one per-session WithResponse TX writer serializes writes. Device-reported state wins over pending GUI edits. Selecting MAIN/MON/FX changes the viewed mix destination; it does not silently select a physical output. Synthetic fixtures are offline-only, never presented as a production connection.
 
 For the public protocol overview see [protocol](protocol.md), for observed hardware capability see [validation](validation.md), and for build/run setup see [DEVELOPMENT.md](DEVELOPMENT.md).

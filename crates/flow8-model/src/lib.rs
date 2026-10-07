@@ -120,6 +120,10 @@ pub struct StateValue<T> {
     pub pending: Option<T>,
     pub error: Option<StateError>,
     pub evidence: EvidenceStatus,
+    #[serde(skip)]
+    pending_command_id: Option<u64>,
+    #[serde(skip)]
+    pending_since: Option<std::time::Instant>,
 }
 
 impl<T> StateValue<T> {
@@ -129,6 +133,8 @@ impl<T> StateValue<T> {
             pending: None,
             error: None,
             evidence: EvidenceStatus::Unknown,
+            pending_command_id: None,
+            pending_since: None,
         }
     }
 
@@ -138,12 +144,65 @@ impl<T> StateValue<T> {
             pending: None,
             error: None,
             evidence,
+            pending_command_id: None,
+            pending_since: None,
         }
     }
 
     pub fn set_pending(&mut self, value: T) {
         self.pending = Some(value);
         self.error = None;
+        self.pending_command_id = None;
+        self.pending_since = None;
+    }
+
+    /// Local bookkeeping only; this ID is never serialized onto the FLOW wire.
+    pub fn track_pending(&mut self, command_id: u64, now: std::time::Instant) {
+        if self.pending.is_some() && self.pending_command_id.is_none() {
+            self.pending_command_id = Some(command_id);
+            self.pending_since = Some(now);
+        }
+    }
+
+    pub fn reject_pending(&mut self, command_id: Option<u64>, reason: &str) {
+        if self.pending.is_some() && (command_id.is_none() || self.pending_command_id == command_id)
+        {
+            self.pending = None;
+            self.pending_command_id = None;
+            self.pending_since = None;
+            self.error = Some(StateError {
+                message: reason.into(),
+            });
+        }
+    }
+
+    pub fn pending_deadline(&self, timeout: std::time::Duration) -> Option<std::time::Instant> {
+        self.pending_since
+            .and_then(|since| since.checked_add(timeout))
+    }
+
+    /// Update device truth without discarding a pending edit. Only Core's
+    /// reconciliation of a known older echo may use this operation.
+    pub fn observe_preserving_pending(&mut self, value: T, evidence: EvidenceStatus) {
+        self.confirmed = Some(value);
+        self.evidence = evidence;
+    }
+
+    pub fn expire_pending(
+        &mut self,
+        now: std::time::Instant,
+        timeout: std::time::Duration,
+    ) -> Option<u64> {
+        if self
+            .pending_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= timeout)
+        {
+            let id = self.pending_command_id;
+            self.reject_pending(id, "Device confirmation timed out");
+            id
+        } else {
+            None
+        }
     }
 
     /// Device observations are authoritative, including when they disagree
@@ -151,6 +210,8 @@ impl<T> StateValue<T> {
     pub fn observe(&mut self, value: T, evidence: EvidenceStatus) {
         self.confirmed = Some(value);
         self.pending = None;
+        self.pending_command_id = None;
+        self.pending_since = None;
         self.error = None;
         self.evidence = evidence;
     }

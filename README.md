@@ -25,6 +25,8 @@ This project is independent of Behringer and Music Tribe.
 - English and Simplified Chinese interface. The mixer remains visible while disconnected; controls unlock after state sync reaches Ready.
 - On Windows, the separately installed [DirectHCI runtime](https://github.com/NanamiKite/DirectHCI) provides Bluetooth access. Linux uses the system Bluetooth stack through BlueZ/btleplug.
 
+Hardware acceptance and remaining calibration limits are recorded in the [validation summary](docs/validation.md); a visible control does not mean every operation has been hardware-accepted.
+
 ## Download and installation
 
 Download the Windows x64 installer from this repository's [Releases](../../releases). The FLOW 8 installer contains the GUI, **not** DirectHCI or Bluetooth drivers. Windows users must install and prepare DirectHCI separately; see the [installation guide](docs/installation.md). Controller compatibility depends on DirectHCI and the individual PC.
@@ -32,7 +34,7 @@ Download the Windows x64 installer from this repository's [Releases](../../relea
 ## Quick start
 
 1. On Windows, start DirectHCI in its Control Panel and prepare/select a supported Bluetooth controller. On Linux, ensure the system Bluetooth service is available.
-2. Start FLOW 8 PC Controller. For a new client identity, enable **PAIR REMOTE / PAIR APP** on the mixer.
+2. Start FLOW 8 PC Controller. On Windows, the current DirectHCI acquisition path requires **Run as administrator**. For a new client identity, enable **PAIR REMOTE / PAIR APP** on the mixer.
 3. Click **Connect**. The app scans for `FLOW 8 LE` as part of connecting; **Scan** is optional if you only want to view nearby devices first. Wait for **Ready** before changing mixer controls.
 
 The first connection creates a reusable client identity in your user profile; do not delete it casually. The [user guide](docs/user-guide.md) covers the pages, snapshots, disconnect/reconnect, and common problems.

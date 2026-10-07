@@ -15,6 +15,8 @@ The installer can warn that the DirectHCI service is absent, but it does not sta
 
 The app creates `%LOCALAPPDATA%\FLOW 8 PC Controller\client-id.txt` and reuses it across runs. It is a private client identity, separate from the device ID. Upgrading or uninstalling the GUI leaves this file in place. Deleting it generates a new identity and can require pairing again.
 
-Normal GUI logs are under `%LOCALAPPDATA%\FLOW 8 PC Controller\logs\flow8-gui-*.log`. The latest 12 normal logs are retained. More detailed logs requested through `RUST_LOG` use separate files and are not automatically removed. Logs can contain mixer state or identifiers; review them before sharing. The installed release GUI has no console window.
+Normal GUI logs are under `%LOCALAPPDATA%\FLOW 8 PC Controller\logs\flow8-gui-*.log`. The latest 12 normal logs are retained. Detailed logs requested through `RUST_LOG` use `windows-production-connection-*.log` in the same directory. They are automatically cleaned up at startup and every hour: retention is 7 days, at most 6 files, and at most 96 MiB in total, with the oldest files removed first. The current log is excluded from cleanup and is limited to 16 MiB per launch. Cleanup never touches hardware captures or the client identity file. Copy any diagnostic log you need to keep to another directory before it expires.
+
+Logs can contain mixer state or identifiers; review them before sharing. The installed release GUI has no console window.
 
 For first use and common problems, see the [user guide](user-guide.md). If DirectHCI reports a controller, service or driver-preparation failure, use [DirectHCI's troubleshooting documentation](https://github.com/NanamiKite/DirectHCI) rather than FLOW protocol diagnostics.

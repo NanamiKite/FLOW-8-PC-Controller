@@ -26,13 +26,6 @@ jobs:
         with:
           path: flow8
           persist-credentials: false
-      # The SDK is a sibling path dependency, not part of this repository.
-      - uses: actions/checkout@v4
-        with:
-          repository: NanamiKite/DirectHCI
-          ref: fca149cfd3380b272835c639fb220b17e2b3e35b
-          path: DirectHCI
-          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

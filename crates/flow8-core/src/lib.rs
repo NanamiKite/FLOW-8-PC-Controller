@@ -1,6 +1,9 @@
 //! Store, semantic commands, queueing, protocol state application and simulator.
 
-use std::collections::VecDeque;
+use std::{
+    collections::{HashMap, VecDeque},
+    time::{Duration, Instant},
+};
 
 use flow8_model::{
     DeviceSettingsState, EqBandState, EqState, EvidenceStatus, FxId, FxState,
@@ -52,7 +55,7 @@ pub enum KnownSetting {
     FootswitchFxMode(bool),
     DeviceName(String),
     UsbStreaming(bool),
-    MonitorRouting(u8),
+    MonitorRouting(MonitorRoutingSource),
     Input56FromUsb12(bool),
     Input78FromUsb34(bool),
     MonitorStereoLink(bool),
@@ -74,7 +77,15 @@ impl KnownSetting {
             Self::FootswitchFxMode(value) => (0x03, boolean(*value)),
             Self::DeviceName(value) => (0x05, value.as_bytes().to_vec()),
             Self::UsbStreaming(value) => (0x07, boolean(*value)),
-            Self::MonitorRouting(value) => (0x08, vec![*value]),
+            Self::MonitorRouting(source) => (
+                0x08,
+                vec![match source {
+                    MonitorRoutingSource::MonitorMix => 0,
+                    MonitorRoutingSource::Usb12 => 1,
+                    MonitorRoutingSource::Usb34 => 2,
+                    MonitorRoutingSource::Unknown(raw) => *raw,
+                }],
+            ),
             Self::Input56FromUsb12(value) => (0x09, boolean(*value)),
             Self::Input78FromUsb34(value) => (0x0a, boolean(*value)),
             Self::MonitorStereoLink(value) => (0x0b, boolean(*value)),
@@ -539,11 +550,177 @@ impl SemanticCommand {
 
 #[derive(Debug, Default)]
 pub struct SemanticCommandQueue {
-    commands: VecDeque<SemanticCommand>,
+    commands: VecDeque<(u64, SemanticCommand)>,
+}
+
+const MAX_PENDING_COMMANDS: usize = 256;
+const PENDING_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(15);
+const FADER_CONFIRMATION_GRACE: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum FaderTarget {
+    Route(InputId, MixDestination),
+    Master(MixDestination),
+}
+
+#[derive(Debug)]
+struct FaderEdit {
+    command_id: u64,
+    target: u8,
+    // The production codec has 256 representable levels. This set is bounded
+    // and contains only values whose writes have actually started.
+    sent: [bool; 256],
+    editing: bool,
+    deadline: Instant,
+}
+
+fn fader_command(command: &SemanticCommand) -> Option<(FaderTarget, u8)> {
+    let (target, normalized) = match *command {
+        SemanticCommand::SetRouteLevel {
+            source,
+            destination,
+            normalized,
+        } => (FaderTarget::Route(source, destination), normalized),
+        SemanticCommand::SetDestinationMaster {
+            destination,
+            normalized,
+        } => (FaderTarget::Master(destination), normalized),
+        _ => return None,
+    };
+    let raw = flow8_protocol::encode_fix8(
+        flow8_protocol::Fix8Format::FaderDb,
+        flow8_protocol::normalized_to_fader_db(normalized)?,
+    )?;
+    Some((target, raw))
+}
+
+trait PendingCell {
+    fn track(&mut self, id: u64, now: Instant);
+    fn reject(&mut self, id: Option<u64>, reason: &str);
+    fn expire(&mut self, now: Instant) -> Option<u64>;
+    fn deadline(&self) -> Option<Instant>;
+}
+
+impl<T> PendingCell for StateValue<T> {
+    fn track(&mut self, id: u64, now: Instant) {
+        self.track_pending(id, now);
+    }
+    fn reject(&mut self, id: Option<u64>, reason: &str) {
+        self.reject_pending(id, reason);
+    }
+    fn expire(&mut self, now: Instant) -> Option<u64> {
+        self.expire_pending(now, PENDING_CONFIRMATION_TIMEOUT)
+    }
+    fn deadline(&self) -> Option<Instant> {
+        self.pending_deadline(PENDING_CONFIRMATION_TIMEOUT)
+    }
+}
+
+fn normalize_command(mut command: SemanticCommand) -> Result<SemanticCommand, CoreError> {
+    fn checked(value: f32, spec: flow8_model::ParameterSpec) -> Result<f32, CoreError> {
+        if value.is_finite() && (spec.min..=spec.max).contains(&value) {
+            Ok(value)
+        } else {
+            Err(CoreError::InvalidValue)
+        }
+    }
+    fn quantized(value: f32, format: flow8_protocol::Fix8Format) -> Result<f32, CoreError> {
+        let raw = flow8_protocol::encode_fix8(format, value).ok_or(CoreError::InvalidValue)?;
+        Ok(flow8_protocol::decode_fix8(format, raw))
+    }
+    match &mut command {
+        SemanticCommand::SetPan { value, .. }
+        | SemanticCommand::SetBusBalance { value, .. }
+        | SemanticCommand::SetFxPan { value, .. } => {
+            checked(*value, specs::PAN)?;
+        }
+        SemanticCommand::SetHighPass { frequency_hz, .. } => {
+            checked(*frequency_hz as f32, specs::HIGH_PASS)?;
+        }
+        SemanticCommand::SetLimiter { threshold_db, .. } => {
+            *threshold_db = quantized(
+                checked(*threshold_db, specs::LIMITER)?,
+                flow8_protocol::Fix8Format::GainDb,
+            )?;
+        }
+        SemanticCommand::SetCompressorAmount { amount, .. } => {
+            checked(*amount, specs::COMPRESSOR_AMOUNT)?;
+        }
+        SemanticCommand::SetTempo { bpm } => {
+            // Product UI guardrail, not a claim about the hardware's accepted
+            // range. Keep programmatic dispatch consistent with the BPM control.
+            checked(*bpm as f32, specs::TEMPO_DISPLAY)?;
+        }
+        SemanticCommand::SetPeqBand { q, gain_db, .. }
+        | SemanticCommand::SetGeqBand { q, gain_db, .. } => {
+            *q = quantized(
+                checked(*q, specs::EQ_Q_WIRE)?,
+                flow8_protocol::Fix8Format::Q,
+            )?;
+            *gain_db = quantized(
+                checked(*gain_db, specs::EQ_GAIN)?,
+                flow8_protocol::Fix8Format::EqGainDb,
+            )?;
+        }
+        SemanticCommand::SaveSnapshot { name, .. }
+        | SemanticCommand::RenameSnapshot { name, .. }
+            if name.len() > 20 =>
+        {
+            return Err(CoreError::InvalidValue);
+        }
+        SemanticCommand::SetSetting(KnownSetting::MonitorRouting(
+            MonitorRoutingSource::Unknown(_),
+        )) => return Err(CoreError::InvalidValue),
+        _ => {}
+    }
+    Ok(command)
+}
+
+fn validate_received_value(value: f32, spec: flow8_model::ParameterSpec) -> Result<(), CoreError> {
+    if value.is_finite() && (spec.min..=spec.max).contains(&value) {
+        Ok(())
+    } else {
+        Err(CoreError::InvalidCompositeState)
+    }
+}
+
+fn validate_received_eq(q: f32, gain_db: f32) -> Result<(), CoreError> {
+    validate_received_value(q, specs::EQ_Q_WIRE)?;
+    validate_received_value(gain_db, specs::EQ_GAIN)
+}
+
+fn validate_received_level(db: f32) -> Result<(), CoreError> {
+    use flow8_protocol::{Fix8Format, decode_fix8};
+    if db.is_finite()
+        && (decode_fix8(Fix8Format::FaderDb, 0)..=decode_fix8(Fix8Format::FaderDb, 255))
+            .contains(&db)
+    {
+        Ok(())
+    } else {
+        Err(CoreError::InvalidCompositeState)
+    }
 }
 
 impl SemanticCommandQueue {
-    pub fn push(&mut self, command: SemanticCommand) {
+    pub fn push(&mut self, command: SemanticCommand) -> Result<(), CoreError> {
+        self.push_tracked(0, command)
+    }
+
+    fn can_accept(&self, command: &SemanticCommand) -> bool {
+        self.commands.len() < MAX_PENDING_COMMANDS
+            || command.coalesce_key().is_some_and(|key| {
+                self.commands
+                    .iter()
+                    .rev()
+                    .take_while(|(_, item)| item.coalesce_key().is_some())
+                    .any(|(_, item)| item.coalesce_key() == Some(key))
+            })
+    }
+
+    fn push_tracked(&mut self, command_id: u64, command: SemanticCommand) -> Result<(), CoreError> {
+        if !self.can_accept(&command) {
+            return Err(CoreError::QueueFull);
+        }
         if let Some(key) = command.coalesce_key()
             && let Some(existing) = self
                 .commands
@@ -551,20 +728,45 @@ impl SemanticCommandQueue {
                 .rev()
                 // A discrete command observes the values before it. Never
                 // move a newer continuous value across that boundary.
-                .take_while(|item| item.coalesce_key().is_some())
-                .find(|item| item.coalesce_key() == Some(key))
+                .take_while(|(_, item)| item.coalesce_key().is_some())
+                .find(|(_, item)| item.coalesce_key() == Some(key))
         {
-            *existing = command;
-            return;
+            *existing = (command_id, command);
+            return Ok(());
         }
-        self.commands.push_back(command);
+        self.commands.push_back((command_id, command));
+        Ok(())
     }
     pub fn pop(&mut self) -> Option<SemanticCommand> {
+        self.pop_tracked().map(|(_, command)| command)
+    }
+    pub fn pop_tracked(&mut self) -> Option<(u64, SemanticCommand)> {
         self.commands.pop_front()
     }
+    /// Core owns semantic-to-protocol conversion. Keep the queued intent until
+    /// the transport accepts it, so backpressure does not drop or reorder it.
+    pub fn front_protocol_tracked(&self) -> Option<(u64, TxCommand)> {
+        self.commands
+            .front()
+            .map(|(id, command)| (*id, command.to_protocol()))
+    }
     /// Restores an unsent command at the head after runtime backpressure.
-    pub fn push_front(&mut self, command: SemanticCommand) {
-        self.commands.push_front(command);
+    pub fn push_front(&mut self, command: SemanticCommand) -> Result<(), CoreError> {
+        self.push_front_tracked(0, command)
+    }
+    pub fn push_front_tracked(
+        &mut self,
+        command_id: u64,
+        command: SemanticCommand,
+    ) -> Result<(), CoreError> {
+        if self.commands.len() >= MAX_PENDING_COMMANDS {
+            return Err(CoreError::QueueFull);
+        }
+        self.commands.push_front((command_id, command));
+        Ok(())
+    }
+    pub fn clear(&mut self) {
+        self.commands.clear();
     }
     pub fn len(&self) -> usize {
         self.commands.len()
@@ -647,6 +849,7 @@ pub struct Flow8State {
     pub selected_destination: MixDestination,
     pub selected_input: Option<InputId>,
     pub global_tempo_bpm: StateValue<f32>,
+    pub mixer_flags_raw: StateValue<u16>,
 }
 
 impl Flow8State {
@@ -735,6 +938,7 @@ impl Flow8State {
             selected_destination: MixDestination::Main,
             selected_input: Some(InputId::Input1),
             global_tempo_bpm: StateValue::confirmed(120.0, EvidenceStatus::Synthetic),
+            mixer_flags_raw: StateValue::confirmed(0, EvidenceStatus::Synthetic),
         }
     }
 
@@ -819,6 +1023,7 @@ impl Flow8State {
         unknown(&mut state.headphone_volume_db);
         unknown(&mut state.device_selected_output);
         unknown(&mut state.global_tempo_bpm);
+        unknown(&mut state.mixer_flags_raw);
         state
     }
 
@@ -865,6 +1070,10 @@ fn unknown_eq(eq: &mut EqState) {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {
+    #[error("wait for a complete device state before sending commands")]
+    NotReady,
+    #[error("the command queue is full")]
+    QueueFull,
     #[error("the selected input does not support this control")]
     UnsupportedCapability,
     #[error("the command value is invalid")]
@@ -878,9 +1087,13 @@ pub struct Flow8Store {
     pub state: Flow8State,
     pub queue: SemanticCommandQueue,
     meter_output_target: Option<MixDestination>,
-    simulator_time: f32,
+    simulator_time: Duration,
     simulator_event_bucket: u64,
     simulator_mode: bool,
+    next_command_id: u64,
+    fader_edits: HashMap<FaderTarget, FaderEdit>,
+    fader_commands: VecDeque<(u64, FaderTarget, u8)>,
+    fader_pointer_down: bool,
 }
 
 impl Default for Flow8Store {
@@ -895,9 +1108,13 @@ impl Flow8Store {
             state: Flow8State::synthetic(),
             queue: SemanticCommandQueue::default(),
             meter_output_target: None,
-            simulator_time: 0.0,
+            simulator_time: Duration::ZERO,
             simulator_event_bucket: 0,
             simulator_mode: true,
+            next_command_id: 1,
+            fader_edits: HashMap::new(),
+            fader_commands: VecDeque::new(),
+            fader_pointer_down: false,
         }
     }
 
@@ -907,9 +1124,13 @@ impl Flow8Store {
             state,
             queue: SemanticCommandQueue::default(),
             meter_output_target: None,
-            simulator_time: 0.0,
+            simulator_time: Duration::ZERO,
             simulator_event_bucket: 0,
             simulator_mode: false,
+            next_command_id: 1,
+            fader_edits: HashMap::new(),
+            fader_commands: VecDeque::new(),
+            fader_pointer_down: false,
         }
     }
 
@@ -917,8 +1138,32 @@ impl Flow8Store {
         self.simulator_mode
     }
 
+    /// The live session phase comes from the transport runtime, not RX command
+    /// inference or optimistic GUI button presses. Offline simulation keeps
+    /// its separate, explicitly synthetic lifecycle.
+    pub fn apply_session_phase(&mut self, phase: SessionState) {
+        if matches!(phase, SessionState::Disconnected | SessionState::Error) {
+            self.clear_pending("Device session ended");
+        }
+        self.state.session = phase;
+    }
+
     pub fn dispatch(&mut self, mut command: SemanticCommand) -> Result<(), CoreError> {
         let synthetic = self.simulator_mode;
+        command = normalize_command(command)?;
+        // Validate before creating optimistic state, including string lengths.
+        flow8_protocol::encode_frames(
+            &command.to_protocol(),
+            flow8_protocol::MAX_RAW_PACKET_SIZE,
+            0,
+        )
+        .map_err(|_| CoreError::InvalidValue)?;
+        if !synthetic && self.state.session != SessionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        if !self.queue.can_accept(&command) {
+            return Err(CoreError::QueueFull);
+        }
         match command.clone() {
             SemanticCommand::SetGain { input, db } => {
                 if !input.has_analog_gain() {
@@ -986,7 +1231,9 @@ impl Flow8Store {
                 }
             }
             SemanticCommand::SetPan { input, value } => {
-                let value = specs::PAN.clamp(value);
+                let raw = flow8_protocol::encode_fix8(flow8_protocol::Fix8Format::Pan, value)
+                    .ok_or(CoreError::InvalidValue)?;
+                let value = flow8_protocol::decode_fix8(flow8_protocol::Fix8Format::Pan, raw);
                 self.state.channels[input.index()].pan.set_pending(value);
                 if synthetic {
                     self.state.channels[input.index()]
@@ -995,7 +1242,9 @@ impl Flow8Store {
                 }
             }
             SemanticCommand::SetBusBalance { bus, value } => {
-                let value = specs::PAN.clamp(value);
+                let raw = flow8_protocol::encode_fix8(flow8_protocol::Fix8Format::Pan, value)
+                    .ok_or(CoreError::InvalidValue)?;
+                let value = flow8_protocol::decode_fix8(flow8_protocol::Fix8Format::Pan, raw);
                 let balance = self
                     .state
                     .bus_for_destination_mut(destination_for_bus(bus))
@@ -1007,7 +1256,9 @@ impl Flow8Store {
                 }
             }
             SemanticCommand::SetFxPan { fx, value } => {
-                let value = specs::PAN.clamp(value);
+                let raw = flow8_protocol::encode_fix8(flow8_protocol::Fix8Format::Pan, value)
+                    .ok_or(CoreError::InvalidValue)?;
+                let value = flow8_protocol::decode_fix8(flow8_protocol::Fix8Format::Pan, raw);
                 let pan = &mut self.state.effects[fx_index(fx)].pan;
                 pan.set_pending(value);
                 if synthetic {
@@ -1068,7 +1319,7 @@ impl Flow8Store {
                 if !self.state.channels[input.index()].capabilities.high_pass {
                     return Err(CoreError::UnsupportedCapability);
                 }
-                let frequency = specs::HIGH_PASS.clamp(frequency_hz as f32);
+                let frequency = frequency_hz as f32;
                 let channel = &mut self.state.channels[input.index()];
                 channel.high_pass_enabled.set_pending(enabled);
                 channel.high_pass_hz.set_pending(frequency);
@@ -1102,7 +1353,7 @@ impl Flow8Store {
                     return Err(CoreError::InvalidValue);
                 };
                 let frequency = specs::EQ_FREQUENCY_WIRE.clamp(frequency_hz as f32);
-                let gain = specs::EQ_GAIN.clamp(gain_db);
+                let gain = gain_db;
                 target.frequency_hz.set_pending(frequency);
                 target.q.set_pending(q);
                 target.gain_db.set_pending(gain);
@@ -1133,7 +1384,7 @@ impl Flow8Store {
                     return Err(CoreError::InvalidValue);
                 };
                 let frequency = specs::EQ_FREQUENCY_WIRE.clamp(frequency_hz as f32);
-                let gain = specs::EQ_GAIN.clamp(gain_db);
+                let gain = gain_db;
                 target.frequency_hz.set_pending(frequency);
                 target.q.set_pending(q);
                 target.gain_db.set_pending(gain);
@@ -1152,7 +1403,11 @@ impl Flow8Store {
                 if !amount.is_finite() {
                     return Err(CoreError::InvalidValue);
                 }
-                let amount = specs::COMPRESSOR_AMOUNT.clamp(amount);
+                let raw =
+                    flow8_protocol::encode_fix8(flow8_protocol::Fix8Format::UnitInterval, amount)
+                        .ok_or(CoreError::InvalidValue)?;
+                let amount =
+                    flow8_protocol::decode_fix8(flow8_protocol::Fix8Format::UnitInterval, raw);
                 let target = &mut self.state.channels[input.index()].compressor.amount;
                 target.set_pending(amount);
                 if synthetic {
@@ -1163,7 +1418,7 @@ impl Flow8Store {
                 if !threshold_db.is_finite() {
                     return Err(CoreError::InvalidValue);
                 }
-                let threshold = specs::LIMITER.clamp(threshold_db);
+                let threshold = threshold_db;
                 let target = &mut self
                     .state
                     .bus_for_destination_mut(destination_for_bus(bus))
@@ -1317,8 +1572,206 @@ impl Flow8Store {
                 }
             }
         }
-        self.queue.push(command);
+        let id = self.next_command_id;
+        self.next_command_id = self
+            .next_command_id
+            .checked_add(1)
+            .expect("FLOW local command IDs exhausted");
+        if !synthetic {
+            let now = Instant::now();
+            self.visit_pending(&mut |value| value.track(id, now));
+            if let Some((target, raw)) = fader_command(&command) {
+                let editing = self.fader_pointer_down;
+                let edit = self.fader_edits.entry(target).or_insert_with(|| FaderEdit {
+                    command_id: id,
+                    target: raw,
+                    sent: [false; 256],
+                    editing,
+                    deadline: now + FADER_CONFIRMATION_GRACE,
+                });
+                if editing && !edit.editing {
+                    edit.sent = [false; 256];
+                }
+                edit.command_id = id;
+                edit.target = raw;
+                edit.editing = editing;
+                edit.deadline = now + FADER_CONFIRMATION_GRACE;
+                self.fader_commands.push_back((id, target, raw));
+                while self.fader_commands.len() > MAX_PENDING_COMMANDS * 2 + 1 {
+                    self.fader_commands.pop_front();
+                }
+            }
+        }
+        self.queue.push_tracked(id, command)?;
         Ok(())
+    }
+
+    /// Local write bookkeeping; never creates protocol sequence numbers.
+    pub fn command_started(&mut self, id: u64) {
+        if let Some((_, target, raw)) = self.fader_commands.iter().find(|(key, _, _)| *key == id)
+            && let Some(edit) = self.fader_edits.get_mut(target)
+        {
+            edit.sent[*raw as usize] = true;
+        }
+        self.fader_commands.retain(|(key, _, _)| *key != id);
+    }
+
+    pub fn set_fader_pointer_down(&mut self, down: bool, now: Instant) {
+        if self.fader_pointer_down && !down {
+            for edit in self.fader_edits.values_mut().filter(|edit| edit.editing) {
+                edit.editing = false;
+                edit.deadline = now + FADER_CONFIRMATION_GRACE;
+            }
+        }
+        self.fader_pointer_down = down;
+    }
+
+    pub fn command_failed(&mut self, id: u64, reason: &str) {
+        self.visit_pending(&mut |value| value.reject(Some(id), reason));
+        self.fader_edits.retain(|_, edit| edit.command_id != id);
+        self.fader_commands.retain(|(key, _, _)| *key != id);
+    }
+
+    pub fn clear_pending(&mut self, reason: &str) {
+        self.visit_pending(&mut |value| value.reject(None, reason));
+        self.queue.clear();
+        self.fader_edits.clear();
+        self.fader_commands.clear();
+        self.fader_pointer_down = false;
+    }
+
+    pub fn expire_pending(&mut self, now: Instant) -> bool {
+        // Composite channel/output observations also clear pending values.
+        // Do not report a timeout for an edit they already reconciled.
+        let targets = self.fader_edits.keys().copied().collect::<Vec<_>>();
+        for target in targets {
+            if self.fader_cell(target).pending.is_none() {
+                self.fader_edits.remove(&target);
+            }
+        }
+        self.fader_commands
+            .retain(|(_, target, _)| self.fader_edits.contains_key(target));
+        let mut expired = Vec::new();
+        for edit in self
+            .fader_edits
+            .values()
+            .filter(|edit| !edit.editing && now >= edit.deadline)
+        {
+            expired.push(edit.command_id);
+        }
+        for id in &expired {
+            self.visit_pending(&mut |value| {
+                value.reject(Some(*id), "Device confirmation timed out")
+            });
+        }
+        self.visit_pending(&mut |value| {
+            if let Some(id) = value.expire(now) {
+                expired.push(id);
+            }
+        });
+        self.queue.commands.retain(|(id, _)| !expired.contains(id));
+        self.fader_edits
+            .retain(|_, edit| !expired.contains(&edit.command_id));
+        self.fader_commands
+            .retain(|(id, _, _)| !expired.contains(id));
+        !expired.is_empty()
+    }
+
+    pub fn next_pending_deadline(&mut self) -> Option<Instant> {
+        let mut next = self
+            .fader_edits
+            .values()
+            .filter(|edit| !edit.editing)
+            .map(|edit| edit.deadline)
+            .min();
+        self.visit_pending(&mut |value| {
+            if let Some(deadline) = value.deadline() {
+                next = Some(next.map_or(deadline, |previous| previous.min(deadline)));
+            }
+        });
+        next
+    }
+
+    fn visit_pending(&mut self, visit: &mut dyn FnMut(&mut dyn PendingCell)) {
+        macro_rules! fields {
+            ($($field:expr),+ $(,)?) => { $(visit(&mut $field);)+ };
+        }
+        for channel in &mut self.state.channels {
+            fields!(
+                channel.gain_db,
+                channel.pan,
+                channel.muted,
+                channel.soloed,
+                channel.phase_inverted,
+                channel.phantom_48v,
+                channel.high_pass_enabled,
+                channel.high_pass_hz,
+                channel.name,
+                channel.icon,
+                channel.compressor.amount
+            );
+            for level in &mut channel.route_levels {
+                visit(level);
+            }
+            for band in &mut channel.eq.bands {
+                fields!(band.frequency_hz, band.q, band.gain_db);
+            }
+        }
+        for bus in &mut self.state.buses {
+            fields!(
+                bus.master_level,
+                bus.muted,
+                bus.limiter.threshold_db,
+                bus.delay_ticks
+            );
+            if let Some(balance) = &mut bus.balance {
+                visit(balance);
+            }
+            for band in &mut bus.eq.bands {
+                fields!(band.frequency_hz, band.q, band.gain_db);
+            }
+        }
+        for effect in &mut self.state.effects {
+            fields!(
+                effect.master_level,
+                effect.pan,
+                effect.muted,
+                effect.preset,
+                effect.return_to_main,
+                effect.return_to_mon1,
+                effect.return_to_mon2
+            );
+            for parameter in &mut effect.parameters {
+                visit(parameter);
+            }
+        }
+        fields!(
+            self.state.global_tempo_bpm,
+            self.state.device_selected_output,
+            self.state.snapshots.last_loaded,
+            self.state.routing.monitor_link.stereo_linked,
+            self.state.routing.headphones.source,
+            self.state.routing.headphones.tap_point
+        );
+        for slot in &mut self.state.snapshots.device_slots {
+            visit(&mut slot.name);
+        }
+        let settings = &mut self.state.routing.settings;
+        fields!(
+            settings.bt_usb_switch,
+            settings.phones_only,
+            settings.footswitch_fx_mode,
+            settings.device_name,
+            settings.usb_streaming,
+            settings.monitor_routing,
+            settings.input56_from_usb12,
+            settings.input78_from_usb34,
+            settings.main_minus_10_dbv,
+            settings.monitor_minus_10_dbv,
+            settings.snapshot_scope_bits,
+            settings.monitor_post_fader,
+            settings.device_linked_selection
+        );
     }
 
     fn set_mute_pending(
@@ -1372,10 +1825,9 @@ impl Flow8Store {
             KnownSetting::UsbStreaming(value) => {
                 update!(&mut self.state.routing.settings.usb_streaming, *value)
             }
-            KnownSetting::MonitorRouting(value) => update!(
-                &mut self.state.routing.settings.monitor_routing,
-                monitor_routing(*value)
-            ),
+            KnownSetting::MonitorRouting(value) => {
+                update!(&mut self.state.routing.settings.monitor_routing, *value)
+            }
             KnownSetting::Input56FromUsb12(value) => {
                 update!(&mut self.state.routing.settings.input56_from_usb12, *value)
             }
@@ -1425,13 +1877,16 @@ impl Flow8Store {
         if !self.simulator_mode {
             return;
         }
-        self.simulator_time += dt_seconds.max(0.0);
+        let Ok(elapsed) = Duration::try_from_secs_f64(f64::from(dt_seconds)) else {
+            return;
+        };
+        self.simulator_time = self.simulator_time.saturating_add(elapsed);
+        let time = self.simulator_time.as_secs_f64();
         for (index, channel) in self.state.channels.iter_mut().enumerate() {
             let route = *channel.route_levels[self.state.selected_destination.index()]
                 .effective()
                 .unwrap_or(&0.0);
-            let motion =
-                ((self.simulator_time * (1.2 + index as f32 * 0.09)).sin() * 0.5 + 0.5) * 14.0;
+            let motion = ((time * (1.2 + index as f64 * 0.09)).sin() as f32 * 0.5 + 0.5) * 14.0;
             let level = (-58.0 + route * 58.0 + motion).clamp(-60.0, 10.0);
             channel
                 .meter
@@ -1446,10 +1901,10 @@ impl Flow8Store {
                 .clipping
                 .observe(level >= 9.5, EvidenceStatus::Synthetic);
         }
-        let bucket = (self.simulator_time / 8.0) as u64;
+        let bucket = self.simulator_time.as_secs() / 8;
         if bucket > self.simulator_event_bucket {
             self.simulator_event_bucket = bucket;
-            let parameter = ((bucket * 17) % 101) as u8;
+            let parameter = (((bucket % 101) * 17) % 101) as u8;
             self.state.effects[0].parameters[0].observe(parameter, EvidenceStatus::Synthetic);
             self.state.snapshots.last_loaded.observe(
                 Some((bucket % self.state.snapshots.device_slots.len() as u64) as u8),
@@ -1479,9 +1934,11 @@ impl Flow8Store {
             RxCommand::Gain { endpoint, db } => {
                 let input =
                     input_from_endpoint(endpoint).ok_or(CoreError::InvalidCompositeState)?;
-                self.state.channels[input.index()]
-                    .gain_db
-                    .observe(db, evidence);
+                let channel = &mut self.state.channels[input.index()];
+                if channel.capabilities.gain {
+                    validate_received_value(db, specs::INPUT_GAIN_WIRE)?;
+                    channel.gain_db.observe(db, evidence);
+                }
                 Ok(())
             }
             RxCommand::GraphicEq {
@@ -1499,8 +1956,10 @@ impl Flow8Store {
                 let input =
                     input_from_endpoint(endpoint).ok_or(CoreError::InvalidCompositeState)?;
                 let channel = &mut self.state.channels[input.index()];
-                channel.high_pass_enabled.observe(enabled, evidence);
-                channel.high_pass_hz.observe(frequency_hz as f32, evidence);
+                if channel.capabilities.high_pass {
+                    channel.high_pass_enabled.observe(enabled, evidence);
+                    channel.high_pass_hz.observe(frequency_hz as f32, evidence);
+                }
                 Ok(())
             }
             RxCommand::Label(label) => self.apply_label(label, evidence),
@@ -1520,9 +1979,10 @@ impl Flow8Store {
             RxCommand::Phase { endpoint, inverted } => {
                 let input =
                     input_from_endpoint(endpoint).ok_or(CoreError::InvalidCompositeState)?;
-                self.state.channels[input.index()]
-                    .phase_inverted
-                    .observe(inverted, evidence);
+                let channel = &mut self.state.channels[input.index()];
+                if channel.capabilities.phase {
+                    channel.phase_inverted.observe(inverted, evidence);
+                }
                 Ok(())
             }
             RxCommand::FxSetup {
@@ -1534,10 +1994,11 @@ impl Flow8Store {
             RxCommand::Compressor { endpoint, amount } => {
                 let input =
                     input_from_endpoint(endpoint).ok_or(CoreError::InvalidCompositeState)?;
-                self.state.channels[input.index()]
-                    .compressor
-                    .amount
-                    .observe(amount, evidence);
+                let channel = &mut self.state.channels[input.index()];
+                if channel.capabilities.compressor {
+                    validate_received_value(amount, specs::COMPRESSOR_AMOUNT)?;
+                    channel.compressor.amount.observe(amount, evidence);
+                }
                 Ok(())
             }
             RxCommand::Limiter {
@@ -1549,6 +2010,7 @@ impl Flow8Store {
                         !matches!(destination, MixDestination::Fx1 | MixDestination::Fx2)
                     })
                     .ok_or(CoreError::InvalidCompositeState)?;
+                validate_received_value(threshold_db, specs::LIMITER)?;
                 self.state
                     .bus_for_destination_mut(destination)
                     .ok_or(CoreError::InvalidCompositeState)?
@@ -1584,7 +2046,9 @@ impl Flow8Store {
                     .snapshots
                     .last_loaded
                     .observe(Some(slot), evidence);
-                self.state.session = SessionState::StateSyncing;
+                if self.simulator_mode {
+                    self.state.session = SessionState::StateSyncing;
+                }
                 Ok(())
             }
             RxCommand::MeterUpdate(update) => {
@@ -1593,7 +2057,9 @@ impl Flow8Store {
             }
             RxCommand::Setting { id, data } => self.apply_setting(id, &data, evidence),
             RxCommand::FactoryReset => {
-                self.state.session = SessionState::StateSyncing;
+                if self.simulator_mode {
+                    self.state.session = SessionState::StateSyncing;
+                }
                 Ok(())
             }
             RxCommand::FxState(effect) => self.apply_fx(effect, evidence),
@@ -1618,6 +2084,7 @@ impl Flow8Store {
                 Ok(())
             }
             RxCommand::MixerState(mixer) => {
+                validate_received_level(mixer.headphone_volume_db)?;
                 let mut output_ids = mixer
                     .outputs
                     .iter()
@@ -1650,6 +2117,10 @@ impl Flow8Store {
                     simulator_time: self.simulator_time,
                     simulator_event_bucket: self.simulator_event_bucket,
                     simulator_mode: self.simulator_mode,
+                    next_command_id: self.next_command_id,
+                    fader_edits: HashMap::new(),
+                    fader_commands: VecDeque::new(),
+                    fader_pointer_down: false,
                 };
                 for input in mixer.inputs {
                     candidate.apply_input(input, evidence)?;
@@ -1670,6 +2141,10 @@ impl Flow8Store {
                     .state
                     .global_tempo_bpm
                     .observe(mixer.tempo_bpm as f32, evidence);
+                candidate
+                    .state
+                    .mixer_flags_raw
+                    .observe(mixer.raw_flags, evidence);
                 candidate
                     .state
                     .headphone_volume_db
@@ -1766,6 +2241,8 @@ impl Flow8Store {
                     .last_loaded
                     .observe(Some(mixer.last_snapshot), evidence);
                 self.state = candidate.state;
+                self.fader_edits.clear();
+                self.fader_commands.clear();
                 Ok(())
             }
             RxCommand::FxTempo { bpm } => {
@@ -1808,11 +2285,15 @@ impl Flow8Store {
                 Ok(())
             }
             RxCommand::HandshakeHost { .. } => {
-                self.state.session = SessionState::Handshaking;
+                if self.simulator_mode {
+                    self.state.session = SessionState::Handshaking;
+                }
                 Ok(())
             }
             RxCommand::HandshakeReply => {
-                self.state.session = SessionState::StateSyncing;
+                if self.simulator_mode {
+                    self.state.session = SessionState::StateSyncing;
+                }
                 Ok(())
             }
         }
@@ -1825,19 +2306,28 @@ impl Flow8Store {
         evidence: EvidenceStatus,
     ) -> Result<(), CoreError> {
         if let Some(input) = input_from_endpoint(endpoint) {
+            validate_received_value(value, specs::PAN)?;
             self.state.channels[input.index()]
                 .pan
                 .observe(value, evidence);
             return Ok(());
         }
         if let Some(index) = fx_index_from_endpoint(endpoint) {
+            validate_received_value(value, specs::PAN)?;
             self.state.effects[index].pan.observe(value, evidence);
             return Ok(());
         }
-        if endpoint == MixDestination::Main.endpoint() {
-            if let Some(balance) = &mut self.state.buses[0].balance {
+        if let Some(destination) = destination_from_endpoint(endpoint) {
+            let bus = self
+                .state
+                .bus_for_destination_mut(destination)
+                .ok_or(CoreError::InvalidCompositeState)?;
+            if let Some(balance) = &mut bus.balance {
+                validate_received_value(value, specs::PAN)?;
                 balance.observe(value, evidence);
             }
+            // MON buses intentionally have no exposed balance. A notification
+            // for that endpoint is not evidence of a new editable parameter.
             return Ok(());
         }
         Err(CoreError::InvalidCompositeState)
@@ -1852,6 +2342,7 @@ impl Flow8Store {
         gain_db: f32,
         evidence: EvidenceStatus,
     ) -> Result<(), CoreError> {
+        validate_received_eq(q, gain_db)?;
         let destination = destination_from_endpoint(endpoint)
             .filter(|value| !matches!(value, MixDestination::Fx1 | MixDestination::Fx2))
             .ok_or(CoreError::InvalidCompositeState)?;
@@ -1876,6 +2367,10 @@ impl Flow8Store {
         evidence: EvidenceStatus,
     ) -> Result<(), CoreError> {
         let input = input_from_endpoint(endpoint).ok_or(CoreError::InvalidCompositeState)?;
+        if !self.state.channels[input.index()].capabilities.peq {
+            return Ok(());
+        }
+        validate_received_eq(q, gain_db)?;
         let target = self.state.channels[input.index()]
             .eq
             .bands
@@ -1906,25 +2401,52 @@ impl Flow8Store {
         level_db: f32,
         evidence: EvidenceStatus,
     ) -> Result<(), CoreError> {
+        validate_received_level(level_db)?;
         let destination =
             destination_from_endpoint(endpoint_b).ok_or(CoreError::InvalidCompositeState)?;
+        let target = if endpoint_a == endpoint_b {
+            FaderTarget::Master(destination)
+        } else {
+            FaderTarget::Route(
+                input_from_endpoint(endpoint_a).ok_or(CoreError::InvalidCompositeState)?,
+                destination,
+            )
+        };
         let normalized = db_to_normalized(level_db);
-        if endpoint_a == endpoint_b {
-            if let Some(bus) = self.state.bus_for_destination_mut(destination) {
-                bus.master_level.observe(normalized, evidence);
-            } else {
-                let index =
-                    fx_index_from_endpoint(endpoint_b).ok_or(CoreError::InvalidCompositeState)?;
-                self.state.effects[index]
-                    .master_level
-                    .observe(normalized, evidence);
-            }
-            return Ok(());
+        let raw = flow8_protocol::encode_fix8(flow8_protocol::Fix8Format::FaderDb, level_db)
+            .ok_or(CoreError::InvalidCompositeState)?;
+        let known_old_echo = self.fader_edits.get(&target).is_some_and(|edit| {
+            (edit.editing || Instant::now() < edit.deadline)
+                && raw != edit.target
+                && edit.sent[raw as usize]
+        });
+        let cell = self.fader_cell(target);
+        if known_old_echo && cell.pending.is_some() {
+            // Confirmed state always updates. Only a known intermediate write
+            // echo retains the latest edit; an unexpected device value wins.
+            cell.observe_preserving_pending(normalized, evidence);
+        } else {
+            cell.observe(normalized, evidence);
+            self.fader_edits.remove(&target);
+            self.fader_commands
+                .retain(|(_, queued_target, _)| *queued_target != target);
         }
-        let source = input_from_endpoint(endpoint_a).ok_or(CoreError::InvalidCompositeState)?;
-        self.state.channels[source.index()].route_levels[destination.index()]
-            .observe(normalized, evidence);
         Ok(())
+    }
+
+    fn fader_cell(&mut self, target: FaderTarget) -> &mut StateValue<f32> {
+        match target {
+            FaderTarget::Route(input, destination) => {
+                &mut self.state.channels[input.index()].route_levels[destination.index()]
+            }
+            FaderTarget::Master(destination) => match destination {
+                MixDestination::Main => &mut self.state.buses[0].master_level,
+                MixDestination::Monitor1 => &mut self.state.buses[1].master_level,
+                MixDestination::Monitor2 => &mut self.state.buses[2].master_level,
+                MixDestination::Fx1 => &mut self.state.effects[0].master_level,
+                MixDestination::Fx2 => &mut self.state.effects[1].master_level,
+            },
+        }
     }
 
     fn apply_mute(
@@ -2183,28 +2705,51 @@ impl Flow8Store {
             .channels
             .get_mut(input.id as usize)
             .ok_or(CoreError::InvalidCompositeState)?;
-        channel.gain_db.observe(input.gain_db, evidence);
+        // Validate every applicable field before touching confirmed state.
+        // Unsupported USB/BT fields may be padding; never validate or apply
+        // them as if they were real input controls.
+        validate_received_value(input.balance, specs::PAN)?;
+        if channel.capabilities.gain {
+            validate_received_value(input.gain_db, specs::INPUT_GAIN_WIRE)?;
+        }
+        if channel.capabilities.compressor {
+            validate_received_value(input.compressor_amount, specs::COMPRESSOR_AMOUNT)?;
+        }
+        if channel.capabilities.peq {
+            for (q, gain) in input.eq_q.iter().zip(&input.eq_gain_db) {
+                validate_received_eq(*q, *gain)?;
+            }
+        }
+        if channel.capabilities.gain {
+            channel.gain_db.observe(input.gain_db, evidence);
+        }
         channel.pan.observe(input.balance, evidence);
         channel.muted.observe(input.flags & 0x01 != 0, evidence);
         channel.soloed.observe(input.flags & 0x40 != 0, evidence);
-        channel
-            .high_pass_enabled
-            .observe(input.flags & 0x02 != 0, evidence);
-        channel
-            .phase_inverted
-            .observe(input.flags & 0x04 != 0, evidence);
+        if channel.capabilities.high_pass {
+            channel
+                .high_pass_enabled
+                .observe(input.flags & 0x02 != 0, evidence);
+            channel
+                .high_pass_hz
+                .observe(input.high_pass_hz as f32, evidence);
+        }
+        if channel.capabilities.phase {
+            channel
+                .phase_inverted
+                .observe(input.flags & 0x04 != 0, evidence);
+        }
         if channel.capabilities.phantom {
             channel
                 .phantom_48v
                 .observe(input.flags & 0x08 != 0, evidence);
         }
-        channel
-            .high_pass_hz
-            .observe(input.high_pass_hz as f32, evidence);
-        channel
-            .compressor
-            .amount
-            .observe(input.compressor_amount, evidence);
+        if channel.capabilities.compressor {
+            channel
+                .compressor
+                .amount
+                .observe(input.compressor_amount, evidence);
+        }
         channel.name.observe(input.label.text, evidence);
         channel.icon.observe(input.label.icon, evidence);
         channel
@@ -2213,11 +2758,13 @@ impl Flow8Store {
         channel
             .right_connected
             .observe(input.flags & 0x20 != 0, evidence);
-        for (index, band) in channel.eq.bands.iter_mut().enumerate() {
-            band.gain_db.observe(input.eq_gain_db[index], evidence);
-            band.frequency_hz
-                .observe(input.eq_frequency_hz[index] as f32, evidence);
-            band.q.observe(input.eq_q[index], evidence);
+        if channel.capabilities.peq {
+            for (index, band) in channel.eq.bands.iter_mut().enumerate() {
+                band.gain_db.observe(input.eq_gain_db[index], evidence);
+                band.frequency_hz
+                    .observe(input.eq_frequency_hz[index] as f32, evidence);
+                band.q.observe(input.eq_q[index], evidence);
+            }
         }
         Ok(())
     }
@@ -2233,6 +2780,17 @@ impl Flow8Store {
             11 => MixDestination::Monitor2,
             _ => return Err(CoreError::InvalidCompositeState),
         };
+        validate_received_level(output.volume_db)?;
+        validate_received_value(output.limiter_db, specs::LIMITER)?;
+        if destination == MixDestination::Main {
+            validate_received_value(output.pan, specs::PAN)?;
+        }
+        for (q, gain) in output.eq_q.iter().zip(&output.eq_gain_db) {
+            validate_received_eq(*q, *gain)?;
+        }
+        for gain in output.input_gains_db {
+            validate_received_level(gain)?;
+        }
         let bus = self
             .state
             .bus_for_destination_mut(destination)
@@ -2271,6 +2829,11 @@ impl Flow8Store {
             13 => (1, MixDestination::Fx2),
             _ => return Err(CoreError::InvalidCompositeState),
         };
+        validate_received_level(effect.volume_db)?;
+        validate_received_value(effect.pan, specs::PAN)?;
+        for gain in effect.input_gains_db.iter().chain(&effect.aux_gains_db) {
+            validate_received_level(*gain)?;
+        }
         let fx = &mut self.state.effects[index];
         fx.master_level
             .observe(db_to_normalized(effect.volume_db), evidence);
@@ -2353,19 +2916,25 @@ mod tests {
     #[test]
     fn continuous_commands_coalesce_by_full_semantic_key() {
         let mut queue = SemanticCommandQueue::default();
-        queue.push(SemanticCommand::SetGain {
-            input: InputId::Input1,
-            db: 1.0,
-        });
-        queue.push(SemanticCommand::SetGain {
-            input: InputId::Input1,
-            db: 2.0,
-        });
-        queue.push(SemanticCommand::SetRouteLevel {
-            source: InputId::Input1,
-            destination: MixDestination::Monitor1,
-            normalized: 0.5,
-        });
+        queue
+            .push(SemanticCommand::SetGain {
+                input: InputId::Input1,
+                db: 1.0,
+            })
+            .unwrap();
+        queue
+            .push(SemanticCommand::SetGain {
+                input: InputId::Input1,
+                db: 2.0,
+            })
+            .unwrap();
+        queue
+            .push(SemanticCommand::SetRouteLevel {
+                source: InputId::Input1,
+                destination: MixDestination::Monitor1,
+                normalized: 0.5,
+            })
+            .unwrap();
         assert_eq!(queue.len(), 2);
         assert_eq!(
             queue.pop(),
@@ -2379,14 +2948,18 @@ mod tests {
     #[test]
     fn discrete_commands_are_never_coalesced() {
         let mut queue = SemanticCommandQueue::default();
-        queue.push(SemanticCommand::SetMute {
-            input: InputId::Input1,
-            enabled: true,
-        });
-        queue.push(SemanticCommand::SetMute {
-            input: InputId::Input1,
-            enabled: false,
-        });
+        queue
+            .push(SemanticCommand::SetMute {
+                input: InputId::Input1,
+                enabled: true,
+            })
+            .unwrap();
+        queue
+            .push(SemanticCommand::SetMute {
+                input: InputId::Input1,
+                enabled: false,
+            })
+            .unwrap();
         assert_eq!(queue.len(), 2);
     }
 
@@ -2401,9 +2974,9 @@ mod tests {
             slot: 0,
             name: "Before change".into(),
         };
-        queue.push(gain(10.0));
-        queue.push(save.clone());
-        queue.push(gain(20.0));
+        queue.push(gain(10.0)).unwrap();
+        queue.push(save.clone()).unwrap();
+        queue.push(gain(20.0)).unwrap();
         assert_eq!(queue.pop(), Some(gain(10.0)));
         assert_eq!(queue.pop(), Some(save));
         assert_eq!(queue.pop(), Some(gain(20.0)));
@@ -2412,6 +2985,7 @@ mod tests {
     #[test]
     fn gain_pending_matches_the_queued_wire_value() {
         let mut store = Flow8Store::disconnected();
+        store.state.session = SessionState::Ready;
         store
             .dispatch(SemanticCommand::SetGain {
                 input: InputId::Input1,
@@ -2453,28 +3027,34 @@ mod tests {
     fn nested_continuous_commands_coalesce_only_matching_parameter_identity() {
         let mut queue = SemanticCommandQueue::default();
         for gain_db in [1.0, 2.0] {
-            queue.push(SemanticCommand::SetPeqBand {
-                input: InputId::Input1,
-                band: 0,
-                frequency_hz: 100,
-                q: 1.0,
-                gain_db,
-            });
+            queue
+                .push(SemanticCommand::SetPeqBand {
+                    input: InputId::Input1,
+                    band: 0,
+                    frequency_hz: 100,
+                    q: 1.0,
+                    gain_db,
+                })
+                .unwrap();
         }
-        queue.push(SemanticCommand::SetPeqBand {
-            input: InputId::Input1,
-            band: 1,
-            frequency_hz: 500,
-            q: 1.0,
-            gain_db: 3.0,
-        });
-        queue.push(SemanticCommand::SetGeqBand {
-            bus: MixBusId::Main,
-            band: 0,
-            frequency_hz: 63,
-            q: 1.0,
-            gain_db: 4.0,
-        });
+        queue
+            .push(SemanticCommand::SetPeqBand {
+                input: InputId::Input1,
+                band: 1,
+                frequency_hz: 500,
+                q: 1.0,
+                gain_db: 3.0,
+            })
+            .unwrap();
+        queue
+            .push(SemanticCommand::SetGeqBand {
+                bus: MixBusId::Main,
+                band: 0,
+                frequency_hz: 63,
+                q: 1.0,
+                gain_db: 4.0,
+            })
+            .unwrap();
         assert_eq!(queue.len(), 3);
         assert!(matches!(
             queue.pop(),
@@ -2586,6 +3166,7 @@ mod tests {
             effects: [fx_state(12), fx_state(13)],
             headphone_volume_db: 0.0,
             flags,
+            raw_flags: 1 << 7,
             tempo_bpm: 135,
             selected_output: 15,
             last_snapshot: 0,
@@ -2597,10 +3178,12 @@ mod tests {
     #[test]
     fn semantic_queue_item_encodes_only_after_dequeue() {
         let mut queue = SemanticCommandQueue::default();
-        queue.push(SemanticCommand::SetGain {
-            input: InputId::Input1,
-            db: 0.0,
-        });
+        queue
+            .push(SemanticCommand::SetGain {
+                input: InputId::Input1,
+                db: 0.0,
+            })
+            .unwrap();
         let command = queue.pop().expect("queued command");
         assert_eq!(
             flow8_protocol::encode(&command.to_protocol()).unwrap(),

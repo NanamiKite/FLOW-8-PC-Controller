@@ -6,7 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-directhci-ble = { path = "../../../DirectHCI/crates/directhci-ble" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Pinned SDK joins worker threads outside async executors. The DirectHCI
+# runtime remains external; no sibling checkout or copied driver code is needed.
+directhci-ble = { git = "https://github.com/NanamiKite/DirectHCI", rev = "8e3c620dbee3663bc5dd8aef483941c8bf332333" }

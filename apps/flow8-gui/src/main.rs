@@ -4,7 +4,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
+    thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -126,6 +127,10 @@ impl Language {
             Self::Chinese => chinese,
         }
     }
+}
+
+fn waiting_for_device_text(language: Language) -> &'static str {
+    language.tr("Waiting for device", "等待设备数据")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,7 +263,7 @@ fn snapshot_name_row(
         Sense::hover(),
     );
     let text = if busy {
-        language.tr("Waiting for device", "等待设备回报")
+        waiting_for_device_text(language)
     } else {
         name.unwrap_or("")
     };
@@ -368,10 +373,10 @@ impl Default for MeterSmoother {
 }
 
 impl MeterSmoother {
-    fn advance(&mut self, target_db: Option<f32>, elapsed_seconds: f32) {
+    fn advance(&mut self, target_db: Option<f32>, elapsed_seconds: f32) -> bool {
         let Some(target_db) = target_db else {
             *self = Self::default();
-            return;
+            return false;
         };
         let target_db = if target_db.is_nan() {
             specs::METER_DISPLAY.min
@@ -389,6 +394,7 @@ impl MeterSmoother {
         if (target_db - self.display_db).abs() < 0.05 {
             self.display_db = target_db;
         }
+        self.display_db != target_db
     }
 }
 
@@ -598,6 +604,71 @@ fn settings_form_row(
     }
 }
 
+fn committed_text(
+    ui: &mut egui::Ui,
+    key: impl std::hash::Hash + std::fmt::Debug,
+    value: Option<&str>,
+    maximum: usize,
+    language: Language,
+) -> Option<String> {
+    let id = ui.make_persistent_id(key);
+    let draft_id = id.with("draft");
+    let mut draft = ui
+        .ctx()
+        .data(|data| data.get_temp::<String>(draft_id))
+        .unwrap_or_else(|| value.unwrap_or_default().to_owned());
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut draft)
+            .id(id)
+            .hint_text("—")
+            .desired_width(ui.available_width())
+            .char_limit(maximum),
+    );
+    let escape = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape));
+    if escape {
+        ui.ctx().data_mut(|data| data.remove::<String>(draft_id));
+        response.surrender_focus();
+        return None;
+    }
+    if draft.len() > maximum {
+        ui.label(
+            egui::RichText::new(language.tr("Name is too long", "名称过长"))
+                .color(RED)
+                .small(),
+        );
+    }
+    let commit = response.lost_focus()
+        || response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    if commit && draft.len() <= maximum {
+        ui.ctx().data_mut(|data| data.remove::<String>(draft_id));
+        return (Some(draft.as_str()) != value).then_some(draft);
+    }
+    if response.changed()
+        || ui
+            .ctx()
+            .data(|data| data.get_temp::<String>(draft_id))
+            .is_some()
+    {
+        ui.ctx().data_mut(|data| data.insert_temp(draft_id, draft));
+    }
+    None
+}
+
+fn fx_setup_values(effect: &flow8_model::FxState) -> Option<([u8; 3], [bool; 3])> {
+    Some((
+        [
+            *effect.parameters[0].effective()?,
+            *effect.parameters[1].effective()?,
+            *effect.parameters[2].effective()?,
+        ],
+        [
+            *effect.return_to_main.effective()?,
+            *effect.return_to_mon1.effective()?,
+            *effect.return_to_mon2.effective()?,
+        ],
+    ))
+}
+
 struct Flow8App {
     store: Flow8Store,
     page: Page,
@@ -615,6 +686,9 @@ struct Flow8App {
     output_meter_display: [MeterSmoother; 5],
     meter_frame_at: Option<Instant>,
     state_sync_applied: bool,
+    session_generation: Option<u64>,
+    connection_request_pending: bool,
+    disconnect_request_pending: bool,
     eq_initial: [Option<[EqBandSnapshot; 4]>; 7],
     delay_ms_draft: [String; 3],
     delay_ms_dirty: [bool; 3],
@@ -636,12 +710,15 @@ impl Flow8App {
         let metrics =
             UiMetrics::calculate(Vec2::new(1440.0, 920.0), context.pixels_per_point(), 1.0);
         configure_style(context, metrics);
+        let runtime = DeviceRuntime::spawn();
+        let event_context = context.clone();
+        runtime.set_event_waker(move || event_context.request_repaint());
         Self {
             store: Flow8Store::disconnected(),
             page: Page::Mixer,
             language: Language::English,
             message: "Disconnected · Connect to FLOW 8 to load the current mixer state".into(),
-            runtime: DeviceRuntime::spawn(),
+            runtime,
             discovered_devices: Vec::new(),
             stage_layout_mode: false,
             stage_positions: std::array::from_fn(|index| {
@@ -658,6 +735,9 @@ impl Flow8App {
             output_meter_display: [MeterSmoother::default(); 5],
             meter_frame_at: None,
             state_sync_applied: false,
+            session_generation: None,
+            connection_request_pending: false,
+            disconnect_request_pending: false,
             eq_initial: [None; 7],
             delay_ms_draft: std::array::from_fn(|_| String::new()),
             delay_ms_dirty: [false; 3],
@@ -670,8 +750,42 @@ impl Flow8App {
         }
     }
 
+    fn device_controls_ready(&self) -> bool {
+        self.store.state.session == SessionState::Ready && !self.disconnect_request_pending
+    }
+
+    fn reset_device_requests(&mut self) {
+        self.pending_confirmation = None;
+        self.snapshot_names_requested = false;
+        self.channel_labels_requested = false;
+        self.meter_request_target = None;
+    }
+
+    fn request_disconnect(&mut self) -> Result<(), String> {
+        self.reset_device_requests();
+        match self.runtime.send(DeviceCommand::Disconnect) {
+            Ok(()) => {
+                self.disconnect_request_pending = true;
+                self.connection_request_pending = false;
+                self.store.clear_pending("Disconnect requested");
+                self.message = self.language.tr("Disconnecting", "正在断开").into();
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(%error, "FLOW disconnect request could not reach the runtime");
+                self.disconnect_request_pending = false;
+                self.connection_request_pending = false;
+                self.session_generation = None;
+                self.state_sync_applied = false;
+                self.store.apply_session_phase(SessionState::Error);
+                self.last_ble_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     fn dispatch(&mut self, command: SemanticCommand) {
-        if self.store.state.session != SessionState::Ready {
+        if !self.device_controls_ready() {
             self.message = self
                 .language
                 .tr(
@@ -687,7 +801,7 @@ impl Flow8App {
     }
 
     fn request_confirmation(&mut self, action: ConfirmationAction) {
-        if self.store.state.session != SessionState::Ready {
+        if !self.device_controls_ready() {
             return;
         }
         self.pending_confirmation = Some(PendingConfirmation {
@@ -702,6 +816,7 @@ impl Flow8App {
         if self.page != pending.page
             || self.store.state.selected_input != pending.selected_input
             || self.store.state.session != pending.session
+            || self.disconnect_request_pending
             || pending.session != SessionState::Ready
         {
             return false;
@@ -942,7 +1057,20 @@ impl Flow8App {
     fn poll_runtime(&mut self) {
         while let Some(event) = self.runtime.try_recv() {
             match event {
+                DeviceEvent::SessionStarted(generation) => {
+                    self.session_generation = Some(generation);
+                    self.state_sync_applied = false;
+                    self.store.clear_pending("New device session");
+                    self.reset_device_requests();
+                }
                 DeviceEvent::Phase(phase) => {
+                    self.connection_request_pending = false;
+                    if matches!(phase, SessionPhase::Disconnected | SessionPhase::Error) {
+                        self.disconnect_request_pending = false;
+                        self.session_generation = None;
+                        self.state_sync_applied = false;
+                        self.store.clear_pending("Device session ended");
+                    }
                     if matches!(
                         phase,
                         SessionPhase::Disconnected
@@ -954,10 +1082,7 @@ impl Flow8App {
                         self.delay_ms_dirty = [false; 3];
                     }
                     if phase != SessionPhase::Ready {
-                        self.pending_confirmation = None;
-                        self.snapshot_names_requested = false;
-                        self.channel_labels_requested = false;
-                        self.meter_request_target = None;
+                        self.reset_device_requests();
                     }
                     if matches!(phase, SessionPhase::Connecting | SessionPhase::StateSyncing) {
                         self.state_sync_applied = false;
@@ -967,21 +1092,33 @@ impl Flow8App {
                         self.native_stage = None;
                     }
                     if phase == SessionPhase::Ready && !self.state_sync_applied {
-                        self.store.state.session = SessionState::Error;
+                        let disconnect_error = self.request_disconnect().err();
+                        self.store.clear_pending("Invalid state synchronization");
+                        self.store.apply_session_phase(SessionState::Error);
+                        tracing::warn!(
+                            "FLOW runtime reported Ready without an applied mixer state"
+                        );
                         self.message = self
                             .language
                             .tr(
-                                "BLE reported Ready before a complete mixer state was applied",
-                                "BLE 在完整混音状态写入前错误地报告了就绪",
+                                "Device synchronization failed. Please reconnect.",
+                                "设备状态同步失败，请重新连接。",
                             )
                             .into();
+                        if let Some(error) = disconnect_error {
+                            self.message.push_str(&format!(" {error}"));
+                        }
                     } else {
-                        self.store.state.session = core_session_state(phase);
-                        self.message = format!(
-                            "{}: {}",
-                            self.language.tr("Bluetooth", "蓝牙"),
-                            session_phase_text(phase, self.language)
-                        );
+                        self.store.apply_session_phase(core_session_state(phase));
+                        self.message = if self.disconnect_request_pending {
+                            self.language.tr("Disconnecting", "正在断开").into()
+                        } else {
+                            format!(
+                                "{}: {}",
+                                self.language.tr("Bluetooth", "蓝牙"),
+                                session_phase_text(phase, self.language)
+                            )
+                        };
                     }
                 }
                 DeviceEvent::ConnectionStage(stage) => {
@@ -1000,46 +1137,44 @@ impl Flow8App {
                     self.discovered_devices = devices;
                 }
                 DeviceEvent::Received(command) => {
-                    let is_mixer_state =
-                        matches!(&command, flow8_protocol::RxCommand::MixerState(_));
-                    if let Err(error) = self
-                        .store
-                        .apply_rx(command, EvidenceStatus::VerifiedFromDevice)
-                    {
-                        self.message = format!(
-                            "{}: {error}",
-                            self.language.tr("RX state error", "接收状态错误")
+                    self.apply_device_rx(command, None);
+                }
+                DeviceEvent::MixerState {
+                    generation,
+                    revision,
+                    state,
+                } => {
+                    if self.session_generation == Some(generation) {
+                        self.apply_device_rx(
+                            flow8_protocol::RxCommand::MixerState(state),
+                            Some((generation, revision)),
                         );
-                    } else if is_mixer_state {
-                        if self.eq_initial.iter().all(Option::is_none) {
-                            for (initial, channel) in
-                                self.eq_initial.iter_mut().zip(&self.store.state.channels)
-                            {
-                                *initial = confirmed_eq_snapshot(channel);
-                            }
-                        }
-                        self.state_sync_applied = true;
-                        tracing::info!(
-                            evidence = "VERIFIED_FROM_DEVICE",
-                            "complete FLOW 8 state atomically applied to confirmed Store"
-                        );
-                        if let Err(error) = self.runtime.send(DeviceCommand::StateApplied) {
-                            self.store.state.session = SessionState::Error;
-                            self.message = error;
-                        }
                     }
                 }
+                DeviceEvent::CommandFailed { id, error } => {
+                    self.store.command_failed(id, &error);
+                    self.message = format!(
+                        "{}: {error}",
+                        self.language.tr("Command failed", "命令失败")
+                    );
+                }
+                DeviceEvent::CommandWriting { id } => self.store.command_started(id),
                 // Raw transport details remain in tracing logs, not the user-facing status bar.
                 DeviceEvent::RawRx(_)
                 | DeviceEvent::RawTx(_)
+                | DeviceEvent::FrameWritten { .. }
                 | DeviceEvent::WriteMode(_)
                 | DeviceEvent::Backend(_)
                 | DeviceEvent::Mtu(_) => {}
                 DeviceEvent::ProtocolWarning(warning) => {
-                    self.message = format!(
-                        "{}: {warning}",
-                        self.language.tr("Protocol warning", "协议告警")
-                    );
+                    tracing::debug!(%warning, "FLOW device communication warning");
+                    self.message = self
+                        .language
+                        .tr(
+                            "Some device data could not be processed. See the connection log.",
+                            "部分设备数据未能处理，请查看连接日志。",
+                        )
+                        .into();
                 }
                 DeviceEvent::CommandError(error) => {
                     self.message = format!(
@@ -1048,21 +1183,73 @@ impl Flow8App {
                     );
                 }
                 DeviceEvent::Error(error) => {
-                    self.pending_confirmation = None;
-                    self.snapshot_names_requested = false;
-                    self.channel_labels_requested = false;
-                    self.store.state.session = SessionState::Error;
+                    self.connection_request_pending = false;
+                    self.disconnect_request_pending = false;
+                    self.store.clear_pending(&error);
+                    self.session_generation = None;
+                    self.state_sync_applied = false;
+                    self.reset_device_requests();
+                    self.store.apply_session_phase(SessionState::Error);
                     self.last_ble_error = Some(error.clone());
                     self.message = format!("BLE: {error}");
                 }
             }
         }
-
+        if self.store.expire_pending(Instant::now()) {
+            self.message = self
+                .language
+                .tr(
+                    "Some changes were not confirmed by the device",
+                    "部分调整尚未得到设备确认，已恢复设备数值",
+                )
+                .into();
+        }
         self.flush_commands();
     }
 
+    fn apply_device_rx(
+        &mut self,
+        command: flow8_protocol::RxCommand,
+        acknowledgment: Option<(u64, u64)>,
+    ) {
+        if let Err(error) = self
+            .store
+            .apply_rx(command, EvidenceStatus::VerifiedFromDevice)
+        {
+            self.message = format!(
+                "{}: {error}",
+                self.language.tr("RX state error", "接收状态错误")
+            );
+        } else if let Some((generation, revision)) = acknowledgment {
+            if self.eq_initial.iter().all(Option::is_none) {
+                for (initial, channel) in self.eq_initial.iter_mut().zip(&self.store.state.channels)
+                {
+                    *initial = confirmed_eq_snapshot(channel);
+                }
+            }
+            self.state_sync_applied = true;
+            tracing::info!(
+                evidence = "VERIFIED_FROM_DEVICE",
+                "complete FLOW 8 state atomically applied to confirmed Store"
+            );
+            if let Err(error) = self.runtime.send(DeviceCommand::StateApplied {
+                generation,
+                revision,
+            }) {
+                let disconnect_error = self.request_disconnect().err();
+                self.store
+                    .clear_pending("State apply acknowledgment failed");
+                self.store.apply_session_phase(SessionState::Error);
+                self.message = error;
+                if let Some(error) = disconnect_error {
+                    self.message.push_str(&format!(" {error}"));
+                }
+            }
+        }
+    }
+
     fn sync_channel_labels_request(&mut self) {
-        if self.store.state.session != SessionState::Ready {
+        if !self.device_controls_ready() {
             self.channel_labels_requested = false;
         } else if !self.channel_labels_requested {
             self.dispatch(SemanticCommand::RequestChannelLabels);
@@ -1071,7 +1258,7 @@ impl Flow8App {
     }
 
     fn sync_meter_request(&mut self) {
-        if self.store.state.session != SessionState::Ready {
+        if !self.device_controls_ready() {
             self.meter_request_target = None;
             return;
         }
@@ -1082,12 +1269,12 @@ impl Flow8App {
         }
     }
 
-    fn advance_meter_display(&mut self) {
-        if self.store.state.session != SessionState::Ready {
+    fn advance_meter_display(&mut self) -> bool {
+        if !self.device_controls_ready() {
             self.input_meter_display = [MeterSmoother::default(); 7];
             self.output_meter_display = [MeterSmoother::default(); 5];
             self.meter_frame_at = None;
-            return;
+            return false;
         }
 
         let now = Instant::now();
@@ -1098,8 +1285,9 @@ impl Flow8App {
             .unwrap_or(1.0 / 30.0)
             .clamp(0.0, 0.25);
 
+        let mut animating = false;
         for (index, smoother) in self.input_meter_display.iter_mut().enumerate() {
-            smoother.advance(
+            animating |= smoother.advance(
                 self.store.state.channels[index].meter.level_db.confirmed,
                 elapsed_seconds,
             );
@@ -1113,19 +1301,31 @@ impl Flow8App {
                     .level_db
                     .confirmed
             };
-            self.output_meter_display[destination.index()].advance(target, elapsed_seconds);
+            animating |=
+                self.output_meter_display[destination.index()].advance(target, elapsed_seconds);
         }
+        animating
     }
 
     fn flush_commands(&mut self) {
-        while let Some(command) = self.store.queue.pop() {
-            if let Err(error) = self
-                .runtime
-                .send(DeviceCommand::Send(command.to_protocol()))
-            {
-                self.store.queue.push_front(command);
+        if self.disconnect_request_pending {
+            return;
+        }
+        while let Some((id, command)) = self.store.queue.front_protocol_tracked() {
+            if let Err(error) = self.runtime.send(DeviceCommand::SendTracked {
+                id,
+                generation: self.session_generation.unwrap_or_default(),
+                command,
+            }) {
+                if error.starts_with("BLE user command queue is full") {
+                    self.message = error;
+                    break;
+                }
+                let _ = self.store.queue.pop_tracked();
+                self.store.command_failed(id, &error);
                 self.message = error;
-                break;
+            } else {
+                let _ = self.store.queue.pop_tracked();
             }
         }
     }
@@ -1195,15 +1395,26 @@ impl Flow8App {
                                 localized_status_message(self.store.state.session, self.language);
                             ui.ctx().request_repaint();
                         }
-                        if ui.button(self.language.tr("Disconnect", "断开")).clicked() {
-                            self.pending_confirmation = None;
-                            self.snapshot_names_requested = false;
-                            let _ = self.runtime.send(DeviceCommand::Disconnect);
+                        if ui
+                            .add_enabled(
+                                !self.disconnect_request_pending,
+                                egui::Button::new(self.language.tr("Disconnect", "断开")),
+                            )
+                            .clicked()
+                        {
+                            if let Err(error) = self.request_disconnect() {
+                                self.message = format!(
+                                    "{}: {error}",
+                                    self.language.tr("Could not disconnect", "无法断开连接")
+                                );
+                            }
                         }
-                        let can_connect = matches!(
-                            self.store.state.session,
-                            SessionState::Disconnected | SessionState::Error
-                        );
+                        let can_connect = !self.connection_request_pending
+                            && !self.disconnect_request_pending
+                            && matches!(
+                                self.store.state.session,
+                                SessionState::Disconnected | SessionState::Error
+                            );
                         if ui
                             .add_enabled(
                                 can_connect,
@@ -1213,27 +1424,26 @@ impl Flow8App {
                         {
                             // A fresh session must not expose stale values from the prior device.
                             self.store = Flow8Store::disconnected();
-                            self.pending_confirmation = None;
-                            self.snapshot_names_requested = false;
-                            self.channel_labels_requested = false;
-                            self.meter_request_target = None;
+                            self.reset_device_requests();
                             self.state_sync_applied = false;
                             self.eq_initial = [None; 7];
                             self.delay_ms_draft = std::array::from_fn(|_| String::new());
                             self.delay_ms_dirty = [false; 3];
                             match self.runtime.send(DeviceCommand::Connect) {
                                 Ok(()) => {
-                                    self.store.state.session = SessionState::Connecting;
+                                    self.connection_request_pending = true;
                                     self.native_stage = None;
                                     self.last_ble_error = None;
                                 }
                                 Err(error) => self.message = error,
                             }
                         }
-                        let can_scan = matches!(
-                            self.store.state.session,
-                            SessionState::Disconnected | SessionState::Error
-                        );
+                        let can_scan = !self.connection_request_pending
+                            && !self.disconnect_request_pending
+                            && matches!(
+                                self.store.state.session,
+                                SessionState::Disconnected | SessionState::Error
+                            );
                         let scan = ui
                             .add_enabled(
                                 can_scan,
@@ -1248,7 +1458,7 @@ impl Flow8App {
                                 duration: Duration::from_secs(4),
                             }) {
                                 Ok(()) => {
-                                    self.store.state.session = SessionState::Scanning;
+                                    self.connection_request_pending = true;
                                     self.native_stage = None;
                                     self.last_ble_error = None;
                                 }
@@ -1352,7 +1562,7 @@ impl Flow8App {
             if let Some(destination) = destination {
                 if self.store.state.selected_destination != destination {
                     self.store.state.selected_destination = destination;
-                    if self.store.state.session == SessionState::Ready {
+                    if self.device_controls_ready() {
                         self.dispatch(SemanticCommand::RequestChannelState {
                             target: ChannelStateTarget::Destination(destination),
                         });
@@ -1593,7 +1803,7 @@ impl Flow8App {
             StripAction::Select => {
                 self.inspector_input = true;
                 self.inspector_open = true;
-                if selection_changed && self.store.state.session == SessionState::Ready {
+                if selection_changed && self.device_controls_ready() {
                     self.dispatch(SemanticCommand::RequestChannelState {
                         target: ChannelStateTarget::Input(id),
                     });
@@ -1800,13 +2010,17 @@ impl Flow8App {
                 );
                 if let Some((index, gain_db)) = output_eq_graph(ui, &bus.eq, self.metrics) {
                     let band = &bus.eq.bands[index];
-                    self.dispatch(SemanticCommand::SetGeqBand {
-                        bus: bus_id,
-                        band: index as u8,
-                        frequency_hz: band.frequency_hz.effective().copied().unwrap_or(0.0) as u16,
-                        q: band.q.effective().copied().unwrap_or(1.0),
-                        gain_db,
-                    });
+                    if let (Some(frequency), Some(q)) =
+                        (band.frequency_hz.effective(), band.q.effective())
+                    {
+                        self.dispatch(SemanticCommand::SetGeqBand {
+                            bus: bus_id,
+                            band: index as u8,
+                            frequency_hz: *frequency as u16,
+                            q: *q,
+                            gain_db,
+                        });
+                    }
                 }
                 ui.label(
                     egui::RichText::new(self.language.tr(
@@ -1818,7 +2032,14 @@ impl Flow8App {
                 );
                 ui.collapsing(self.language.tr("Band values", "各频段数值"), |ui| {
                     for (index, band) in bus.eq.bands.iter().enumerate() {
-                        let mut gain = band.gain_db.effective().copied().unwrap_or(0.0);
+                        let (Some(frequency), Some(q), Some(mut gain)) = (
+                            band.frequency_hz.effective().copied(),
+                            band.q.effective().copied(),
+                            band.gain_db.effective().copied(),
+                        ) else {
+                            ui.label(waiting_for_device_text(self.language));
+                            continue;
+                        };
                         if parameter_row(
                             ui,
                             &format!("{} Hz", band.frequency_hz.effective().unwrap_or(&0.0)),
@@ -1830,9 +2051,8 @@ impl Flow8App {
                             self.dispatch(SemanticCommand::SetGeqBand {
                                 bus: bus_id,
                                 band: index as u8,
-                                frequency_hz: band.frequency_hz.effective().copied().unwrap_or(0.0)
-                                    as u16,
-                                q: band.q.effective().copied().unwrap_or(1.0),
+                                frequency_hz: frequency as u16,
+                                q,
                                 gain_db: gain,
                             });
                         }
@@ -1893,7 +2113,7 @@ impl Flow8App {
                 let mut selected_preset = None;
                 ui.horizontal(|ui| {
                     ui.label(self.language.tr("Preset", "预设"));
-                    ui.add_enabled_ui(self.store.state.session == SessionState::Ready, |ui| {
+                    ui.add_enabled_ui(self.device_controls_ready(), |ui| {
                         egui::ComboBox::from_id_salt(("fx-preset", index))
                             .selected_text(preset_label)
                             .width(190.0 * self.metrics.ui_scale)
@@ -1941,44 +2161,41 @@ impl Flow8App {
                         value: pan,
                     });
                 }
-                let mut values = effect
-                    .parameters
-                    .each_ref()
-                    .map(|value| value.effective().copied().unwrap_or(0));
-                let mut setup_changed = false;
-                for (index, value) in values.iter_mut().enumerate() {
-                    let mut display = *value as f32;
-                    setup_changed |= parameter_row(
-                        ui,
-                        &format!("{} {}", self.language.tr("Parameter", "参数"), index + 1),
-                        &mut display,
-                        specs::FX_RAW,
-                    )
-                    .changed();
-                    *value = display.round() as u8;
-                }
-                let mut routes = [
-                    effect.return_to_main.effective().copied().unwrap_or(false),
-                    effect.return_to_mon1.effective().copied().unwrap_or(false),
-                    effect.return_to_mon2.effective().copied().unwrap_or(false),
-                ];
-                ui.horizontal_wrapped(|ui| {
-                    for (index, label) in ["MAIN", "MON1", "MON2"].into_iter().enumerate() {
-                        if state_button(ui, routes[index], label, PURPLE).clicked() {
-                            routes[index] = !routes[index];
-                            setup_changed = true;
+                let setup = fx_setup_values(&effect);
+                ui.add_enabled_ui(setup.is_some(), |ui| {
+                    // Placeholder values are only rendered in disabled controls;
+                    // a composite write requires every preserved field to be known.
+                    let (mut values, mut routes) = setup.unwrap_or(([0; 3], [false; 3]));
+                    let mut setup_changed = false;
+                    for (index, value) in values.iter_mut().enumerate() {
+                        let mut display = *value as f32;
+                        setup_changed |= parameter_row(
+                            ui,
+                            &format!("{} {}", self.language.tr("Parameter", "参数"), index + 1),
+                            &mut display,
+                            specs::FX_RAW,
+                        )
+                        .changed();
+                        *value = display.round() as u8;
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        for (index, label) in ["MAIN", "MON1", "MON2"].into_iter().enumerate() {
+                            if state_button(ui, routes[index], label, PURPLE).clicked() {
+                                routes[index] = !routes[index];
+                                setup_changed = true;
+                            }
                         }
+                    });
+                    if setup_changed && setup.is_some() {
+                        self.dispatch(SemanticCommand::SetFxSetup {
+                            fx: fx_id,
+                            values,
+                            return_to_main: routes[0],
+                            return_to_mon1: routes[1],
+                            return_to_mon2: routes[2],
+                        });
                     }
                 });
-                if setup_changed {
-                    self.dispatch(SemanticCommand::SetFxSetup {
-                        fx: fx_id,
-                        values,
-                        return_to_main: routes[0],
-                        return_to_mon1: routes[1],
-                        return_to_mon2: routes[2],
-                    });
-                }
                 let mut tempo = self
                     .store
                     .state
@@ -2022,21 +2239,26 @@ impl Flow8App {
                 });
             });
             ui.separator();
-            let mut label = channel
-                .name
-                .effective()
-                .cloned()
-                .unwrap_or_else(|| display_name(id, self.language).into());
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(self.language.tr("Label", "名称")).color(TEXT));
-                if ui
-                    .add(egui::TextEdit::singleline(&mut label).desired_width(ui.available_width()))
-                    .changed()
+                let edited = ui
+                    .add_enabled_ui(channel.icon.effective().is_some(), |ui| {
+                        committed_text(
+                            ui,
+                            ("channel-name", self.session_generation, id),
+                            channel.name.effective().map(String::as_str),
+                            20,
+                            self.language,
+                        )
+                    })
+                    .inner;
+                if let Some(icon) = channel.icon.effective().copied()
+                    && let Some(label) = edited
                 {
                     self.dispatch(SemanticCommand::SetLabel {
                         input: id,
-                        icon: channel.icon.effective().copied().unwrap_or(0),
-                        name: label.clone(),
+                        icon,
+                        name: label,
                     });
                 }
             });
@@ -2133,87 +2355,123 @@ impl Flow8App {
                     }
                 }
                 if channel.capabilities.high_pass {
-                    let hpf = *channel.high_pass_enabled.effective().unwrap_or(&false);
-                    if state_button(ui, hpf, self.language.tr("Low Cut", "低切"), YELLOW).clicked()
-                    {
+                    let setting = channel
+                        .high_pass_enabled
+                        .effective()
+                        .copied()
+                        .zip(channel.high_pass_hz.effective().copied());
+                    let clicked = ui
+                        .add_enabled_ui(setting.is_some(), |ui| {
+                            state_button(
+                                ui,
+                                setting.is_some_and(|(enabled, _)| enabled),
+                                self.language.tr("Low Cut", "低切"),
+                                YELLOW,
+                            )
+                            .clicked()
+                        })
+                        .inner;
+                    if clicked && let Some((hpf, frequency)) = setting {
                         self.dispatch(SemanticCommand::SetHighPass {
                             input: id,
                             enabled: !hpf,
-                            frequency_hz: channel.high_pass_hz.effective().copied().unwrap_or(80.0)
-                                as u16,
+                            frequency_hz: frequency as u16,
                         });
                     }
                 }
             });
             if channel.capabilities.high_pass {
-                let mut frequency = channel
+                if let Some((mut frequency, enabled)) = channel
                     .high_pass_hz
                     .effective()
                     .copied()
-                    .unwrap_or(specs::HIGH_PASS.default);
-                if parameter_row(
-                    ui,
-                    self.language.tr("Low Cut Frequency", "低切频率"),
-                    &mut frequency,
-                    specs::HIGH_PASS,
-                )
-                .changed()
+                    .zip(channel.high_pass_enabled.effective().copied())
                 {
-                    self.dispatch(SemanticCommand::SetHighPass {
-                        input: id,
-                        enabled: channel
-                            .high_pass_enabled
-                            .effective()
-                            .copied()
-                            .unwrap_or(false),
-                        frequency_hz: frequency.round() as u16,
-                    });
+                    if parameter_row(
+                        ui,
+                        self.language.tr("Low Cut Frequency", "低切频率"),
+                        &mut frequency,
+                        specs::HIGH_PASS,
+                    )
+                    .changed()
+                    {
+                        self.dispatch(SemanticCommand::SetHighPass {
+                            input: id,
+                            enabled,
+                            frequency_hz: frequency.round() as u16,
+                        });
+                    }
+                } else {
+                    ui.weak(waiting_for_device_text(self.language));
                 }
             }
-            ui.separator();
-            ui.label(
-                egui::RichText::new(self.language.tr("4-BAND PEQ", "四段参数均衡"))
-                    .size(10.0)
-                    .strong()
-                    .color(SECONDARY),
-            );
-            if let Some((band, gain)) = eq_gain_graph(ui, &channel) {
-                let state = &channel.eq.bands[band];
-                self.dispatch(SemanticCommand::SetPeqBand {
-                    input: id,
-                    band: band as u8,
-                    frequency_hz: state.frequency_hz.effective().copied().unwrap_or(80.0) as u16,
-                    q: state.q.effective().copied().unwrap_or(1.0),
-                    gain_db: gain,
-                });
-            }
-            for (index, band) in channel.eq.bands.iter().enumerate() {
-                ui.collapsing(
-                    egui::RichText::new(format!(
-                        "{} {}  ·  {:.0} Hz  ·  {:+.1} dB",
-                        self.language.tr("Band", "频段"),
-                        index + 1,
-                        band.frequency_hz.effective().unwrap_or(&0.0),
-                        band.gain_db.effective().unwrap_or(&0.0)
+            if channel.capabilities.peq {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(self.language.tr("4-BAND PEQ", "四段参数均衡"))
+                        .size(10.0)
+                        .strong()
+                        .color(SECONDARY),
+                );
+                if let Some((band, gain)) = eq_gain_graph(ui, &channel, self.metrics, self.language)
+                {
+                    let state = &channel.eq.bands[band];
+                    if let (Some(frequency), Some(q)) =
+                        (state.frequency_hz.effective(), state.q.effective())
+                    {
+                        self.dispatch(SemanticCommand::SetPeqBand {
+                            input: id,
+                            band: band as u8,
+                            frequency_hz: *frequency as u16,
+                            q: *q,
+                            gain_db: gain,
+                        });
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(self.language.tr(
+                        "Drag a band · Shift: fine · Double-click band or gain slider: 0 dB",
+                        "拖动频段 · Shift 精调 · 双击频段或增益滑块归零",
                     ))
-                    .color(TEXT),
-                    |ui| {
-                        let mut frequency = band.frequency_hz.effective().copied().unwrap_or(80.0);
-                        let mut q = band.q.effective().copied().unwrap_or(1.0);
-                        let mut gain = band.gain_db.effective().copied().unwrap_or(0.0);
-                        let changed = parameter_row(
+                    .size(self.metrics.small_font)
+                    .color(SECONDARY),
+                );
+                for (index, band) in channel.eq.bands.iter().enumerate() {
+                    // The live values are presentation only: hashing them into
+                    // the widget ID resets expansion and child edits as they change.
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!(
+                            "{} {}  ·  {:.0} Hz  ·  {:+.1} dB",
+                            self.language.tr("Band", "频段"),
+                            index + 1,
+                            band.frequency_hz.effective().unwrap_or(&0.0),
+                            band.gain_db.effective().unwrap_or(&0.0)
+                        ))
+                        .color(TEXT),
+                    )
+                    .id_salt(("input-peq-band", self.session_generation, id, index))
+                    .show(ui, |ui| {
+                        let (Some(mut frequency), Some(mut q), Some(mut gain)) = (
+                            band.frequency_hz.effective().copied(),
+                            band.q.effective().copied(),
+                            band.gain_db.effective().copied(),
+                        ) else {
+                            ui.label(waiting_for_device_text(self.language));
+                            return;
+                        };
+                        let changed = parameter_value_row(
                             ui,
                             self.language.tr("Frequency", "频率"),
                             &mut frequency,
                             specs::EQ_FREQUENCY_WIRE,
                         )
                         .changed()
-                            | parameter_row(ui, "Q", &mut q, specs::EQ_Q_WIRE).changed()
-                            | parameter_row(
+                            | parameter_value_row(ui, "Q", &mut q, specs::EQ_Q_WIRE).changed()
+                            | eq_gain_row(
                                 ui,
                                 self.language.tr("Gain", "增益"),
                                 &mut gain,
-                                specs::EQ_GAIN,
+                                self.language,
                             )
                             .changed();
                         if changed {
@@ -2225,8 +2483,8 @@ impl Flow8App {
                                 gain_db: gain,
                             });
                         }
-                    },
-                );
+                    });
+                }
             }
             ui.separator();
             if channel.capabilities.compressor {
@@ -2266,14 +2524,6 @@ impl Flow8App {
                     });
                 }
             });
-            ui.label(
-                egui::RichText::new(self.language.tr(
-                    "Controls operate the shared Store; BLE bytes are never built in this widget.",
-                    "控件只操作共享 Store；本组件不构造 BLE 字节。",
-                ))
-                .size(9.0)
-                .color(SECONDARY),
-            );
         });
     }
 
@@ -2313,7 +2563,7 @@ impl Flow8App {
                 {
                     if self.store.state.selected_destination != destination {
                         self.store.state.selected_destination = destination;
-                        if self.store.state.session == SessionState::Ready {
+                        if self.device_controls_ready() {
                             self.dispatch(SemanticCommand::RequestChannelState {
                                 target: ChannelStateTarget::Destination(destination),
                             });
@@ -2352,29 +2602,109 @@ impl Flow8App {
                 ui.id().with(("stage-node", index)),
                 Sense::click_and_drag(),
             );
-            if response.dragged() {
-                let delta = ui.input(|input| input.pointer.delta());
-                if self.stage_layout_mode {
+            if response.clicked() || response.drag_started() {
+                response.request_focus();
+            }
+            let keyboard_select = response.has_focus()
+                && ui.input(|input| {
+                    input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+                });
+            if self.stage_layout_mode {
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        ui.is_enabled(),
+                        self.store.state.selected_input == Some(id),
+                        format!(
+                            "{} · {}",
+                            display_name(id, self.language),
+                            self.language.tr("Stage position", "舞台位置")
+                        ),
+                    )
+                });
+                if response.dragged() {
+                    self.stage_positions[index] += ui.input(|input| input.pointer.delta());
+                }
+                if response.has_focus() && ui.is_enabled() {
+                    let delta = ui.input(|input| {
+                        let step = if input.modifiers.shift { 1.0 } else { 10.0 };
+                        Vec2::new(
+                            if input.key_pressed(egui::Key::ArrowRight) {
+                                step
+                            } else if input.key_pressed(egui::Key::ArrowLeft) {
+                                -step
+                            } else {
+                                0.0
+                            },
+                            if input.key_pressed(egui::Key::ArrowDown) {
+                                step
+                            } else if input.key_pressed(egui::Key::ArrowUp) {
+                                -step
+                            } else {
+                                0.0
+                            },
+                        )
+                    });
                     self.stage_positions[index] += delta;
-                } else {
-                    let destination = self.store.state.selected_destination;
-                    let current = self.store.state.channels[index].route_levels
-                        [destination.index()]
+                    if delta != Vec2::ZERO {
+                        ui.ctx().request_repaint();
+                    }
+                }
+            } else {
+                let destination = self.store.state.selected_destination;
+                let current = self.store.state.channels[index].route_levels[destination.index()]
                     .effective()
                     .copied()
                     .unwrap_or(0.0);
-                    let next = (current - delta.y / 180.0).clamp(0.0, 1.0);
-                    self.dispatch(SemanticCommand::SetRouteLevel {
-                        source: id,
-                        destination,
-                        normalized: next,
-                    });
+                let editable = self.device_controls_ready() && ui.is_enabled();
+                response.widget_info(|| {
+                    egui::WidgetInfo::slider(
+                        editable,
+                        f64::from(current),
+                        format!(
+                            "{} → {}",
+                            display_name(id, self.language),
+                            destination_name(destination)
+                        ),
+                    )
+                });
+                if editable {
+                    let mut next = current;
+                    if response.dragged() {
+                        next -= ui.input(|input| input.pointer.delta().y) / 180.0;
+                    }
+                    if response.has_focus() {
+                        next = ui.input(|input| {
+                            let step = if input.modifiers.shift { 0.001 } else { 0.01 };
+                            if input.key_pressed(egui::Key::ArrowUp) {
+                                next + step
+                            } else if input.key_pressed(egui::Key::ArrowDown) {
+                                next - step
+                            } else if input.key_pressed(egui::Key::Home) {
+                                0.0
+                            } else if input.key_pressed(egui::Key::End) {
+                                1.0
+                            } else {
+                                next
+                            }
+                        });
+                    }
+                    accessible_slider_input(ui, &response, &mut next, 0.0, 1.0, 0.01);
+                    accessible_slider_node(ui, &response, current, 0.0, 1.0, 0.01);
+                    next = next.clamp(0.0, 1.0);
+                    if (next - current).abs() > f32::EPSILON {
+                        self.dispatch(SemanticCommand::SetRouteLevel {
+                            source: id,
+                            destination,
+                            normalized: next,
+                        });
+                    }
                 }
             }
-            if response.clicked() {
+            if response.clicked() || keyboard_select {
                 let selection_changed = self.store.state.selected_input != Some(id);
                 self.store.state.selected_input = Some(id);
-                if selection_changed && self.store.state.session == SessionState::Ready {
+                if selection_changed && self.device_controls_ready() {
                     self.dispatch(SemanticCommand::RequestChannelState {
                         target: ChannelStateTarget::Input(id),
                     });
@@ -2400,8 +2730,18 @@ impl Flow8App {
                 rect,
                 8.0,
                 Stroke::new(
-                    if selected { 2.0 } else { 1.0 },
-                    if selected { YELLOW } else { BORDER },
+                    if selected || response.has_focus() {
+                        2.0
+                    } else {
+                        1.0
+                    },
+                    if response.has_focus() {
+                        BLUE
+                    } else if selected {
+                        YELLOW
+                    } else {
+                        BORDER
+                    },
                 ),
                 StrokeKind::Inside,
             );
@@ -2754,7 +3094,7 @@ impl Flow8App {
                                     settings_form_row(ui, grid, this.language.tr("Status", "状态"), |ui| {
                                         ui.label(session_state_text(this.store.state.session, this.language));
                                     });
-                                    if this.store.state.session != SessionState::Ready {
+                                    if !this.device_controls_ready() {
                                         ui.label(
                                             egui::RichText::new(this.language.tr(
                                                 "Device settings are available when the connection is ready.",
@@ -2817,7 +3157,7 @@ impl Flow8App {
                                 });
                             });
 
-                            let device_ready = self.store.state.session == SessionState::Ready;
+                            let device_ready = self.device_controls_ready();
                             ui.add_enabled_ui(device_ready, |ui| {
                                 ui.add_space(grid.gap);
                                 settings_grid_row(self, ui, grid, 1, |this, ui| {
@@ -2829,15 +3169,10 @@ impl Flow8App {
                                             .strong()
                                             .color(BLUE),
                                         );
-                                        let mut name = settings
-                                            .device_name
-                                            .effective()
-                                            .cloned()
-                                            .unwrap_or_else(|| "FLOW 8".into());
                                         settings_form_row(ui, grid, this.language.tr("Device Name", "设备名称"), |ui| {
-                                            if ui.text_edit_singleline(&mut name).changed() {
+                                            if let Some(name) = committed_text(ui, ("device-name", this.session_generation), settings.device_name.effective().map(String::as_str), 255, this.language) {
                                                 this.dispatch(SemanticCommand::SetSetting(
-                                                    KnownSetting::DeviceName(name.clone()),
+                                                    KnownSetting::DeviceName(name),
                                                 ));
                                             }
                                         });
@@ -2894,13 +3229,13 @@ impl Flow8App {
                                             .unwrap_or(MonitorRoutingSource::MonitorMix);
                                         settings_form_row(ui, grid, this.language.tr("Monitor Source", "监听来源"), |ui| {
                                             ui.horizontal_wrapped(|ui| {
-                                                for (candidate, label, raw) in [
-                                                    (MonitorRoutingSource::MonitorMix, "MON", 0),
-                                                    (MonitorRoutingSource::Usb12, "USB 1/2", 1),
-                                                    (MonitorRoutingSource::Usb34, "USB 3/4", 2),
+                                                for (candidate, label) in [
+                                                    (MonitorRoutingSource::MonitorMix, "MON"),
+                                                    (MonitorRoutingSource::Usb12, "USB 1/2"),
+                                                    (MonitorRoutingSource::Usb34, "USB 3/4"),
                                                 ] {
                                                     if state_button(ui, current == candidate, label, GREEN).clicked() {
-                                                        this.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorRouting(raw)));
+                                                        this.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorRouting(candidate)));
                                                     }
                                                 }
                                             });
@@ -3631,12 +3966,11 @@ impl Flow8App {
                         );
                         for (index, fx_id) in [FxId::Fx1, FxId::Fx2].into_iter().enumerate() {
                             let effect = self.store.state.effects[index].clone();
-                            let mut routes = [
-                                effect.return_to_main.effective().copied().unwrap_or(false),
-                                effect.return_to_mon1.effective().copied().unwrap_or(false),
-                                effect.return_to_mon2.effective().copied().unwrap_or(false),
-                            ];
                             ui.label(format!("FX {}", index + 1));
+                            let Some((values, mut routes)) = fx_setup_values(&effect) else {
+                                ui.weak(waiting_for_device_text(self.language));
+                                continue;
+                            };
                             let mut changed = false;
                             ui.horizontal(|ui| {
                                 for (route, label) in
@@ -3651,10 +3985,7 @@ impl Flow8App {
                             if changed {
                                 self.dispatch(SemanticCommand::SetFxSetup {
                                     fx: fx_id,
-                                    values: effect
-                                        .parameters
-                                        .each_ref()
-                                        .map(|value| value.effective().copied().unwrap_or(0)),
+                                    values,
                                     return_to_main: routes[0],
                                     return_to_mon1: routes[1],
                                     return_to_mon2: routes[2],
@@ -3723,11 +4054,16 @@ impl eframe::App for Flow8App {
             self.metrics = metrics;
             configure_style(ui.ctx(), metrics);
         }
+        self.store.set_fader_pointer_down(
+            ui.input(|input| input.pointer.primary_down()),
+            Instant::now(),
+        );
         self.poll_runtime();
-        self.advance_meter_display();
+        let meters_animating = self.advance_meter_display();
         self.clear_stale_confirmation();
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
+        if meters_animating {
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+        }
 
         ui.set_min_size(ui.available_size());
         ui.painter().rect_filled(ui.max_rect(), 0.0, BG);
@@ -3736,7 +4072,7 @@ impl eframe::App for Flow8App {
             self.connection_bar(ui);
             self.layer_bar(ui);
             self.clear_stale_confirmation();
-            if self.store.state.session == SessionState::Ready && self.page == Page::Snapshots {
+            if self.device_controls_ready() && self.page == Page::Snapshots {
                 if !self.snapshot_names_requested {
                     self.dispatch(SemanticCommand::RequestSnapshotNames);
                     self.snapshot_names_requested = true;
@@ -3745,8 +4081,8 @@ impl eframe::App for Flow8App {
                 self.snapshot_names_requested = false;
             }
             ui.spacing_mut().item_spacing = Vec2::splat(self.metrics.spacing);
-            let device_ready = self.store.state.session == SessionState::Ready;
-            if !device_ready && self.page != Page::Settings {
+            let device_ready = self.device_controls_ready();
+            if !device_ready && !self.disconnect_request_pending && self.page != Page::Settings {
                 device_unsynced_notice(ui, self.store.state.session, self.language);
             }
             match self.page {
@@ -3808,6 +4144,10 @@ impl eframe::App for Flow8App {
         // Send this frame's intents now, rather than waiting for the next repaint.
         // The Store's semantic queue still coalesces continuous edits within the frame.
         self.flush_commands();
+        if let Some(deadline) = self.store.next_pending_deadline() {
+            ui.ctx()
+                .request_repaint_after(deadline.saturating_duration_since(Instant::now()));
+        }
     }
 }
 
@@ -4028,10 +4368,8 @@ fn channel_strip(
     action
 }
 
-const FADER_CONFIRM_GRACE_SECONDS: f64 = 3.0;
-
-// A gesture is editing intent, not another copy of device state. The confirmed
-// Store remains authoritative once the device catches up or the grace expires.
+// Only the active drag lives in GUI memory. After release, Core reconciles
+// pending and confirmed values; the widget never hides device state itself.
 #[derive(Clone, Copy)]
 struct FaderGesture {
     target: f32,
@@ -4039,7 +4377,6 @@ struct FaderGesture {
     last_pointer_y: f32,
     grab_offset_y: f32,
     fine: bool,
-    released_at: Option<f64>,
 }
 
 impl FaderGesture {
@@ -4059,7 +4396,6 @@ impl FaderGesture {
             last_pointer_y: pointer_y,
             grab_offset_y,
             fine,
-            released_at: None,
         }
     }
 
@@ -4081,24 +4417,6 @@ impl FaderGesture {
         } else {
             false
         }
-    }
-
-    fn released(value: f32, time: f64) -> Self {
-        Self {
-            target: value,
-            last_sent: value,
-            last_pointer_y: 0.0,
-            grab_offset_y: 0.0,
-            fine: false,
-            released_at: Some(time),
-        }
-    }
-
-    fn awaiting_confirmation(&self, confirmed: Option<f32>, now: f64) -> bool {
-        let released_at = self.released_at.unwrap_or(now);
-        let confirmed_target =
-            confirmed.is_some_and(|device_value| (device_value - self.target).abs() <= 0.01);
-        !confirmed_target && now - released_at < FADER_CONFIRM_GRACE_SECONDS
     }
 }
 
@@ -4139,7 +4457,7 @@ fn fader_sized(
     width: f32,
     height: f32,
     default: f32,
-    confirmed: Option<f32>,
+    _confirmed: Option<f32>,
 ) -> Response {
     let (rect, mut response) =
         ui.allocate_exact_size(Vec2::new(width, height).round_ui(), Sense::click_and_drag());
@@ -4153,7 +4471,6 @@ fn fader_sized(
         response.request_focus();
     }
     let drag_id = response.id.with("fader-drag");
-    let time = ui.input(|input| input.time);
     if !ui.is_enabled() {
         ui.ctx()
             .data_mut(|data| data.remove::<FaderGesture>(drag_id));
@@ -4186,25 +4503,18 @@ fn fader_sized(
             *value = gesture.target;
             ui.ctx().data_mut(|data| data.insert_temp(drag_id, gesture));
         }
-    } else if let Some(mut gesture) = ui.ctx().data(|data| data.get_temp::<FaderGesture>(drag_id)) {
-        gesture.released_at.get_or_insert(time);
-        if gesture.awaiting_confirmation(confirmed, time) {
-            // Hide an older in-flight echo briefly after release; never emit TX from it.
-            *value = gesture.target;
-            ui.ctx().data_mut(|data| data.insert_temp(drag_id, gesture));
-        } else {
-            ui.ctx()
-                .data_mut(|data| data.remove::<FaderGesture>(drag_id));
-        }
+    } else {
+        ui.ctx()
+            .data_mut(|data| data.remove::<FaderGesture>(drag_id));
     }
     if response.double_clicked() && (*value - default).abs() > f32::EPSILON {
         *value = default;
         response.mark_changed();
         ui.ctx()
-            .data_mut(|data| data.insert_temp(drag_id, FaderGesture::released(default, time)));
+            .data_mut(|data| data.remove::<FaderGesture>(drag_id));
     }
     // Wheel input belongs to the scroll area, never to a merely hovered fader.
-    if response.has_focus() {
+    if ui.is_enabled() && response.has_focus() {
         let delta = ui.input(|input| {
             if input.key_pressed(egui::Key::ArrowUp) {
                 0.01
@@ -4221,9 +4531,14 @@ fn fader_sized(
             response.mark_changed();
             if !pointer_held {
                 ui.ctx()
-                    .data_mut(|data| data.insert_temp(drag_id, FaderGesture::released(next, time)));
+                    .data_mut(|data| data.remove::<FaderGesture>(drag_id));
             }
         }
+    }
+    if accessible_slider_input(ui, &response, value, 0.0, 1.0, 0.01) {
+        response.mark_changed();
+        ui.ctx()
+            .data_mut(|data| data.remove::<FaderGesture>(drag_id));
     }
     let cursor = if pointer_held {
         egui::CursorIcon::Grabbing
@@ -4283,11 +4598,86 @@ fn fader_sized(
         Stroke::new(1.0, Color32::from_rgb(90, 96, 105)),
         StrokeKind::Inside,
     );
+    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), "Level"));
+    accessible_slider_node(ui, &response, *value, 0.0, 1.0, 0.01);
     response
 }
 
+fn accessible_slider_input(
+    ui: &egui::Ui,
+    response: &Response,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    step: f32,
+) -> bool {
+    use egui::accesskit::{Action, ActionData};
+
+    if !ui.is_enabled() {
+        return false;
+    }
+    let requested = ui.input(|input| {
+        let increment = input.num_accesskit_action_requests(response.id, Action::Increment);
+        let decrement = input.num_accesskit_action_requests(response.id, Action::Decrement);
+        let mut requested = (increment != 0 || decrement != 0)
+            .then(|| f64::from(*value) + (increment as f64 - decrement as f64) * f64::from(step));
+        for request in input.accesskit_action_requests(response.id, Action::SetValue) {
+            if let Some(ActionData::NumericValue(next)) = request.data
+                && next.is_finite()
+            {
+                requested = Some(next);
+            }
+        }
+        requested
+    });
+    // Do not normalize an untouched device value while merely rendering.
+    // This is the same intent-only path used by mouse and keyboard controls.
+    if let Some(next) = requested.filter(|value| value.is_finite()) {
+        let next = next.clamp(f64::from(min), f64::from(max)) as f32;
+        if next != *value {
+            *value = next;
+            return true;
+        }
+    }
+    false
+}
+
+fn accessible_slider_node(
+    ui: &egui::Ui,
+    response: &Response,
+    value: f32,
+    min: f32,
+    max: f32,
+    step: f32,
+) {
+    use egui::accesskit::Action;
+
+    ui.ctx().accesskit_node_builder(response.id, |builder| {
+        builder.set_min_numeric_value(f64::from(min));
+        builder.set_max_numeric_value(f64::from(max));
+        builder.set_numeric_value_step(f64::from(step));
+        if ui.is_enabled() {
+            builder.add_action(Action::SetValue);
+            if value < max {
+                builder.add_action(Action::Increment);
+            }
+            if value > min {
+                builder.add_action(Action::Decrement);
+            }
+        }
+    });
+}
+
 fn meter_widget_sized(ui: &mut egui::Ui, db: f32, width: f32, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height).round_ui(), Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, height).round_ui(), Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Other,
+            ui.is_enabled(),
+            format!("Signal level {db:.1} dB"),
+        )
+    });
     let bar = Rect::from_min_max(
         Pos2::new(rect.left() + 3.0, rect.top() + 2.0),
         Pos2::new(rect.left() + 14.0, rect.bottom() - 2.0),
@@ -4320,6 +4710,7 @@ fn pan_control(ui: &mut egui::Ui, value: &mut f32, width: f32, metrics: UiMetric
     if (response.dragged() || response.clicked())
         && let Some(pointer) = response.interact_pointer_pos()
     {
+        response.request_focus();
         let next = ((pointer.x - rect.left()) / rect.width() * 2.0 - 1.0).clamp(-1.0, 1.0);
         if (*value - next).abs() > f32::EPSILON {
             *value = next;
@@ -4328,6 +4719,33 @@ fn pan_control(ui: &mut egui::Ui, value: &mut f32, width: f32, metrics: UiMetric
     }
     if response.double_clicked() {
         *value = 0.0;
+        response.mark_changed();
+    }
+    if ui.is_enabled() && response.has_focus() {
+        let next = ui.input(|input| {
+            let step = if input.modifiers.shift { 0.005 } else { 0.05 };
+            if input.key_pressed(egui::Key::ArrowLeft) {
+                (*value - step).max(specs::PAN.min)
+            } else if input.key_pressed(egui::Key::ArrowRight) {
+                (*value + step).min(specs::PAN.max)
+            } else if input.key_pressed(egui::Key::Home) {
+                specs::PAN.default
+            } else {
+                *value
+            }
+        });
+        if next != *value {
+            *value = next;
+            response.mark_changed();
+        }
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            3.0,
+            Stroke::new(1.0, BLUE),
+            StrokeKind::Inside,
+        );
+    }
+    if accessible_slider_input(ui, &response, value, specs::PAN.min, specs::PAN.max, 0.05) {
         response.mark_changed();
     }
     let track_y = rect.center().y;
@@ -4360,6 +4778,10 @@ fn pan_control(ui: &mut egui::Ui, value: &mut f32, width: f32, metrics: UiMetric
     } else {
         egui::CursorIcon::Grab
     };
+    response.widget_info(|| {
+        egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), "Pan / Balance")
+    });
+    accessible_slider_node(ui, &response, *value, specs::PAN.min, specs::PAN.max, 0.05);
     response.on_hover_cursor(cursor)
 }
 
@@ -4378,6 +4800,44 @@ fn parameter_row(
     label: &str,
     value: &mut f32,
     spec: ParameterSpec,
+) -> ParameterRowResponse {
+    parameter_row_impl(ui, label, value, spec, true, None)
+}
+
+fn parameter_value_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    spec: ParameterSpec,
+) -> ParameterRowResponse {
+    // A wire-format bound is an encoding guard, not a useful physical slider
+    // range. Numeric entry avoids advertising an uncalibrated sweep range.
+    parameter_row_impl(ui, label, value, spec, false, None)
+}
+
+fn eq_gain_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    language: Language,
+) -> ParameterRowResponse {
+    parameter_row_impl(
+        ui,
+        label,
+        value,
+        specs::EQ_GAIN,
+        true,
+        Some(language.tr("Double-click to reset gain to 0 dB", "双击将增益归零")),
+    )
+}
+
+fn parameter_row_impl(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    spec: ParameterSpec,
+    slider: bool,
+    reset_hint: Option<&str>,
 ) -> ParameterRowResponse {
     let original = *value;
     let scale = ui.spacing().interact_size.y / 30.0;
@@ -4401,12 +4861,47 @@ fn parameter_row(
                         flow8_model::Unit::Hertz => " Hz",
                         _ => "",
                     };
-                    ui.add(
-                        egui::Slider::new(value, spec.min..=spec.max)
-                            .step_by(spec.step.unwrap_or(0.01) as f64)
-                            .suffix(suffix)
-                            .show_value(true),
-                    )
+                    if slider {
+                        let mut response = ui.add(
+                            egui::Slider::new(value, spec.min..=spec.max)
+                                .step_by(spec.step.unwrap_or(0.01) as f64)
+                                .suffix(suffix)
+                                .show_value(reset_hint.is_none()),
+                        );
+                        if let Some(hint) = reset_hint {
+                            // Keep the value editor separate: double-clicking
+                            // the rail resets gain without stealing text edits.
+                            if ui.is_enabled() && response.double_clicked() {
+                                *value = spec.default;
+                                response.mark_changed();
+                            }
+                            response = response.on_hover_text(hint);
+                            let value_response = ui.add(
+                                egui::DragValue::new(value)
+                                    .range(spec.min..=spec.max)
+                                    .speed(spec.step.unwrap_or(0.1))
+                                    .suffix(suffix)
+                                    .max_decimals(spec.display_decimals as usize),
+                            );
+                            response = if value_response.gained_focus()
+                                || value_response.has_focus()
+                                || value_response.lost_focus()
+                            {
+                                value_response.union(response)
+                            } else {
+                                response.union(value_response)
+                            };
+                        }
+                        response
+                    } else {
+                        ui.add(
+                            egui::DragValue::new(value)
+                                .range(spec.min..=spec.max)
+                                .speed(spec.step.unwrap_or(0.1))
+                                .suffix(suffix)
+                                .max_decimals(if spec.step == Some(1.0) { 0 } else { 2 }),
+                        )
+                    }
                 })
                 .inner
             })
@@ -4417,7 +4912,7 @@ fn parameter_row(
     // value to a display step. That is a rendering detail, not user intent.
     let pointer_edit =
         response.dragged() || response.clicked() || response.is_pointer_button_down_on();
-    let keyboard_edit = response.has_focus()
+    let keyboard_edit = (response.has_focus() || response.lost_focus())
         && ui.input(|input| {
             input.events.iter().any(|event| {
                 matches!(
@@ -4429,8 +4924,15 @@ fn parameter_row(
             })
         });
     let wheel_edit = response.hovered() && ui.input(|input| input.smooth_scroll_delta.y != 0.0);
+    let accessibility_edit = ui.input(|input| {
+        use egui::accesskit::Action;
+        [Action::Increment, Action::Decrement, Action::SetValue]
+            .into_iter()
+            .any(|action| input.num_accesskit_action_requests(response.id, action) != 0)
+    });
     let user_changed = response.changed()
-        && (pointer_edit || keyboard_edit || wheel_edit)
+        && ui.is_enabled()
+        && (pointer_edit || keyboard_edit || wheel_edit || accessibility_edit)
         && (*value - original).abs() > 1.0e-6;
     if !user_changed {
         *value = original;
@@ -4438,11 +4940,23 @@ fn parameter_row(
     ParameterRowResponse { user_changed }
 }
 
-fn eq_gain_graph(ui: &mut egui::Ui, channel: &InputChannelState) -> Option<(usize, f32)> {
+fn eq_gain_graph(
+    ui: &mut egui::Ui,
+    channel: &InputChannelState,
+    metrics: UiMetrics,
+    language: Language,
+) -> Option<(usize, f32)> {
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), 96.0),
-        Sense::click_and_drag(),
+        Vec2::new(ui.available_width(), 96.0 * metrics.ui_scale),
+        Sense::hover(),
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Other,
+            ui.is_enabled(),
+            "EQ response graph; use the band controls to edit frequency, Q and gain",
+        )
+    });
     ui.painter()
         .rect_filled(rect, 4.0, Color32::from_rgb(13, 15, 18));
     for index in 1..4 {
@@ -4453,25 +4967,133 @@ fn eq_gain_graph(ui: &mut egui::Ui, channel: &InputChannelState) -> Option<(usiz
     ui.painter()
         .hline(rect.x_range(), rect.center().y, Stroke::new(1.0, BORDER));
     let mut points = Vec::new();
+    let mut edit = None;
     for (index, band) in channel.eq.bands.iter().enumerate() {
         let x = egui::lerp(rect.left()..=rect.right(), (index as f32 + 0.5) / 4.0);
         let gain = *band.gain_db.effective().unwrap_or(&0.0);
         let y = egui::lerp(rect.bottom()..=rect.top(), (gain + 15.0) / 30.0);
         points.push(Pos2::new(x, y));
-        ui.painter().circle_filled(Pos2::new(x, y), 4.0, YELLOW);
+        let editable = channel.capabilities.peq
+            && band.frequency_hz.effective().is_some()
+            && band.q.effective().is_some()
+            && band.gain_db.effective().is_some();
+        // Each band owns a disjoint column, not just a small moving node.
+        // Double-clicking anywhere in it resets that band's gain only.
+        let hit_rect = Rect::from_min_max(
+            Pos2::new(
+                egui::lerp(rect.left()..=rect.right(), index as f32 / 4.0),
+                rect.top(),
+            ),
+            Pos2::new(
+                egui::lerp(rect.left()..=rect.right(), (index as f32 + 1.0) / 4.0),
+                rect.bottom(),
+            ),
+        );
+        let response = ui
+            .interact(
+                hit_rect,
+                ui.id().with(("input-eq-band", index)),
+                if editable {
+                    Sense::click_and_drag()
+                } else {
+                    Sense::hover()
+                },
+            )
+            .on_hover_cursor(if editable {
+                egui::CursorIcon::ResizeVertical
+            } else {
+                egui::CursorIcon::Default
+            })
+            .on_hover_text(language.tr(
+                "Drag to adjust gain; double-click to reset to 0 dB",
+                "拖动调整增益；双击归零",
+            ));
+        let next = eq_band_control(ui, &response, index, gain, editable, rect.height());
+        if let Some(gain) = next {
+            edit = Some((index, gain));
+        }
+        ui.painter().circle_filled(
+            Pos2::new(x, y),
+            4.0 * metrics.ui_scale,
+            if response.hovered() || response.has_focus() {
+                Color32::WHITE
+            } else {
+                YELLOW
+            },
+        );
     }
     ui.painter()
         .add(egui::Shape::line(points, Stroke::new(2.0, YELLOW)));
-    if (response.dragged() || response.clicked())
-        && let Some(pointer) = response.interact_pointer_pos()
-    {
-        let normalized_x = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 0.999);
-        let band = (normalized_x * 4.0).floor() as usize;
-        let normalized_y = ((rect.bottom() - pointer.y) / rect.height()).clamp(0.0, 1.0);
-        let gain = specs::EQ_GAIN.min + normalized_y * (specs::EQ_GAIN.max - specs::EQ_GAIN.min);
-        return Some((band.min(3), gain));
+    edit
+}
+
+fn eq_band_control(
+    ui: &egui::Ui,
+    response: &Response,
+    index: usize,
+    gain: f32,
+    editable: bool,
+    plot_height: f32,
+) -> Option<f32> {
+    let label = format!("EQ band {} gain", index + 1);
+    response.widget_info(|| {
+        egui::WidgetInfo::slider(ui.is_enabled() && editable, f64::from(gain), &label)
+    });
+    if !editable || !ui.is_enabled() {
+        return None;
     }
-    None
+    if response.clicked() || response.drag_started() {
+        response.request_focus();
+    }
+    let mut next = gain;
+    if response.double_clicked() {
+        next = specs::EQ_GAIN.default;
+    } else if response.dragged() {
+        let fine = ui.input(|input| if input.modifiers.shift { 0.1 } else { 1.0 });
+        next -= response.drag_delta().y / plot_height.max(1.0)
+            * (specs::EQ_GAIN.max - specs::EQ_GAIN.min)
+            * fine;
+    }
+    if response.has_focus() {
+        next = ui.input(|input| {
+            let step = if input.modifiers.shift { 0.01 } else { 0.1 };
+            if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::ArrowRight) {
+                next + step
+            } else if input.key_pressed(egui::Key::ArrowDown)
+                || input.key_pressed(egui::Key::ArrowLeft)
+            {
+                next - step
+            } else if input.key_pressed(egui::Key::Home) {
+                specs::EQ_GAIN.default
+            } else {
+                next
+            }
+        });
+        ui.painter().rect_stroke(
+            response.rect,
+            3.0,
+            Stroke::new(1.0, BLUE),
+            StrokeKind::Inside,
+        );
+    }
+    accessible_slider_input(
+        ui,
+        response,
+        &mut next,
+        specs::EQ_GAIN.min,
+        specs::EQ_GAIN.max,
+        0.1,
+    );
+    accessible_slider_node(
+        ui,
+        response,
+        gain,
+        specs::EQ_GAIN.min,
+        specs::EQ_GAIN.max,
+        0.1,
+    );
+    next = next.clamp(specs::EQ_GAIN.min, specs::EQ_GAIN.max);
+    (next.is_finite() && (next - gain).abs() > f32::EPSILON).then_some(next)
 }
 
 fn output_eq_graph(ui: &mut egui::Ui, eq: &EqState, metrics: UiMetrics) -> Option<(usize, f32)> {
@@ -4580,15 +5202,8 @@ fn output_eq_graph(ui: &mut egui::Ui, eq: &EqState, metrics: UiMetrics) -> Optio
                 BLUE
             },
         );
-        if response.dragged() {
-            let fine = ui.input(|input| if input.modifiers.shift { 0.1 } else { 1.0 });
-            let next = (gain - response.drag_delta().y / plot.height() * gain_range * fine)
-                .clamp(specs::EQ_GAIN.min, specs::EQ_GAIN.max);
-            if (next - gain).abs() > f32::EPSILON {
-                edit = Some((index, next));
-            }
-        } else if response.double_clicked() && gain != 0.0 {
-            edit = Some((index, 0.0));
+        if let Some(next) = eq_band_control(ui, &response, index, gain, editable, plot.height()) {
+            edit = Some((index, next));
         }
     }
     edit
@@ -5278,11 +5893,11 @@ mod tests {
     }
 
     #[test]
-    fn fader_release_reconciles_to_device_or_expires() {
-        let gesture = FaderGesture::released(0.7, 10.0);
-        assert!(gesture.awaiting_confirmation(Some(0.2), 10.5));
-        assert!(!gesture.awaiting_confirmation(Some(0.7), 10.5));
-        assert!(!gesture.awaiting_confirmation(Some(0.2), 13.1));
+    fn fader_gesture_contains_only_active_drag_intent() {
+        let track = Rect::from_min_max(Pos2::ZERO, Pos2::new(5.0, 200.0));
+        let mut gesture = FaderGesture::begin(0.7, fader_thumb_y(track, 0.7), track, true, false);
+        assert_eq!(gesture.target, 0.7);
+        assert!(!gesture.update(fader_thumb_y(track, 0.7), track, false));
     }
 
     #[test]
@@ -5615,9 +6230,11 @@ mod tests {
 
     #[test]
     fn snapshot_name_refresh_uses_existing_read_only_protocol_request() {
+        let mut queue = flow8_core::SemanticCommandQueue::default();
+        queue.push(SemanticCommand::RequestSnapshotNames).unwrap();
         assert!(matches!(
-            SemanticCommand::RequestSnapshotNames.to_protocol(),
-            flow8_protocol::TxCommand::GetSnapshotNames
+            queue.front_protocol_tracked(),
+            Some((_, flow8_protocol::TxCommand::GetSnapshotNames))
         ));
     }
 
@@ -5847,6 +6464,160 @@ mod tests {
 }
 
 const MAX_PRODUCTION_LOG_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_RETAINED_PRODUCTION_LOGS: usize = 6;
+const MAX_RETAINED_PRODUCTION_LOG_BYTES: u64 = 96 * 1024 * 1024;
+const PRODUCTION_LOG_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const LOG_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const PRODUCTION_LOG_LIMIT_NOTICE: &[u8] =
+    b"warning: FLOW 8 log reached its 16 MiB limit; further entries are suppressed until the next launch\n";
+
+struct LogMaintenance {
+    stop: mpsc::Sender<()>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl Drop for LogMaintenance {
+    fn drop(&mut self) {
+        // Wake the worker immediately instead of waiting for the hourly timer.
+        let _ = self.stop.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn is_production_log_name(name: &str) -> bool {
+    let Some(fields) = name
+        .strip_prefix("windows-production-connection-")
+        .and_then(|name| name.strip_suffix(".log"))
+    else {
+        return false;
+    };
+    let mut fields = fields.split('-');
+    let valid_number = |field: Option<&str>| {
+        field.is_some_and(|field| {
+            !field.is_empty()
+                && field.bytes().all(|byte| byte.is_ascii_digit())
+                && field.parse::<u128>().is_ok()
+        })
+    };
+    valid_number(fields.next())
+        && valid_number(fields.next())
+        && valid_number(fields.next())
+        && fields.next().is_none()
+}
+
+fn cleanup_production_logs(directory: &Path, active_file: Option<&Path>) -> io::Result<usize> {
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log directory is not a real directory",
+        ));
+    }
+
+    let now = SystemTime::now();
+    let mut logs = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || !entry
+                .file_name()
+                .to_str()
+                .is_some_and(is_production_log_name)
+        {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        logs.push((
+            entry.path(),
+            metadata.modified().unwrap_or(now),
+            metadata.len(),
+        ));
+    }
+    logs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let mut remaining = logs.len();
+    let mut bytes = logs
+        .iter()
+        .fold(0_u64, |total, log| total.saturating_add(log.2));
+    let mut removed = 0;
+    for (path, modified, size) in logs {
+        if active_file == Some(path.as_path()) {
+            continue;
+        }
+        let expired = now
+            .duration_since(modified)
+            .is_ok_and(|age| age >= PRODUCTION_LOG_RETENTION);
+        if expired
+            || remaining > MAX_RETAINED_PRODUCTION_LOGS
+            || bytes > MAX_RETAINED_PRODUCTION_LOG_BYTES
+        {
+            // Other application instances hold this lock for the lifetime of
+            // their detailed log. Never remove a file that is still in use.
+            let lease = match OpenOptions::new().read(true).write(true).open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            match lease.try_lock() {
+                Ok(()) => {}
+                Err(fs::TryLockError::WouldBlock) => continue,
+                Err(fs::TryLockError::Error(error)) => return Err(error),
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            remaining = remaining.saturating_sub(1);
+            bytes = bytes.saturating_sub(size);
+        }
+    }
+    Ok(removed)
+}
+
+fn maintain_production_logs(directory: &Path, active_file: Option<&Path>) {
+    match cleanup_production_logs(directory, active_file) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "old FLOW 8 diagnostic logs removed"),
+        Err(error) => tracing::warn!(%error, "could not clean up old FLOW 8 diagnostic logs"),
+    }
+}
+
+fn start_log_maintenance(active_file: Option<PathBuf>) -> Option<LogMaintenance> {
+    let directory = match production_log_directory() {
+        Ok(directory) => directory,
+        Err(error) => {
+            tracing::warn!(%error, "FLOW 8 diagnostic log cleanup unavailable");
+            return None;
+        }
+    };
+    maintain_production_logs(&directory, active_file.as_deref());
+    let (stop, stopped) = mpsc::channel();
+    match thread::Builder::new()
+        .name("flow8-log-cleanup".into())
+        .spawn(move || {
+            while matches!(
+                stopped.recv_timeout(LOG_CLEANUP_INTERVAL),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ) {
+                maintain_production_logs(&directory, active_file.as_deref());
+            }
+        }) {
+        Ok(worker) => Some(LogMaintenance {
+            stop,
+            worker: Some(worker),
+        }),
+        Err(error) => {
+            tracing::warn!(%error, "could not start FLOW 8 diagnostic log cleanup timer");
+            None
+        }
+    }
+}
 
 struct ProductionLogFile {
     file: File,
@@ -5883,14 +6654,14 @@ impl Write for ProductionLogSink {
         }
         let mut log = self.file.lock().unwrap_or_else(|error| error.into_inner());
         if !log.capped {
-            if log.written.saturating_add(buffer.len() as u64) <= MAX_PRODUCTION_LOG_BYTES {
+            if log.written.saturating_add(buffer.len() as u64)
+                <= MAX_PRODUCTION_LOG_BYTES - PRODUCTION_LOG_LIMIT_NOTICE.len() as u64
+            {
                 log.file.write_all(buffer)?;
                 log.written += buffer.len() as u64;
             } else {
                 log.capped = true;
-                let _ = log.file.write_all(
-                    b"warning: FLOW 8 log reached its 16 MiB limit; further entries are suppressed until the next launch\n",
-                );
+                let _ = log.file.write_all(PRODUCTION_LOG_LIMIT_NOTICE);
                 if self.stdout.is_some() {
                     eprintln!("warning: FLOW 8 log reached its 16 MiB limit");
                 }
@@ -5947,22 +6718,6 @@ fn open_production_log() -> io::Result<(File, PathBuf)> {
     #[cfg(unix)]
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
 
-    const MAX_RETAINED_PRODUCTION_LOGS: usize = 12;
-    let retained = fs::read_dir(&directory)?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("windows-production-connection-") && name.ends_with(".log")
-        })
-        .count();
-    if retained >= MAX_RETAINED_PRODUCTION_LOGS {
-        return Err(io::Error::new(
-            io::ErrorKind::StorageFull,
-            "12 FLOW 8 diagnostic logs are retained; archive or remove old logs before capturing another",
-        ));
-    }
-
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -5977,7 +6732,10 @@ fn open_production_log() -> io::Result<(File, PathBuf)> {
         #[cfg(unix)]
         options.mode(0o600);
         match options.open(&path) {
-            Ok(file) => return Ok((file, path)),
+            Ok(file) => {
+                file.lock()?;
+                return Ok((file, path));
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -6049,11 +6807,17 @@ fn open_application_log() -> io::Result<(File, PathBuf)> {
 fn flow8_ble_verbose_logging(filter: &str) -> bool {
     filter.split(',').any(|directive| {
         let directive = directive.trim().to_ascii_lowercase();
-        directive == "flow8_ble=debug" || directive == "flow8_ble=trace"
+        matches!(
+            directive.as_str(),
+            "flow8_ble=debug"
+                | "flow8_ble=trace"
+                | "flow8_directhci=debug"
+                | "flow8_directhci=trace"
+        )
     })
 }
 
-fn init_tracing() -> Option<String> {
+fn init_tracing() -> (Option<String>, Option<LogMaintenance>) {
     const DEFAULT_FILTER: &str = "flow8_ble=info,flow8_directhci=info,flow8_gui=info";
     let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_FILTER.into());
     let filter = tracing_subscriber::EnvFilter::try_new(&rust_log)
@@ -6076,6 +6840,7 @@ fn init_tracing() -> Option<String> {
                 }
                 let _ = tracing_subscriber::fmt()
                     .with_env_filter(filter)
+                    .with_ansi(false)
                     .with_writer(ProductionLogWriter {
                         file: Arc::new(Mutex::new(ProductionLogFile {
                             file,
@@ -6089,10 +6854,10 @@ fn init_tracing() -> Option<String> {
                 if verbose {
                     tracing::warn!(
                         target: "flow8_ble",
-                        "verbose logs contain raw device state and client identifiers; review before sharing"
+                        "verbose logs contain raw device state and device identifiers; review before sharing"
                     );
                 }
-                return None;
+                return (None, start_log_maintenance(Some(path)));
             }
             Err(error) => {
                 let message = format!("could not create private FLOW 8 log: {error}");
@@ -6105,11 +6870,11 @@ fn init_tracing() -> Option<String> {
         }
     }
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
-    startup_error
+    (startup_error, start_log_maintenance(None))
 }
 
 fn main() -> eframe::Result {
-    let logging_error = init_tracing();
+    let (logging_error, _log_maintenance) = init_tracing();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FLOW 8 PC Controller")

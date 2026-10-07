@@ -15,6 +15,15 @@ use uuid::Uuid;
 
 const ID_FILE: &str = "client-id.txt";
 
+struct TemporaryIdentity(PathBuf);
+
+impl Drop for TemporaryIdentity {
+    fn drop(&mut self) {
+        // Only the uniquely named staging file created by this operation.
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 fn config_directory() -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
@@ -101,6 +110,7 @@ pub(super) fn load_or_create() -> Result<[u8; 16], String> {
     }
 
     let uuid = Uuid::new_v4();
+    let temporary_path = directory.join(format!(".client-id-{}.tmp", Uuid::new_v4()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -108,18 +118,10 @@ pub(super) fn load_or_create() -> Result<[u8; 16], String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = match options.open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            return read_existing(&path);
-        }
-        Err(error) => {
-            return Err(format!(
-                "cannot persist FLOW 8 client identity {}: {error}",
-                path.display()
-            ));
-        }
-    };
+    let mut file = options
+        .open(&temporary_path)
+        .map_err(|error| format!("cannot stage FLOW 8 client identity: {error}"))?;
+    let temporary = TemporaryIdentity(temporary_path);
     writeln!(file, "{uuid}")
         .and_then(|()| file.sync_all())
         .map_err(|error| {
@@ -128,6 +130,23 @@ pub(super) fn load_or_create() -> Result<[u8; 16], String> {
                 path.display()
             )
         })?;
+    drop(file);
+    // Publish an already complete file atomically without replacing an identity
+    // created by another process. Both names are on the same local filesystem.
+    match fs::hard_link(&temporary.0, &path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return read_existing(&path),
+        Err(error) => {
+            return Err(format!(
+                "cannot publish FLOW 8 client identity {}: {error}",
+                path.display()
+            ));
+        }
+    }
+    #[cfg(unix)]
+    fs::File::open(&directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("cannot sync FLOW 8 identity directory: {error}"))?;
     info!(path = %path.display(), "created persistent FLOW 8 client identity");
     Ok(*uuid.as_bytes())
 }

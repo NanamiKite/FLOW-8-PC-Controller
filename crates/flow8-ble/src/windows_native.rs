@@ -1,16 +1,18 @@
-//! Production Windows FLOW 8 transport.
+//! Legacy / experimental Windows native FLOW 8 transport.
 //!
 //! FLOW 8 has a WRITE | NOTIFY transport characteristic but no CCCD. The
-//! Windows backend performs UUID-targeted WinRT discovery on the selected
-//! BluetoothLEDevice, opens that GattDeviceService's DeviceId as the native
-//! service handle, and uses BluetoothGATTRegisterEvent.
+//! This opt-in backend uses a service selector scoped to the selected
+//! BluetoothDeviceId, opens the returned DeviceInformation.Id as the native
+//! service handle, and uses BluetoothGATTRegisterEvent. Windows production
+//! connections use DirectHCI instead.
 //! It never calls the standard BLE subscription path.
 
 use std::{
+    collections::HashMap,
     ffi::c_void,
     mem::size_of,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -80,6 +82,9 @@ struct ServiceHandle(HANDLE);
 // Windows kernel handles may be used from the dedicated transport runtime
 // thread. The callback never receives or closes this handle.
 unsafe impl Send for ServiceHandle {}
+// The kernel handle is shared only to keep an in-flight blocking write alive;
+// it is closed exactly once, after the last owner releases it.
+unsafe impl Sync for ServiceHandle {}
 
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
@@ -111,67 +116,42 @@ impl FlowDeviceIdentity {
 struct CallbackContext {
     ingress: RxIngress,
     value_handle: u16,
-    in_flight: AtomicUsize,
-    drained_lock: Mutex<()>,
-    drained: Condvar,
 }
 
-impl CallbackContext {
-    fn wait_until_drained(&self) {
-        let mut guard = self
-            .drained_lock
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        while self.in_flight.load(Ordering::Acquire) != 0 {
-            guard = self
-                .drained
-                .wait(guard)
-                .unwrap_or_else(|error| error.into_inner());
-        }
-    }
-}
-
-struct CallbackUse<'a>(&'a CallbackContext);
-
-impl Drop for CallbackUse<'_> {
-    fn drop(&mut self) {
-        if self.0.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.drained.notify_all();
-        }
-    }
+fn callback_registry() -> &'static Mutex<HashMap<usize, Arc<CallbackContext>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<CallbackContext>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 struct NativeEventRegistration {
     handle: isize,
-    context: Option<Box<CallbackContext>>,
+    context_key: usize,
+    context: Arc<CallbackContext>,
 }
 
 impl NativeEventRegistration {
     fn invalidate(&self) {
-        if let Some(context) = &self.context {
-            context.ingress.invalidate();
-        }
+        self.context.ingress.invalidate();
     }
 }
 
 impl Drop for NativeEventRegistration {
     fn drop(&mut self) {
         self.invalidate();
-        let Some(context) = self.context.take() else {
-            return;
-        };
+        // Remove the opaque key before unregistering. An already-running
+        // callback has its own Arc; a late callback finds no entry. No callback
+        // dereferences a freed context, even if native unregistration fails.
+        callback_registry()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.context_key);
         // SAFETY: handle came from BluetoothGATTRegisterEvent and is
         // unregistered exactly once before callback context destruction.
         if let Err(error) =
             unsafe { BluetoothGATTUnregisterEvent(self.handle, BLUETOOTH_GATT_FLAG_NONE) }
         {
-            // Native callbacks can still arrive if unregister did not succeed.
-            // Retain the callback context instead of freeing reachable memory.
-            warn!(error = %native_error(&error), "unregistering FLOW 8 native RX event failed; retaining callback context to avoid use-after-free");
-            let _ = Box::into_raw(context);
-            return;
+            warn!(error = %native_error(&error), "unregistering FLOW 8 native RX event failed; late callbacks are ignored");
         }
-        context.wait_until_drained();
     }
 }
 
@@ -179,7 +159,7 @@ impl Drop for NativeEventRegistration {
 /// the native registration is removed before the service handle is closed.
 pub(super) struct WindowsNativeSession {
     registration: Option<NativeEventRegistration>,
-    service_handle: ServiceHandle,
+    service_handle: Arc<ServiceHandle>,
     service: BTH_LE_GATT_SERVICE,
     characteristic: BTH_LE_GATT_CHARACTERISTIC,
     device: BluetoothLEDevice,
@@ -409,7 +389,7 @@ impl WindowsNativeSession {
         Ok((
             Self {
                 registration: Some(registration),
-                service_handle,
+                service_handle: Arc::new(service_handle),
                 service,
                 characteristic,
                 device,
@@ -444,34 +424,36 @@ impl WindowsNativeSession {
                 ),
             ));
         }
-        let mut value = NativeGattValue::default();
-        value.data_size = frame.len() as u32;
-        value.data[..frame.len()].copy_from_slice(frame);
-        if frame.first() == Some(&0x39) {
-            let tx_hex = frame
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            println!("TX_HEX={tx_hex}");
-        }
-        // BLUETOOTH_GATT_FLAG_NONE is the with-response path.
-        unsafe {
-            BluetoothGATTSetCharacteristicValue(
-                self.service_handle.0,
-                &self.characteristic,
-                (&value as *const NativeGattValue).cast::<BTH_LE_GATT_CHARACTERISTIC_VALUE>(),
-                None,
-                BLUETOOTH_GATT_FLAG_NONE,
-            )
-        }
+        let service_handle = Arc::clone(&self.service_handle);
+        let characteristic = self.characteristic;
+        let bytes = frame.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut value = NativeGattValue::default();
+            value.data_size = bytes.len() as u32;
+            value.data[..bytes.len()].copy_from_slice(&bytes);
+            // BLUETOOTH_GATT_FLAG_NONE is the with-response path.
+            unsafe {
+                BluetoothGATTSetCharacteristicValue(
+                    service_handle.0,
+                    &characteristic,
+                    (&value as *const NativeGattValue).cast::<BTH_LE_GATT_CHARACTERISTIC_VALUE>(),
+                    None,
+                    BLUETOOTH_GATT_FLAG_NONE,
+                )
+            }
+            .map_err(|error| {
+                windows_error(
+                    NativeConnectionStage::Handshaking,
+                    "BluetoothGATTSetCharacteristicValue",
+                    error,
+                    true,
+                )
+            })
+        })
+        .await
         .map_err(|error| {
-            windows_error(
-                NativeConnectionStage::Handshaking,
-                "BluetoothGATTSetCharacteristicValue",
-                error,
-                true,
-            )
-        })?;
+            BleError::Transport(format!("native GATT write worker failed: {error}"))
+        })??;
         debug!(
             backend = "windows-native-gatt",
             command = frame.first().copied().unwrap_or_default(),
@@ -538,12 +520,16 @@ unsafe extern "system" fn value_changed_callback(
     {
         return;
     }
-    // SAFETY: both pointers are owned by BluetoothGATTRegisterEvent for the
-    // callback duration. NativeEventRegistration unregisters before dropping
-    // CallbackContext.
-    let callback_context = unsafe { &*(context.cast::<CallbackContext>()) };
-    callback_context.in_flight.fetch_add(1, Ordering::AcqRel);
-    let _callback_use = CallbackUse(callback_context);
+    // Context is a never-reused opaque integer, not a Rust allocation pointer.
+    // Acquire a strong owner under the registry lock before using any state.
+    let callback_context = callback_registry()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&(context as usize))
+        .cloned();
+    let Some(callback_context) = callback_context else {
+        return;
+    };
     if !callback_context.ingress.active.load(Ordering::Acquire) {
         return;
     }
@@ -584,14 +570,21 @@ fn register_value_changes(
         NumCharacteristics: 1,
         Characteristics: [characteristic],
     };
-    let context = Box::new(CallbackContext {
+    let context = Arc::new(CallbackContext {
         ingress,
         value_handle: characteristic.CharacteristicValueHandle,
-        in_flight: AtomicUsize::new(0),
-        drained_lock: Mutex::new(()),
-        drained: Condvar::new(),
     });
-    let context_ptr = (&*context as *const CallbackContext).cast::<c_void>();
+    static NEXT_CONTEXT_KEY: AtomicUsize = AtomicUsize::new(1);
+    let context_key = NEXT_CONTEXT_KEY
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |key| {
+            key.checked_add(1)
+        })
+        .map_err(|_| BleError::Transport("native callback registration keys exhausted".into()))?;
+    callback_registry()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(context_key, Arc::clone(&context));
+    let context_ptr = context_key as *const c_void;
     let mut event_handle = 0isize;
     unsafe {
         BluetoothGATTRegisterEvent(
@@ -606,6 +599,11 @@ fn register_value_changes(
         )
     }
     .map_err(|error| {
+        context.ingress.invalidate();
+        callback_registry()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&context_key);
         windows_error(
             NativeConnectionStage::NativeRxRegistering,
             "BluetoothGATTRegisterEvent",
@@ -615,7 +613,8 @@ fn register_value_changes(
     })?;
     Ok(NativeEventRegistration {
         handle: event_handle,
-        context: Some(context),
+        context_key,
+        context,
     })
 }
 

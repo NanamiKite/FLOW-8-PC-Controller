@@ -1,15 +1,16 @@
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::Write,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use btleplug::api::{CharPropFlags, WriteType, bleuuid::uuid_from_u16};
 use clap::{Parser, Subcommand};
 use flow8_ble::{
-    BleTransport, CHARACTERISTIC_UUID, Flow8BleSession, Flow8Session, SERVICE_UUID, SessionAction,
-    SessionPhase,
+    BleTransport, CHARACTERISTIC_UUID, DeviceCommand, DeviceEvent, DeviceRuntime, Flow8BleSession,
+    Flow8Session, SERVICE_UUID, SessionAction, SessionPhase,
 };
 use flow8_core::Flow8Store;
 use flow8_model::{EvidenceStatus, InputId, MixDestination};
@@ -29,6 +30,9 @@ mod winrt_prearmed_handshake;
     about = "Manual FLOW 8 BLE bring-up and evidence capture"
 )]
 struct Cli {
+    /// Acknowledge that control subcommands modify the live physical mixer.
+    #[arg(long, global = true)]
+    confirm_device_write: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -373,7 +377,7 @@ impl DiagnosticLogger {
                 {
                     std::fs::create_dir_all(parent)?;
                 }
-                File::create(path)
+                OpenOptions::new().write(true).create_new(true).open(path)
             })
             .transpose()?;
         Ok(Self { file })
@@ -1230,8 +1234,8 @@ async fn passive_handshake(
     let mut logger = DiagnosticLogger::new(output)?;
     logger.line("FLOW 8 passive handshake diagnostic");
     logger.line("policy=NO_SUBSCRIBE NO_CCCD_WRITE NO_MIXER_CONTROL; permitted FLOW TX is production-codec 0x39 and 0x37 only");
-    logger.line("ANDROID_HCI evidence=VERIFIED_FROM_DEVICE value_handle=0x000B declaration_handle=0x000A next_declaration_handle=0x000C cccd_present=false");
-    logger.line("ANDROID_HCI evidence=VERIFIED_FROM_DEVICE sequence=RX_0x35->TX_0x39->RX_0x36->TX_0x37->RX_0x38 notifications_without_cccd=true mtu=131 mixer_state_fragments=4");
+    logger.line("ANDROID_HCI source=HISTORICAL_CAPTURE not_current_run=true value_handle=0x000B declaration_handle=0x000A next_declaration_handle=0x000C cccd_present=false");
+    logger.line("ANDROID_HCI source=HISTORICAL_CAPTURE not_current_run=true sequence=RX_0x35->TX_0x39->RX_0x36->TX_0x37->RX_0x38 notifications_without_cccd=true mtu=131 mixer_state_fragments=4");
 
     let btleplug =
         run_btleplug_passive_handshake(initial_observation, handshake_timeout, &mut logger).await;
@@ -1281,70 +1285,220 @@ async fn passive_handshake(
     Ok(())
 }
 
-async fn subscribed_session() -> Result<Flow8BleSession, Box<dyn std::error::Error>> {
-    let transport = BleTransport::new().await?;
-    let session = transport.connect_flow8().await?;
-    println!(
-        "GATT service={SERVICE_UUID} characteristic={CHARACTERISTIC_UUID} mtu={} properties={:?}",
-        session.mtu(),
-        session.characteristic().properties
-    );
-    session.subscribe().await?;
-    println!("CCCD/subscribe completed");
-    Ok(session)
+type ToolResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+fn observation_deadline(seconds: u64) -> ToolResult<tokio::time::Instant> {
+    tokio::time::Instant::now()
+        .checked_add(Duration::from_secs(seconds))
+        .ok_or_else(|| "observation duration is too large".into())
 }
 
-async fn send_one(command: TxCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let session = subscribed_session().await?;
-    let mode = write_type(&session);
-    let mut stream = session.notifications().await?;
-    let mut coordinator = Flow8Session::new(*b"FLOW8-PC-RUST001");
-    coordinator.rx_armed();
-    let mut store = Flow8Store::disconnected();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while coordinator.phase() != SessionPhase::Ready {
-        let notification = tokio::time::timeout_at(deadline, stream.next())
-            .await
-            .map_err(|_| "timed out before complete 0x38/Ready")?
-            .ok_or("notification stream ended before Ready")?;
-        println!("RX {}", hex(&notification.value));
-        for action in coordinator.notification(&notification.value) {
-            match action {
-                SessionAction::Send(frame) => {
-                    println!("TX handshake/state {}", hex(&frame));
-                    session.write(&frame, mode).await?;
-                }
-                SessionAction::Received(command) => {
-                    println!("decoded={command:?}");
-                    let is_mixer_state = matches!(&command, RxCommand::MixerState(_));
-                    store.apply_rx(command, EvidenceStatus::VerifiedFromDevice)?;
-                    if is_mixer_state {
-                        println!("session={:?}", coordinator.state_applied()?);
-                    }
-                }
-                SessionAction::Phase(phase) => println!("session={phase:?}"),
-                SessionAction::Warning(warning) => eprintln!("decode/session warning: {warning}"),
-                SessionAction::Error(error) => return Err(error.into()),
-            }
-        }
+fn record_observation(capture: &mut Option<&mut File>, message: String) -> ToolResult<()> {
+    let message = format!("{} {message}", unix_timestamp_ms());
+    println!("{message}");
+    if let Some(file) = capture.as_deref_mut() {
+        writeln!(file, "{message}")?;
     }
-    let frame = encode(&command)?;
-    println!("TX control mode={mode:?} bytes={}", hex(&frame));
-    session.write(&frame, mode).await?;
-    let response_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while let Ok(Some(notification)) =
-        tokio::time::timeout_at(response_deadline, stream.next()).await
-    {
-        println!("RX {}", hex(&notification.value));
-        for action in coordinator.notification(&notification.value) {
-            if let SessionAction::Received(command) = action {
-                println!("decoded={command:?}");
-            }
-        }
-    }
-    println!("control write submitted; acceptance still requires observed device behavior");
-    session.disconnect().await?;
     Ok(())
+}
+
+/// Ordinary bring-up commands consume the same runtime events as the GUI.
+/// Connection, persistent identity, framing and serial writes stay in flow8-ble.
+struct ProductionSession {
+    runtime: DeviceRuntime,
+    wakeup: Arc<tokio::sync::Notify>,
+    store: Flow8Store,
+    generation: Option<u64>,
+    phase: SessionPhase,
+}
+
+impl ProductionSession {
+    fn start() -> ToolResult<Self> {
+        let runtime = DeviceRuntime::spawn();
+        runtime.set_raw_packet_events(true);
+        let wakeup = Arc::new(tokio::sync::Notify::new());
+        let event_wakeup = Arc::clone(&wakeup);
+        runtime.set_event_waker(move || event_wakeup.notify_one());
+        let session = Self {
+            runtime,
+            wakeup,
+            store: Flow8Store::disconnected(),
+            generation: None,
+            phase: SessionPhase::Connecting,
+        };
+        session.runtime.send(DeviceCommand::Connect)?;
+        Ok(session)
+    }
+
+    async fn next_event(&mut self, deadline: tokio::time::Instant) -> Option<DeviceEvent> {
+        loop {
+            let notified = self.wakeup.notified();
+            if let Some(event) = self.runtime.try_recv() {
+                return Some(event);
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return None;
+            }
+        }
+    }
+
+    fn apply_event(
+        &mut self,
+        event: DeviceEvent,
+        capture: &mut Option<&mut File>,
+    ) -> ToolResult<Option<u64>> {
+        let message = match event {
+            DeviceEvent::SessionStarted(generation) => {
+                self.generation = Some(generation);
+                format!("SESSION_STARTED generation={generation}")
+            }
+            DeviceEvent::Phase(phase) => {
+                self.phase = phase;
+                format!("SESSION {phase:?}")
+            }
+            DeviceEvent::ConnectionStage(stage) => format!("CONNECTION_STAGE {stage:?}"),
+            DeviceEvent::Backend(backend) => format!("BACKEND {backend}"),
+            DeviceEvent::Mtu(mtu) => format!("ATT_MTU {mtu}"),
+            DeviceEvent::WriteMode(mode) => format!("WRITE_MODE {mode:?}"),
+            DeviceEvent::RawRx(raw) => format!("RX {}", hex(&raw)),
+            DeviceEvent::RawTx(raw) => {
+                if raw.first() == Some(&0x39) {
+                    format!("TX 0x39 bytes={} client_identity=REDACTED", raw.len())
+                } else {
+                    format!("TX {}", hex(&raw))
+                }
+            }
+            DeviceEvent::Received(command) => {
+                let description = decoded_command_summary(&command);
+                self.store
+                    .apply_rx(command, EvidenceStatus::VerifiedFromDevice)?;
+                format!("DECODE {description} evidence=VERIFIED_FROM_DEVICE")
+            }
+            DeviceEvent::MixerState {
+                generation,
+                revision,
+                state,
+            } => {
+                if self.generation != Some(generation) {
+                    return Ok(None);
+                }
+                self.store.apply_rx(
+                    RxCommand::MixerState(state),
+                    EvidenceStatus::VerifiedFromDevice,
+                )?;
+                self.runtime.send(DeviceCommand::StateApplied {
+                    generation,
+                    revision,
+                })?;
+                format!("STATE_APPLIED generation={generation} revision={revision} atomic=true")
+            }
+            DeviceEvent::FrameWritten {
+                command_id,
+                command,
+            } => {
+                record_observation(
+                    capture,
+                    format!("TX_WRITE_COMPLETE command=0x{command:02x} command_id={command_id:?}"),
+                )?;
+                return Ok(command_id);
+            }
+            DeviceEvent::ProtocolWarning(warning) => format!("WARNING {warning}"),
+            DeviceEvent::CommandError(error)
+            | DeviceEvent::CommandFailed { error, .. }
+            | DeviceEvent::Error(error) => {
+                record_observation(capture, format!("ERROR {error}"))?;
+                return Err(error.into());
+            }
+            DeviceEvent::CommandWriting { id } => format!("TX_WRITE_BEGIN command_id={id}"),
+            DeviceEvent::ScanResults(_) => return Ok(None),
+        };
+        record_observation(capture, message)?;
+        Ok(None)
+    }
+
+    async fn close(&mut self, capture: &mut Option<&mut File>) -> ToolResult<()> {
+        self.runtime.send(DeviceCommand::Disconnect)?;
+        let deadline = observation_deadline(10)?;
+        let mut first_error = None;
+        while let Some(event) = self.next_event(deadline).await {
+            if let Err(error) = self.apply_event(event, capture)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+            if self.phase == SessionPhase::Disconnected {
+                self.runtime.send(DeviceCommand::Shutdown)?;
+                return first_error.map_or(Ok(()), Err);
+            }
+        }
+        Err(
+            "timed out waiting for production session disconnect; runtime shutdown requested"
+                .into(),
+        )
+    }
+}
+
+impl Drop for ProductionSession {
+    fn drop(&mut self) {
+        let _ = self.runtime.send(DeviceCommand::Shutdown);
+    }
+}
+
+async fn send_one(command: TxCommand) -> ToolResult<()> {
+    // Validate before acquisition. The runtime performs actual MTU-aware encoding.
+    let control_frame = encode(&command)?;
+    let mut session = ProductionSession::start()?;
+    let mut capture = None;
+    let result = async {
+        let deadline = observation_deadline(45)?;
+        while session.phase != SessionPhase::Ready {
+            let event = session
+                .next_event(deadline)
+                .await
+                .ok_or("timed out before complete 0x38/Ready")?;
+            session.apply_event(event, &mut capture)?;
+            if session.phase == SessionPhase::Disconnected {
+                return Err("session disconnected before Ready".into());
+            }
+        }
+        let generation = session.generation.ok_or("missing session generation")?;
+        record_observation(
+            &mut capture,
+            format!("TX_CONTROL_QUEUED {}", hex(&control_frame)),
+        )?;
+        session.runtime.send(DeviceCommand::SendTracked {
+            id: 1,
+            generation,
+            command,
+        })?;
+        let deadline = observation_deadline(15)?;
+        loop {
+            let event = session
+                .next_event(deadline)
+                .await
+                .ok_or("timed out waiting for control write completion")?;
+            if session.apply_event(event, &mut capture)? == Some(1) {
+                break;
+            }
+            if session.phase == SessionPhase::Disconnected {
+                return Err("session disconnected during control write".into());
+            }
+        }
+        let deadline = observation_deadline(5)?;
+        while let Some(event) = session.next_event(deadline).await {
+            session.apply_event(event, &mut capture)?;
+            if session.phase == SessionPhase::Disconnected {
+                return Err("session disconnected while observing control response".into());
+            }
+        }
+        println!(
+            "transport write completed; device acceptance requires an observed state confirmation"
+        );
+        Ok(())
+    }
+    .await;
+    let cleanup = session.close(&mut capture).await;
+    result.and(cleanup)
 }
 
 async fn observe(
@@ -1352,109 +1506,128 @@ async fn observe(
     handshake: bool,
     apply_state: bool,
     mut capture: Option<&mut File>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let session = subscribed_session().await?;
-    let mode = write_type(&session);
-    println!("write_type={mode:?}");
-    if let Some(file) = capture.as_deref_mut() {
-        writeln!(
-            file,
-            "# service={SERVICE_UUID} characteristic={CHARACTERISTIC_UUID} mtu={} properties={:?} write_type={mode:?}",
-            session.mtu(),
-            session.characteristic().properties,
-        )?;
+) -> ToolResult<()> {
+    if !handshake {
+        return observe_passively(seconds, &mut capture).await;
     }
-    let mut stream = session.notifications().await?;
-    let mut coordinator = Flow8Session::new(*b"FLOW8-PC-RUST001");
-    coordinator.rx_armed();
-    let mut decoder = CommandStreamDecoder::default();
-    let mut store = Flow8Store::disconnected();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
-    loop {
-        let notification = tokio::time::timeout_at(deadline, stream.next()).await;
-        let Ok(Some(notification)) = notification else {
-            break;
-        };
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-        println!("{stamp} RX {}", hex(&notification.value));
-        if let Some(file) = capture.as_deref_mut() {
-            writeln!(file, "{stamp} RX {}", hex(&notification.value))?;
-        }
-        if handshake {
-            for action in coordinator.notification(&notification.value) {
-                match action {
-                    SessionAction::Send(frame) => {
-                        println!("{stamp} TX {}", hex(&frame));
-                        if let Some(file) = capture.as_deref_mut() {
-                            writeln!(file, "{stamp} TX {}", hex(&frame))?;
-                        }
-                        session.write(&frame, mode).await?;
-                    }
-                    SessionAction::Received(command) => {
-                        println!("decoded={command:?}");
-                        let is_mixer_state = matches!(&command, RxCommand::MixerState(_));
-                        if let Some(file) = capture.as_deref_mut() {
-                            writeln!(
-                                file,
-                                "{stamp} DECODE {command:?} evidence=VERIFIED_FROM_DEVICE"
-                            )?;
-                        }
-                        if apply_state {
-                            store.apply_rx(command, EvidenceStatus::VerifiedFromDevice)?;
-                            if let Some(file) = capture.as_deref_mut() {
-                                writeln!(file, "{stamp} STATE_APPLIED confirmed=device")?;
-                            }
-                            if is_mixer_state {
-                                let ready = coordinator.state_applied()?;
-                                println!("session={ready:?}");
-                                if let Some(file) = capture.as_deref_mut() {
-                                    writeln!(file, "{stamp} SESSION {ready:?}")?;
-                                }
-                            }
-                        }
-                    }
-                    SessionAction::Phase(phase) => {
-                        println!("session={phase:?}");
-                        if let Some(file) = capture.as_deref_mut() {
-                            writeln!(file, "{stamp} SESSION {phase:?}")?;
-                        }
-                    }
-                    SessionAction::Warning(warning) => {
-                        eprintln!("decode/session warning: {warning}");
-                        if let Some(file) = capture.as_deref_mut() {
-                            writeln!(file, "{stamp} WARNING {warning} raw_retained=true")?;
-                        }
-                    }
-                    SessionAction::Error(error) => eprintln!("decode/session error: {error}"),
-                }
-            }
-        } else {
-            match decoder.accept(&notification.value) {
-                Ok(Some(command)) => {
-                    println!("decoded={command:?}");
-                    if let Some(file) = capture.as_deref_mut() {
-                        writeln!(
-                            file,
-                            "{stamp} DECODE {command:?} evidence=VERIFIED_FROM_DEVICE"
-                        )?;
-                    }
-                }
-                Ok(None) => println!("fragment buffered"),
-                Err(error) => eprintln!("decode error: {error}"),
+    let deadline = observation_deadline(seconds)?;
+    let mut session = ProductionSession::start()?;
+    let result = async {
+        while let Some(event) = session.next_event(deadline).await {
+            session.apply_event(event, &mut capture)?;
+            if session.phase == SessionPhase::Disconnected {
+                return Err("session disconnected before the observation ended".into());
             }
         }
+        if session.phase != SessionPhase::Ready {
+            return Err("observation ended without a complete MixerState applied and Ready".into());
+        }
+        if apply_state {
+            println!(
+                "state session={:?} CH1 gain={:?} MAIN master={:?} tempo={:?}",
+                session.phase,
+                session.store.state.channels[0].gain_db.confirmed,
+                session.store.state.buses[0].master_level.confirmed,
+                session.store.state.global_tempo_bpm.confirmed
+            );
+        }
+        Ok(())
     }
-    if apply_state {
-        println!(
-            "state session={:?} CH1 gain={:?} MAIN master={:?} tempo={:?}",
-            store.state.session,
-            store.state.channels[0].gain_db.confirmed,
-            store.state.buses[0].master_level.confirmed,
-            store.state.global_tempo_bpm.confirmed
-        );
+    .await;
+    let cleanup = session.close(&mut capture).await;
+    result.and(cleanup)
+}
+
+fn observe_passive_value(
+    raw: &[u8],
+    decoder: &mut CommandStreamDecoder,
+    capture: &mut Option<&mut File>,
+) -> ToolResult<()> {
+    record_observation(capture, format!("RX {}", hex(raw)))?;
+    match decoder.accept(raw) {
+        Ok(Some(command)) => record_observation(
+            capture,
+            format!(
+                "DECODE {} evidence=VERIFIED_FROM_DEVICE",
+                decoded_command_summary(&command)
+            ),
+        )?,
+        Ok(None) => {}
+        Err(error) => record_observation(capture, format!("WARNING {error}"))?,
     }
-    session.disconnect().await?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_tool_config() -> flow8_directhci::Flow8DirectHciConfig {
+    flow8_directhci::Flow8DirectHciConfig {
+        controller_id: std::env::var("DIRECTHCI_CONTROLLER_ID").ok(),
+        preferred_address: std::env::var("FLOW8_DIRECTHCI_ADDRESS").ok(),
+        client_name: "flow8-hardware-bringup".into(),
+        client_version: Some(env!("CARGO_PKG_VERSION").into()),
+        ..flow8_directhci::Flow8DirectHciConfig::default()
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn observe_passively(seconds: u64, capture: &mut Option<&mut File>) -> ToolResult<()> {
+    use flow8_directhci::{DirectHciTransport, Flow8DirectHciEvent};
+
+    let (transport, mut events) =
+        DirectHciTransport::connect(windows_tool_config(), |_| {}).await?;
+    let result = async {
+        record_observation(
+            capture,
+            format!(
+                "PASSIVE_RX_ARMED mtu={} handle={} cccd={:?}; no FLOW TX",
+                transport.info().att_mtu,
+                transport.info().value_handle,
+                transport.info().cccd_handle
+            ),
+        )?;
+        let deadline = observation_deadline(seconds)?;
+        let mut decoder = CommandStreamDecoder::default();
+        while let Ok(event) = tokio::time::timeout_at(deadline, events.recv()).await {
+            match event {
+                Some(Flow8DirectHciEvent::Notification(raw)) => {
+                    observe_passive_value(&raw, &mut decoder, capture)?;
+                }
+                Some(Flow8DirectHciEvent::Error(error)) => return Err(error.into()),
+                Some(Flow8DirectHciEvent::Disconnected) | None => {
+                    return Err("passive notification stream disconnected".into());
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let cleanup = transport.disconnect().await.map_err(Into::into);
+    result.and(cleanup)
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn observe_passively(seconds: u64, capture: &mut Option<&mut File>) -> ToolResult<()> {
+    let transport = BleTransport::new().await?;
+    let session = transport.connect_flow8().await?;
+    let result = async {
+        let mut stream = session.notifications().await?;
+        session.subscribe().await?;
+        let deadline = observation_deadline(seconds)?;
+        let mut decoder = CommandStreamDecoder::default();
+        loop {
+            match tokio::time::timeout_at(deadline, stream.next()).await {
+                Ok(Some(notification)) => {
+                    observe_passive_value(&notification.value, &mut decoder, capture)?;
+                }
+                Ok(None) => return Err("notification stream disconnected".into()),
+                Err(_) => break,
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let cleanup = session.disconnect().await.map_err(Into::into);
+    result.and(cleanup)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1470,27 +1643,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if matches!(
+        &cli.command,
+        Command::Route { .. }
+            | Command::Gain { .. }
+            | Command::Mute { .. }
+            | Command::Pan { .. }
+            | Command::Solo { .. }
+    ) && !cli.confirm_device_write
+    {
+        return Err(
+            "Control commands modify the live mixer; pass --confirm-device-write to acknowledge"
+                .into(),
+        );
+    }
+    match cli.command {
         Command::Scan { seconds } => {
-            let transport = BleTransport::new().await?;
-            for device in transport.scan(Duration::from_secs(seconds)).await? {
-                println!(
-                    "name={:?} id={} address={} rssi={:?} services={:?}",
-                    device.name, device.id, device.address, device.rssi, device.services
-                );
+            #[cfg(target_os = "windows")]
+            {
+                let config = flow8_directhci::Flow8DirectHciConfig {
+                    scan_timeout: Duration::from_secs(seconds),
+                    ..windows_tool_config()
+                };
+                for device in flow8_directhci::DirectHciTransport::scan(config).await? {
+                    println!(
+                        "name={:?} address={} rssi={} services={:?}",
+                        device.name, device.address, device.rssi, device.services
+                    );
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let transport = BleTransport::new().await?;
+                for device in transport.scan(Duration::from_secs(seconds)).await? {
+                    println!(
+                        "name={:?} id={} address={} rssi={:?} services={:?}",
+                        device.name, device.id, device.address, device.rssi, device.services
+                    );
+                }
             }
         }
         Command::Inspect | Command::Connect => {
-            let transport = BleTransport::new().await?;
-            let session = transport.connect_flow8().await?;
-            println!(
-                "connected service={SERVICE_UUID} characteristic={CHARACTERISTIC_UUID} mtu={} properties={:?} selected_write_type={:?}",
-                session.mtu(),
-                session.characteristic().properties,
-                write_type(&session),
-            );
-            println!("No protocol packet was sent.");
-            session.disconnect().await?;
+            #[cfg(target_os = "windows")]
+            {
+                let (transport, events) =
+                    flow8_directhci::DirectHciTransport::connect(windows_tool_config(), |_| {})
+                        .await?;
+                println!(
+                    "connected service={SERVICE_UUID} characteristic={CHARACTERISTIC_UUID} mtu={} value_handle={} cccd={:?} write_type=WithResponse; no protocol packet sent",
+                    transport.info().att_mtu,
+                    transport.info().value_handle,
+                    transport.info().cccd_handle,
+                );
+                // No wait/read operation: the event receiver remains alive
+                // until the one SDK connection has been explicitly closed.
+                let cleanup = transport.disconnect().await;
+                drop(events);
+                cleanup?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let transport = BleTransport::new().await?;
+                let session = transport.connect_flow8().await?;
+                println!(
+                    "connected service={SERVICE_UUID} characteristic={CHARACTERISTIC_UUID} mtu={} properties={:?} selected_write_type={:?}",
+                    session.mtu(),
+                    session.characteristic().properties,
+                    write_type(&session),
+                );
+                println!("No protocol packet was sent.");
+                session.disconnect().await?;
+            }
         }
         Command::InspectGatt {
             descriptor_timeout_ms,
@@ -1535,6 +1759,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         }
         Command::Gain { input: id, db } => {
+            if !db.is_finite()
+                || !(flow8_model::specs::INPUT_GAIN_WIRE.min
+                    ..=flow8_model::specs::INPUT_GAIN_WIRE.max)
+                    .contains(&db)
+            {
+                return Err("Gain is outside the supported wire range".into());
+            }
             let input = input(id)?;
             if !input.has_analog_gain() {
                 return Err("BT/USB has no normal Gain capability".into());
@@ -1542,9 +1773,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_one(TxCommand::Gain { input, db }).await?;
         }
         Command::Mute { endpoint, enabled } => {
+            if !matches!(endpoint, 0..=6 | 10..=13 | 15) {
+                return Err("Invalid FLOW mute endpoint".into());
+            }
             send_one(TxCommand::Mute { endpoint, enabled }).await?;
         }
         Command::Pan { input: id, value } => {
+            if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
+                return Err("Pan must be between -1 and 1".into());
+            }
             send_one(TxCommand::Pan {
                 input: input(id)?,
                 value,
@@ -1563,7 +1800,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             seconds,
             handshake,
         } => {
-            let mut file = File::create(&path)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
             writeln!(
                 file,
                 "# FLOW 8 hardware capture; raw bytes retained; APK evidence is not device evidence"

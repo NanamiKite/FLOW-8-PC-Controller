@@ -3,6 +3,7 @@
 
 use std::{
     collections::HashMap,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -11,7 +12,6 @@ use thiserror::Error;
 
 pub const MAX_RAW_PACKET_SIZE: usize = 251;
 pub const MAX_REASSEMBLED_PAYLOAD: usize = 499;
-pub const TARGET_COMMAND_COUNT: usize = 31;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -57,12 +57,19 @@ pub fn normalized_to_fader_db(normalized: f32) -> Option<f32> {
 }
 
 pub fn route_level_table() -> [f32; 256] {
-    let mut table = [0.0; 256];
-    for (index, value) in table.iter_mut().enumerate() {
-        *value = normalized_to_fader_db(index as f32 / 255.0).expect("table input is bounded");
-    }
-    table[191] = 0.0;
-    table
+    *cached_route_level_table()
+}
+
+fn cached_route_level_table() -> &'static [f32; 256] {
+    static TABLE: OnceLock<[f32; 256]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0.0; 256];
+        for (index, value) in table.iter_mut().enumerate() {
+            *value = normalized_to_fader_db(index as f32 / 255.0).expect("table input is bounded");
+        }
+        table[191] = 0.0;
+        table
+    })
 }
 
 pub fn encode_fix8(format: Fix8Format, value: f32) -> Option<u8> {
@@ -73,7 +80,7 @@ pub fn encode_fix8(format: Fix8Format, value: f32) -> Option<u8> {
         Fix8Format::Pan => Some((value.clamp(-1.0, 1.0) * 127.0 + 127.0).trunc() as u8),
         Fix8Format::UnitInterval => Some((value.clamp(0.0, 1.0) * 255.0).trunc() as u8),
         Fix8Format::FaderDb => {
-            let table = route_level_table();
+            let table = cached_route_level_table();
             for index in 1..table.len() {
                 if table[index] > value {
                     return Some((index - 1) as u8);
@@ -105,7 +112,7 @@ pub fn decode_fix8(format: Fix8Format, value: u8) -> f32 {
     match format {
         Fix8Format::Pan => (value as f32 - 127.0) / 127.0,
         Fix8Format::UnitInterval => value as f32 / 255.0,
-        Fix8Format::FaderDb => route_level_table()[value as usize],
+        Fix8Format::FaderDb => cached_route_level_table()[value as usize],
         Fix8Format::EqGainDb => (value as f32 - 127.0) / 127.0 * 15.0,
         Fix8Format::GainDb => value as f32 / 2.0 - 60.0,
         Fix8Format::Q if value == 0 => 0.0,
@@ -195,6 +202,9 @@ pub enum ProtocolError {
 }
 
 pub fn parse_packet(raw: &[u8]) -> Result<Packet, ProtocolError> {
+    if raw.len() > MAX_RAW_PACKET_SIZE {
+        return Err(ProtocolError::PayloadTooLarge);
+    }
     if raw.len() < 3 {
         return Err(ProtocolError::TooShort);
     }
@@ -246,6 +256,16 @@ pub struct FragmentReassembler {
 
 impl FragmentReassembler {
     pub fn accept(&mut self, raw: &[u8]) -> Result<Option<(u8, Vec<u8>)>, ProtocolError> {
+        self.accept_at(raw, Instant::now())
+    }
+
+    /// Same production path with an explicit monotonic time for deterministic
+    /// callers. No assumptions about the device's sequence reuse are made.
+    pub fn accept_at(
+        &mut self,
+        raw: &[u8],
+        now: Instant,
+    ) -> Result<Option<(u8, Vec<u8>)>, ProtocolError> {
         let packet = parse_packet(raw)?;
         if packet.fragment_count == 1 {
             return Ok(Some((packet.command, packet.payload)));
@@ -255,27 +275,62 @@ impl FragmentReassembler {
             .fragment_index
             .ok_or(ProtocolError::InvalidFragment)? as usize;
         let key = (packet.command, sequence);
-        let now = Instant::now();
-        self.slots
-            .retain(|_, slot| now.duration_since(slot.updated_at) < REASSEMBLY_SLOT_TIMEOUT);
+        self.slots.retain(|_, slot| {
+            now.saturating_duration_since(slot.updated_at) < REASSEMBLY_SLOT_TIMEOUT
+        });
         if !self.slots.contains_key(&key) && self.slots.len() >= 4 {
-            return Err(ProtocolError::NoReassemblySlot);
+            // Incomplete peripheral messages must not keep a new full state
+            // out for the entire timeout. Prefer evicting a non-state slot.
+            let oldest = self
+                .slots
+                .iter()
+                .filter(|(key, _)| key.0 != 0x38)
+                .min_by_key(|(key, slot)| (slot.updated_at, **key))
+                .or_else(|| {
+                    (packet.command == 0x38)
+                        .then(|| {
+                            self.slots
+                                .iter()
+                                .min_by_key(|(key, slot)| (slot.updated_at, **key))
+                        })
+                        .flatten()
+                })
+                .map(|(key, _)| *key);
+            if let Some(oldest) = oldest {
+                self.slots.remove(&oldest);
+            } else {
+                return Err(ProtocolError::NoReassemblySlot);
+            }
+        }
+        let conflict = self.slots.get(&key).is_some_and(|slot| {
+            slot.fragment_count != packet.fragment_count
+                || slot
+                    .fragments
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|previous| previous != &packet.payload)
+        });
+        if conflict {
+            // Never combine contradictory data. Retain the triggering fragment
+            // in a fresh slot while still reporting the conflict to the caller.
+            let mut fragments = vec![None; packet.fragment_count as usize];
+            fragments[index] = Some(packet.payload);
+            self.slots.insert(
+                key,
+                ReassemblySlot {
+                    fragment_count: packet.fragment_count,
+                    fragments,
+                    updated_at: now,
+                },
+            );
+            return Err(ProtocolError::ConflictingFragment);
         }
         let slot = self.slots.entry(key).or_insert_with(|| ReassemblySlot {
             fragment_count: packet.fragment_count,
             fragments: vec![None; packet.fragment_count as usize],
             updated_at: now,
         });
-        if slot.fragment_count != packet.fragment_count {
-            self.slots.remove(&key);
-            return Err(ProtocolError::ConflictingFragment);
-        }
-        if let Some(previous) = &slot.fragments[index] {
-            if previous != &packet.payload {
-                self.slots.remove(&key);
-                return Err(ProtocolError::ConflictingFragment);
-            }
-        } else {
+        if slot.fragments[index].is_none() {
             slot.fragments[index] = Some(packet.payload);
         }
         slot.updated_at = now;
@@ -711,6 +766,9 @@ pub struct MixerState {
     pub effects: [FxState; 2],
     pub headphone_volume_db: f32,
     pub flags: [bool; 13],
+    /// Complete receive-side field, including uninterpreted bits 13..15.
+    /// Retaining these bits does not authorize transmitting unknown settings.
+    pub raw_flags: u16,
     pub tempo_bpm: u16,
     pub selected_output: u8,
     pub last_snapshot: u8,
@@ -1429,6 +1487,7 @@ pub fn decode_payload(command: u8, payload: &[u8]) -> Result<RxCommand, Protocol
                 effects,
                 headphone_volume_db,
                 flags,
+                raw_flags: bits,
                 tempo_bpm,
                 selected_output,
                 last_snapshot,
@@ -1562,6 +1621,7 @@ mod tests {
             effects: std::array::from_fn(|_| zero_fx_state()),
             headphone_volume_db: 0.0,
             flags: [false; 13],
+            raw_flags: 0,
             tempo_bpm: 0,
             selected_output: 0,
             last_snapshot: 0,

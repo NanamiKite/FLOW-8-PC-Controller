@@ -25,7 +25,7 @@ The top navigation switches between **MIXER**, **STAGE**, **FX1**, **FX2**, **MO
 - **STAGE:** a visual view of channel and meter state. **MAIN OUT** is a signal-topology view, not a second set of bus controls.
 - **Preferences:** language, UI scale, display choices, and supported device settings. Unsupported or unidentified device settings remain unavailable rather than sending guessed commands.
 
-Requests may take time over Bluetooth. The device's confirmed value takes precedence over an in-flight GUI edit; a pending value is not proof that the mixer accepted it.
+Requests may take time over Bluetooth. A pending value is not proof that the mixer accepted it. During a fader gesture and briefly after release, known intermediate echoes of that gesture may be absorbed while displaying its latest target. A different device value or a failed command ends this hold; the confirmed device state remains authoritative.
 
 ## Device snapshots
 
@@ -45,4 +45,4 @@ Click **Disconnect** before scanning again or closing a session. A new connectio
 | Controls are disabled | Confirm the connection says Ready. The disconnected interface is intentionally read-only. |
 | A control moves back | The mixer reported a different confirmed value or has not confirmed the pending write yet. Check the connection and device state before repeating the action. |
 
-Normal Windows logs are under `%LOCALAPPDATA%\FLOW 8 PC Controller\logs`. Logs can contain mixer state and client identifiers; review them before sharing. For current hardware support claims, see [validation status](validation.md).
+Normal Windows logs are under `%LOCALAPPDATA%\FLOW 8 PC Controller\logs`. Linux logs are under `$XDG_STATE_HOME/flow8-pc-controller`, or `~/.local/state/flow8-pc-controller` if `XDG_STATE_HOME` is unset. Detailed diagnostic logs are automatically cleaned up at startup and every hour: up to 7 days, 6 files and 96 MiB total are retained, excluding the current log. Copy a log elsewhere if you need to keep it. This does not delete hardware captures or the client identity file. Logs can contain mixer state and device identifiers; review them before sharing. For current hardware support claims, see [validation status](validation.md).

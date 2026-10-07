@@ -43,19 +43,22 @@ captures/
 
 Local hardware captures should remain under the ignored `captures/` directory and should not be committed accidentally. Directories named `tests/`, including local fixtures and hardware tests, are also ignored by Git.
 
-## DirectHCI repository dependency
+## DirectHCI SDK dependency
 
-The Windows backend currently depends on the independent DirectHCI repository as a sibling checkout.
+The Windows adapter uses `directhci-ble` from the independent DirectHCI
+repository, pinned to commit `8e3c620dbee3663bc5dd8aef483941c8bf332333`.
+Cargo fetches and caches the SDK; a sibling checkout is no longer required.
+Keep `Cargo.lock` with the application so all builds resolve the same SDK and
+dependencies.
 
-Expected layout:
+This revision moves native worker-thread joining off the caller's async
+executor. Existing `disconnect()` and `shutdown()` calls still await cleanup;
+this does not make controller release instantaneous or guarantee Windows
+Bluetooth restoration after an error.
 
-```text
-parent/
-├── FLOW 8 PC Controller/
-└── DirectHCI/
-```
-
-The FLOW workspace links the Rust `directhci-ble` SDK from the DirectHCI repository through a path dependency.
+The adapter and SDK compile only on Windows. Linux uses btleplug; Cargo may
+still fetch the pinned source while resolving the cross-platform lockfile.
+Offline builds require the dependencies to have been cached previously.
 
 FLOW 8 PC Controller does not embed or own the DirectHCI daemon.
 
@@ -77,11 +80,24 @@ directhcid
 
 The DirectHCI repository remains independently buildable and independently versioned.
 
-This sibling-repository requirement is a development-time arrangement and should eventually be replaced by a versioned SDK distribution.
+Change the pinned revision deliberately when integrating an SDK update. This
+does not install or start `directhcid`. If SDK development requires local
+source changes, use a private Cargo patch override rather than changing the
+default dependency back to a machine-specific path.
 
 ## Building
 
 ### Linux
+
+On Debian/Ubuntu, install the build dependencies used by btleplug and the
+platform device libraries:
+
+```bash
+sudo apt-get install pkg-config libdbus-1-dev libudev-dev
+```
+
+BlueZ must be available for hardware use. A running graphical session is
+needed to launch the GUI, not for `cargo check`.
 
 When working from a normal local filesystem:
 
@@ -133,6 +149,21 @@ Do not generate a new FLOW 8 client UUID on every run.
 
 The client identity must remain stable for a paired FLOW 8 session.
 
+### Linux to Windows GNU compile checks
+
+```bash
+sudo apt-get install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+rustup target add x86_64-pc-windows-gnu
+export CARGO_TARGET_DIR=/tmp/flow8-rust-target
+cargo check -p flow8-gui --target x86_64-pc-windows-gnu
+```
+
+The Windows icon resource needs `windres` and `ar` even for `cargo check`.
+`WINDRES` and `AR` can specify explicit tool paths. `WINDRES_PREPROCESSOR`
+can select a standalone `cpp` for resource-only cross-checks. On a Windows
+GNU host, build normally without adding `--target`; the installer script
+uses the host toolchain.
+
 ## Bluetooth backends
 
 ### Linux
@@ -170,6 +201,13 @@ It is not the production default.
 
 If enabled through an environment override, document the exact override in the relevant issue or private investigation record. Do not present an experimental run as production validation.
 
+On Windows, `FLOW8_BLE_BACKEND=windows-native` (or `native`) selects this legacy
+backend; leaving it unset uses DirectHCI. The override has no effect on Linux.
+`FLOW8_DIRECTHCI_ADDRESS` optionally selects a specific advertised FLOW 8
+address, for example `random:D9:5A:15:4B:FD:1B` or `public:AA:BB:CC:DD:EE:FF`.
+It selects the BLE peripheral, not the PC's Bluetooth controller. Usually both
+overrides should be left unset.
+
 Do not silently fall back to it when DirectHCI fails.
 
 ## FLOW 8 client identity
@@ -188,8 +226,22 @@ a new identity, use the mixer's PAIR REMOTE / PAIR APP flow. A failed or corrupt
 identity file stops connection rather than silently generating a replacement.
 Treat the file as a client credential; keep it private and back it up if needed.
 
-The separate opt-in hardware comparison test still accepts `FLOW8_CLIENT_UUID`
-for its known-ID control case. It does not configure the production GUI.
+The ordinary `flow8-hardware-bringup` handshake, state and control commands use
+the same production runtime and identity file as the GUI. They do not invent a
+separate client identity. Control commands require `--confirm-device-write` and
+wait for Ready before writing. A successful transport write is reported
+separately from a device state confirmation.
+
+On Windows, the existing `subscribe` observation command uses the DirectHCI
+passive listener without writing a CCCD or sending a FLOW handshake. A capture
+without `--handshake` is passive as well. Captures with a handshake consume the
+production runtime's raw RX events and redact client-identity TX bytes. Existing
+WinRT and ordering experiments are historical diagnostics, not production
+connection paths.
+
+Local hardware comparison tests, if present in an existing development checkout,
+may accept `FLOW8_CLIENT_UUID` for a known-ID control case. Those ignored files
+are not included in a fresh clone and do not configure the production GUI.
 
 ## Runtime expectations
 
@@ -262,6 +314,8 @@ $env:RUST_LOG = "flow8_ble=trace,flow8_directhci=trace"
 ```
 
 Trace logging is intentionally verbose and should not be treated as a normal production configuration.
+
+Setting `flow8_ble` or `flow8_directhci` to `debug` or `trace` also writes a detailed log file. On Windows, these files are under `%LOCALAPPDATA%\FLOW 8 PC Controller\logs`; on Linux, they are under `$XDG_STATE_HOME/flow8-pc-controller`, or `~/.local/state/flow8-pc-controller` when `XDG_STATE_HOME` is unset. Detailed logs are cleaned up on startup and every hour. Retention is 7 days, at most 6 files and at most 96 MiB total; the current file is excluded and capped at 16 MiB. Hardware captures and client identity files are not part of this cleanup. Copy logs needed for an investigation elsewhere before they expire.
 
 When reporting a hardware failure, preserve the smallest useful section covering:
 
@@ -382,16 +436,14 @@ Public fixtures should contain only the minimum data required for deterministic 
 
 ## CI
 
-[GitHub Actions](../.github/workflows/build.yml) checks out this repository and the
-public DirectHCI repository as sibling directories. The DirectHCI checkout is pinned
-to a commit; update that ref deliberately when integrating SDK changes.
+[GitHub Actions](../.github/workflows/build.yml) checks out this repository.
+Cargo resolves the SDK revision pinned in the adapter manifest and lockfile;
+CI does not need a separate DirectHCI checkout.
 
 Pushes to `main`, pull requests, and manual runs check formatting, the locked
 workspace, and the workspace build on Linux and Windows. CI does not start
 `directhcid`, access FLOW 8 hardware, package an installer, or run software tests.
 Hardware acceptance remains a separate manual step.
-
-Once `directhci-ble` has a versioned distribution, remove the sibling-checkout requirement.
 
 ## Development boundaries
 
@@ -416,7 +468,7 @@ The integration boundary should remain a thin BLE adapter.
 
 ## Windows packaging boundary
 
-The FLOW installer packages the GUI. DirectHCI has its own installer and service; the current FLOW SDK connects to a running service rather than starting it. DirectHCI Control Panel must start the service and select and, if necessary, prepare a supported controller. The current controller-acquisition path requires administrator rights for the FLOW client. The sibling DirectHCI source checkout and Cargo are build-time requirements only, not requirements for installing the packaged GUI.
+The FLOW installer packages the GUI. DirectHCI has its own installer and service; the current FLOW SDK connects to a running service rather than starting it. DirectHCI Control Panel must start the service and select and, if necessary, prepare a supported controller. The current controller-acquisition path requires administrator rights for the FLOW client. Cargo and its cached SDK source are build-time requirements only, not requirements for installing the packaged GUI.
 
 Packaging keeps ownership boundaries explicit:
 
@@ -427,8 +479,8 @@ Controller driver setup         → separate privileged prerequisite
 ```
 
 Build the Windows installer with Rust 1.95 or newer and Inno Setup 6.4 or newer.
-Keep the DirectHCI source checkout next to this repository for the current
-SDK path dependency. From PowerShell at the repository root:
+Cargo downloads the pinned SDK on the first build; no sibling source checkout
+is needed. From PowerShell at the repository root:
 
 ```powershell
 .\scripts\windows\build-installer.ps1

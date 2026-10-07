@@ -21,6 +21,7 @@ tracing-subscriber.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+flow8-directhci = { path = "../../crates/flow8-directhci" }
 windows = { version = "0.62", features = [
     "Devices_Bluetooth",
     "Devices_Bluetooth_GenericAttributeProfile",
@@ -29,6 +30,3 @@ windows = { version = "0.62", features = [
     "Foundation_Collections",
     "Storage_Streams",
 ] }
-
-[target.'cfg(target_os = "windows")'.dev-dependencies]
-flow8-directhci = { path = "../../crates/flow8-directhci" }

@@ -1,22 +1,23 @@
 use std::{env, fs, io, path::PathBuf, process::Command};
 
-fn main() {
+fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=assets/flow8.ico");
     println!("cargo:rerun-if-env-changed=WINDRES");
     println!("cargo:rerun-if-env-changed=AR");
+    println!("cargo:rerun-if-env-changed=WINDRES_PREPROCESSOR");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
+        return Ok(());
     }
 
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
-        compile_gnu_icon().expect("could not embed the FLOW 8 Windows GNU icon");
+        compile_gnu_icon()?;
     } else {
         winresource::WindowsResource::new()
             .set_icon("assets/flow8.ico")
-            .compile()
-            .expect("could not embed the FLOW 8 Windows MSVC icon");
+            .compile()?;
     }
+    Ok(())
 }
 
 fn compile_gnu_icon() -> io::Result<()> {
@@ -44,6 +45,11 @@ fn compile_gnu_icon() -> io::Result<()> {
     resource
         .current_dir(&out_dir)
         .args(["--input-format=rc", "--output-format=coff"]);
+    // Useful for Linux cross-checks with standalone binutils: the icon .rc
+    // needs preprocessing, but does not require a target C/C++ compiler.
+    if let Some(preprocessor) = env::var_os("WINDRES_PREPROCESSOR") {
+        resource.arg("--preprocessor").arg(preprocessor);
+    }
     match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("x86_64") => {
             resource.arg("--target=pe-x86-64");
@@ -68,7 +74,14 @@ fn compile_gnu_icon() -> io::Result<()> {
 }
 
 fn run(command: &mut Command, tool: &str) -> io::Result<()> {
-    let status = command.status()?;
+    let status = command.status().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot run {tool} ({command:?}): {error}; install the Windows resource toolchain or set WINDRES/AR to the appropriate tools"
+            ),
+        )
+    })?;
     if status.success() {
         Ok(())
     } else {

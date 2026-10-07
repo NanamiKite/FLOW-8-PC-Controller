@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -291,72 +291,149 @@ pub enum SessionAction {
 
 #[derive(Debug)]
 pub enum DeviceCommand {
-    Scan { duration: Duration },
+    Scan {
+        duration: Duration,
+    },
     Connect,
     Disconnect,
     Send(TxCommand),
-    StateApplied,
+    SendTracked {
+        id: u64,
+        generation: u64,
+        command: TxCommand,
+    },
+    StateApplied {
+        generation: u64,
+        revision: u64,
+    },
     Shutdown,
 }
 
 #[derive(Debug, Clone)]
 pub enum DeviceEvent {
+    SessionStarted(u64),
     Phase(SessionPhase),
     ConnectionStage(NativeConnectionStage),
     ScanResults(Vec<DiscoveredDevice>),
     RawRx(Vec<u8>),
     RawTx(Vec<u8>),
     Received(RxCommand),
+    MixerState {
+        generation: u64,
+        revision: u64,
+        state: Box<flow8_protocol::MixerState>,
+    },
     WriteMode(WriteType),
     Backend(&'static str),
     Mtu(u16),
     ProtocolWarning(String),
     CommandError(String),
+    CommandWriting {
+        id: u64,
+    },
+    /// One transport write completed. This is not a device-state confirmation;
+    /// a multi-frame command produces one event per successfully written frame.
+    FrameWritten {
+        command_id: Option<u64>,
+        command: u8,
+    },
+    CommandFailed {
+        id: u64,
+        error: String,
+    },
     Error(String),
 }
 
 const MAX_QUEUED_GUI_EVENTS: usize = 512;
 const MAX_QUEUED_USER_COMMANDS: usize = 256;
 
+type EventWaker = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct GuiEventQueue {
+    pending: VecDeque<DeviceEvent>,
+    overflowed: bool,
+    waker: Option<EventWaker>,
+}
+
 #[derive(Clone)]
 struct EventSender {
-    tx: mpsc::Sender<DeviceEvent>,
-    overflowed: Arc<AtomicBool>,
+    queue: Arc<Mutex<GuiEventQueue>>,
     overflow_notify: Arc<Notify>,
+    raw_packet_events: Arc<AtomicBool>,
 }
 
 impl EventSender {
     fn send(&self, event: DeviceEvent) -> Result<(), ()> {
-        if self.overflowed.load(Ordering::Acquire) {
-            return Err(());
-        }
-        match self.tx.try_send(event) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                if !self.overflowed.swap(true, Ordering::AcqRel) {
-                    warn!(
-                        limit = MAX_QUEUED_GUI_EVENTS,
-                        "FLOW GUI event queue exceeded capacity; stopping BLE session"
-                    );
-                    self.overflow_notify.notify_one();
-                }
-                Err(())
+        let (overflowed, waker) = {
+            let mut queue = self.queue.lock().expect("FLOW GUI event queue");
+            if queue.overflowed {
+                return Err(());
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
+
+            // Consecutive meter samples replace the last undelivered sample.
+            // Never cross a control/state event: it can change meter routing
+            // or mark a session boundary, and must retain its FIFO position.
+            let consecutive_meters =
+                matches!(&event, DeviceEvent::Received(RxCommand::MeterUpdate(_)))
+                    && matches!(
+                        queue.pending.back(),
+                        Some(DeviceEvent::Received(RxCommand::MeterUpdate(_)))
+                    );
+            if consecutive_meters {
+                *queue.pending.back_mut().expect("pending meter sample") = event;
+            } else if queue.pending.len() < MAX_QUEUED_GUI_EVENTS {
+                queue.pending.push_back(event);
+            } else {
+                queue.overflowed = true;
+            }
+            (queue.overflowed, queue.waker.clone())
+        };
+        if overflowed {
+            warn!(
+                limit = MAX_QUEUED_GUI_EVENTS,
+                "FLOW GUI event queue exceeded capacity; stopping BLE session"
+            );
+            self.overflow_notify.notify_one();
         }
+        // The GUI callback may acquire its own locks; never run it while
+        // holding the queue lock used by DeviceRuntime::try_recv.
+        if let Some(waker) = waker {
+            waker();
+        }
+        if overflowed { Err(()) } else { Ok(()) }
     }
 
     fn overflowed(&self) -> bool {
-        self.overflowed.load(Ordering::Acquire)
+        self.queue.lock().expect("FLOW GUI event queue").overflowed
+    }
+
+    fn finish_overflow_recovery(&self) {
+        let waker = {
+            let mut queue = self.queue.lock().expect("FLOW GUI event queue");
+            // A control event was lost. Discard stale UI events only after the
+            // old transport is closed; reconnect performs a full state sync.
+            queue.pending.clear();
+            queue
+                .pending
+                .push_back(DeviceEvent::Phase(SessionPhase::Error));
+            queue.pending.push_back(DeviceEvent::Error(
+                "FLOW 8 event backlog exceeded capacity; connection stopped. Reconnect to synchronize device state.".into(),
+            ));
+            queue.overflowed = false;
+            queue.waker.clone()
+        };
+        if let Some(waker) = waker {
+            waker();
+        }
     }
 }
 
 pub struct DeviceRuntime {
     command_tx: mpsc::UnboundedSender<DeviceCommand>,
-    user_command_tx: mpsc::Sender<TxCommand>,
-    event_rx: mpsc::Receiver<DeviceEvent>,
-    event_overflowed: Arc<AtomicBool>,
-    event_overflow_reported: bool,
+    user_command_tx: mpsc::Sender<DeviceCommand>,
+    event_queue: Arc<Mutex<GuiEventQueue>>,
+    raw_packet_events: Arc<AtomicBool>,
 }
 
 impl DeviceRuntime {
@@ -366,12 +443,12 @@ impl DeviceRuntime {
     pub fn spawn() -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (user_command_tx, user_command_rx) = mpsc::channel(MAX_QUEUED_USER_COMMANDS);
-        let (event_tx, event_rx) = mpsc::channel(MAX_QUEUED_GUI_EVENTS);
-        let event_overflowed = Arc::new(AtomicBool::new(false));
+        let event_queue = Arc::new(Mutex::new(GuiEventQueue::default()));
+        let raw_packet_events = Arc::new(AtomicBool::new(false));
         let events = EventSender {
-            tx: event_tx,
-            overflowed: Arc::clone(&event_overflowed),
+            queue: Arc::clone(&event_queue),
             overflow_notify: Arc::new(Notify::new()),
+            raw_packet_events: Arc::clone(&raw_packet_events),
         };
         std::thread::Builder::new()
             .name("flow8-ble-runtime".into())
@@ -382,7 +459,9 @@ impl DeviceRuntime {
                     .build();
                 match runtime {
                     Ok(runtime) => {
-                        runtime.block_on(device_actor(command_rx, user_command_rx, events))
+                        runtime.block_on(device_actor(command_rx, user_command_rx, events));
+                        // A detached legacy blocking API call must not pin runtime teardown forever.
+                        runtime.shutdown_timeout(Duration::from_secs(2));
                     }
                     Err(error) => {
                         let _ = events.send(DeviceEvent::Error(error.to_string()));
@@ -393,14 +472,37 @@ impl DeviceRuntime {
         Self {
             command_tx,
             user_command_tx,
-            event_rx,
-            event_overflowed,
-            event_overflow_reported: false,
+            event_queue,
+            raw_packet_events,
         }
     }
 
+    /// Wake the consumer when an event arrives, including while it is idle.
+    /// The callback runs on a runtime thread and must be thread-safe.
+    pub fn set_event_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        let waker: EventWaker = Arc::new(waker);
+        let pending = {
+            let mut queue = self.event_queue.lock().expect("FLOW GUI event queue");
+            queue.waker = Some(Arc::clone(&waker));
+            !queue.pending.is_empty() || queue.overflowed
+        };
+        if pending {
+            waker();
+        }
+    }
+
+    /// Opt-in raw packet events for explicit capture tools. The GUI leaves
+    /// this disabled to avoid duplicating every notification in its backlog.
+    /// Frames carrying the persistent client identity are never emitted.
+    pub fn set_raw_packet_events(&self, enabled: bool) {
+        self.raw_packet_events.store(enabled, Ordering::Release);
+    }
+
     pub fn send(&self, command: DeviceCommand) -> Result<(), String> {
-        if let DeviceCommand::Send(command) = command {
+        if matches!(
+            &command,
+            DeviceCommand::Send(_) | DeviceCommand::SendTracked { .. }
+        ) {
             return self
                 .user_command_tx
                 .try_send(command)
@@ -417,16 +519,12 @@ impl DeviceRuntime {
     }
 
     pub fn try_recv(&mut self) -> Option<DeviceEvent> {
-        if self.event_overflowed.load(Ordering::Acquire) {
-            if self.event_overflow_reported {
-                return None;
-            }
-            self.event_overflow_reported = true;
-            return Some(DeviceEvent::Error(
-                "FLOW 8 event backlog exceeded capacity; connection stopped. Restart the application before reconnecting.".into(),
-            ));
+        let mut queue = self.event_queue.lock().expect("FLOW GUI event queue");
+        if queue.overflowed {
+            // Wait for teardown before advertising that the user can reconnect.
+            return None;
         }
-        self.event_rx.try_recv().ok()
+        queue.pending.pop_front()
     }
 }
 
@@ -703,6 +801,34 @@ pub struct BleTransport {
     adapter: Adapter,
 }
 
+struct ScanCleanup(Option<Adapter>);
+
+impl Drop for ScanCleanup {
+    fn drop(&mut self) {
+        if let Some(adapter) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = adapter.stop_scan().await;
+            });
+        }
+    }
+}
+
+struct ConnectionCleanup(Option<Peripheral>);
+
+impl Drop for ConnectionCleanup {
+    fn drop(&mut self) {
+        if let Some(peripheral) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = peripheral.disconnect().await;
+            });
+        }
+    }
+}
+
 impl BleTransport {
     pub async fn new() -> Result<Self, BleError> {
         let manager = Manager::new().await?;
@@ -717,6 +843,7 @@ impl BleTransport {
 
     pub async fn scan(&self, duration: Duration) -> Result<Vec<DiscoveredDevice>, BleError> {
         self.adapter.start_scan(ScanFilter::default()).await?;
+        let mut cleanup = ScanCleanup(Some(self.adapter.clone()));
         sleep(duration).await;
         let peripherals = self.adapter.peripherals().await?;
         let mut result = Vec::with_capacity(peripherals.len());
@@ -731,14 +858,17 @@ impl BleTransport {
             });
         }
         self.adapter.stop_scan().await?;
+        cleanup.0.take();
         Ok(result)
     }
 
     pub async fn connect_flow8(&self) -> Result<Flow8BleSession, BleError> {
         self.adapter.start_scan(ScanFilter::default()).await?;
+        let mut cleanup = ScanCleanup(Some(self.adapter.clone()));
         sleep(Duration::from_secs(3)).await;
         let peripherals = self.adapter.peripherals().await?;
         self.adapter.stop_scan().await?;
+        cleanup.0.take();
         for peripheral in peripherals {
             let properties = peripheral.properties().await?;
             let named_flow8 = properties
@@ -759,10 +889,20 @@ impl BleTransport {
 pub struct Flow8BleSession {
     peripheral: Peripheral,
     characteristic: Characteristic,
+    disconnected: AtomicBool,
+}
+
+impl Drop for Flow8BleSession {
+    fn drop(&mut self) {
+        if !self.disconnected.load(Ordering::Acquire) {
+            drop(ConnectionCleanup(Some(self.peripheral.clone())));
+        }
+    }
 }
 
 impl Flow8BleSession {
     async fn connect(peripheral: Peripheral) -> Result<Self, BleError> {
+        let mut cleanup = ConnectionCleanup(Some(peripheral.clone()));
         if !peripheral.is_connected().await? {
             peripheral.connect().await?;
         }
@@ -772,9 +912,11 @@ impl Flow8BleSession {
             .into_iter()
             .find(|item| item.service_uuid == SERVICE_UUID && item.uuid == CHARACTERISTIC_UUID)
             .ok_or(BleError::CharacteristicNotFound)?;
+        cleanup.0.take();
         Ok(Self {
             peripheral,
             characteristic,
+            disconnected: AtomicBool::new(false),
         })
     }
 
@@ -823,10 +965,17 @@ impl Flow8BleSession {
     pub async fn notifications(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ValueNotification> + Send>>, BleError> {
-        self.peripheral.notifications().await.map_err(Into::into)
+        let notifications = self.peripheral.notifications().await?;
+        let characteristic_uuid = self.characteristic.uuid;
+        Ok(Box::pin(futures_util::StreamExt::filter(
+            notifications,
+            move |notification| std::future::ready(notification.uuid == characteristic_uuid),
+        )))
     }
     pub async fn disconnect(&self) -> Result<(), BleError> {
-        self.peripheral.disconnect().await.map_err(Into::into)
+        self.peripheral.disconnect().await?;
+        self.disconnected.store(true, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -847,13 +996,16 @@ impl RuntimeSession {
         let transport = BleTransport::new().await?;
         let session = transport.connect_flow8().await?;
         let properties = session.characteristic().properties;
-        let write_type = if properties.contains(CharPropFlags::WRITE) {
-            WriteType::WithResponse
-        } else {
-            WriteType::WithoutResponse
-        };
-        session.subscribe().await?;
+        if !properties.contains(CharPropFlags::WRITE) {
+            return Err(BleError::Transport(
+                "FLOW characteristic does not support Write With Response".into(),
+            ));
+        }
+        let write_type = WriteType::WithResponse;
+        // Obtain the receiver first so a notification emitted immediately
+        // when RX is enabled is queued instead of missing its consumer.
         let mut notifications = session.notifications().await?;
+        session.subscribe().await?;
         let (tx, rx) = mpsc::unbounded_channel();
         let ingress = RxIngress::new(generation, tx);
         let callback_ingress = ingress.clone();
@@ -1027,6 +1179,7 @@ enum WriterCommand {
     Write {
         frame: Vec<u8>,
         key: Option<ContinuousKey>,
+        command_id: Option<u64>,
     },
     MarkHandshakeRx,
 }
@@ -1070,6 +1223,7 @@ impl WriterMailbox {
             WriterCommand::Write {
                 frame,
                 key: Some(key),
+                command_id,
             } => {
                 // Never coalesce across a discrete operation or handshake marker:
                 // their ordering relative to control changes must be preserved.
@@ -1078,8 +1232,10 @@ impl WriterMailbox {
                         WriterCommand::Write {
                             frame: queued,
                             key: Some(existing),
+                            command_id: queued_id,
                         } if *existing == key => {
                             *queued = frame;
+                            *queued_id = command_id;
                             return Ok(QueueDisposition::Replaced);
                         }
                         WriterCommand::Write {
@@ -1106,6 +1262,7 @@ impl WriterMailbox {
                 state.pending.push_back(WriterCommand::Write {
                     frame,
                     key: Some(key),
+                    command_id,
                 });
             }
             other => {
@@ -1154,10 +1311,16 @@ struct ActiveSession {
     mailbox: Arc<WriterMailbox>,
     shutdown_tx: Option<oneshot::Sender<&'static str>>,
     writer: tokio::task::JoinHandle<()>,
+    generation: u64,
+    state_revision: AtomicU64,
 }
 
 impl ActiveSession {
-    async fn new(session: RuntimeSession, events: EventSender) -> Result<Self, BleError> {
+    async fn new(
+        session: RuntimeSession,
+        generation: u64,
+        events: EventSender,
+    ) -> Result<Self, BleError> {
         let backend = session.backend_name();
         let mtu = session.mtu();
         let write_type = session.write_type();
@@ -1183,6 +1346,8 @@ impl ActiveSession {
             mailbox,
             shutdown_tx: Some(shutdown_tx),
             writer,
+            generation,
+            state_revision: AtomicU64::new(0),
         })
     }
 
@@ -1190,8 +1355,13 @@ impl ActiveSession {
         &self,
         frame: Vec<u8>,
         key: Option<ContinuousKey>,
+        command_id: Option<u64>,
     ) -> Result<QueueDisposition, BleError> {
-        self.mailbox.push(WriterCommand::Write { frame, key })
+        self.mailbox.push(WriterCommand::Write {
+            frame,
+            key,
+            command_id,
+        })
     }
 
     fn mark_handshake_rx(&self) {
@@ -1223,7 +1393,9 @@ async fn run_writer(
         };
         match request {
             Some(WriterCommand::MarkHandshakeRx) => session.mark_handshake_rx(),
-            Some(WriterCommand::Write { frame, .. }) => {
+            Some(WriterCommand::Write {
+                frame, command_id, ..
+            }) => {
                 let command = frame.first().copied().unwrap_or_default();
                 info!(
                     backend = session.backend_name(),
@@ -1235,6 +1407,12 @@ async fn run_writer(
                     bytes = frame.len(),
                     "FLOW TX begin"
                 );
+                if let Some(id) = command_id {
+                    let _ = events.send(DeviceEvent::CommandWriting { id });
+                }
+                if command != 0x39 && events.raw_packet_events.load(Ordering::Acquire) {
+                    let _ = events.send(DeviceEvent::RawTx(frame.clone()));
+                }
                 let result = tokio::select! {
                     biased;
                     reason = &mut shutdown => break reason.unwrap_or("runtime_session_drop"),
@@ -1246,10 +1424,13 @@ async fn run_writer(
                             backend = session.backend_name(),
                             command, "FLOW TX complete"
                         );
-                        let _ = events.send(DeviceEvent::RawTx(frame));
+                        let _ = events.send(DeviceEvent::FrameWritten {
+                            command_id,
+                            command,
+                        });
                     }
                     Err(error) => {
-                        let _ = events.send(DeviceEvent::CommandError(error.to_string()));
+                        report_command_failure(&events, command_id, error.to_string());
                     }
                 }
             }
@@ -1285,13 +1466,39 @@ fn execute_actions_with_key(
     events: &EventSender,
     key: Option<ContinuousKey>,
 ) {
+    execute_actions_tracked(actions, session, events, key, None);
+}
+
+fn report_command_failure(events: &EventSender, id: Option<u64>, error: String) {
+    let event = match id {
+        Some(id) => DeviceEvent::CommandFailed { id, error },
+        None => DeviceEvent::CommandError(error),
+    };
+    let _ = events.send(event);
+}
+
+fn execute_actions_tracked(
+    actions: Vec<SessionAction>,
+    session: Option<&ActiveSession>,
+    events: &EventSender,
+    key: Option<ContinuousKey>,
+    command_id: Option<u64>,
+) {
     for action in actions {
         match action {
             SessionAction::Phase(phase) => {
                 let _ = events.send(DeviceEvent::Phase(phase));
             }
             SessionAction::Received(command) => {
-                let _ = events.send(DeviceEvent::Received(command));
+                let event = match (command, session) {
+                    (RxCommand::MixerState(state), Some(session)) => DeviceEvent::MixerState {
+                        generation: session.generation,
+                        revision: session.state_revision.fetch_add(1, Ordering::Relaxed) + 1,
+                        state,
+                    },
+                    (command, _) => DeviceEvent::Received(command),
+                };
+                let _ = events.send(event);
             }
             SessionAction::Warning(message) => {
                 let _ = events.send(DeviceEvent::ProtocolWarning(message));
@@ -1309,8 +1516,12 @@ fn execute_actions_with_key(
                     continue;
                 };
                 let bytes = frame.len();
-                trace!(raw = %hex_bytes(&frame), "FLOW TX raw packet");
-                match session.queue(frame, key) {
+                if command == 0x39 {
+                    trace!(command, bytes, "FLOW TX client identity redacted");
+                } else {
+                    trace!(raw = %hex_bytes(&frame), "FLOW TX raw packet");
+                }
+                match session.queue(frame, key, command_id) {
                     Ok(QueueDisposition::Queued) => {
                         info!(backend = session.backend, command, bytes, "FLOW TX queued");
                         match command {
@@ -1328,7 +1539,7 @@ fn execute_actions_with_key(
                         );
                     }
                     Err(error) => {
-                        let _ = events.send(DeviceEvent::CommandError(error.to_string()));
+                        report_command_failure(events, command_id, error.to_string());
                     }
                 }
             }
@@ -1348,6 +1559,36 @@ async fn scan_devices(duration: Duration) -> Result<Vec<DiscoveredDevice>, BleEr
     BleTransport::new().await?.scan(duration).await
 }
 
+/// Keep lifecycle commands responsive while a platform setup operation waits.
+/// Dropping the setup future releases its SDK owners; driver recovery remains
+/// exclusively the daemon's responsibility.
+async fn cancellable_setup<T>(
+    future: impl std::future::Future<Output = T>,
+    commands: &mut mpsc::UnboundedReceiver<DeviceCommand>,
+    deferred: &mut VecDeque<DeviceCommand>,
+    events: &EventSender,
+) -> Option<T> {
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            biased;
+            _ = events.overflow_notify.notified() => return None,
+            command = commands.recv() => match command {
+                Some(command @ (DeviceCommand::Disconnect | DeviceCommand::Shutdown)) => {
+                    deferred.push_front(command);
+                    return None;
+                }
+                None => { deferred.push_front(DeviceCommand::Shutdown); return None; }
+                Some(command) => {
+                    if deferred.len() < 16 { deferred.push_back(command); }
+                    else { let _ = events.send(DeviceEvent::ProtocolWarning("Too many pending connection requests".into())); }
+                }
+            },
+            result = &mut future => return Some(result),
+        }
+    }
+}
+
 async fn handle_device_command(
     command: DeviceCommand,
     session: &mut Option<ActiveSession>,
@@ -1355,6 +1596,8 @@ async fn handle_device_command(
     coordinator: &mut Flow8Session,
     generation: &mut u64,
     events: &EventSender,
+    commands: &mut mpsc::UnboundedReceiver<DeviceCommand>,
+    deferred: &mut VecDeque<DeviceCommand>,
 ) -> bool {
     match command {
         DeviceCommand::Shutdown => {
@@ -1371,7 +1614,13 @@ async fn handle_device_command(
                 return true;
             }
             let _ = events.send(DeviceEvent::Phase(SessionPhase::Scanning));
-            match scan_devices(duration).await {
+            let Some(result) =
+                cancellable_setup(scan_devices(duration), commands, deferred, events).await
+            else {
+                let _ = events.send(DeviceEvent::Phase(coordinator.phase()));
+                return true;
+            };
+            match result {
                 Ok(devices) => {
                     let _ = events.send(DeviceEvent::ScanResults(devices));
                     let _ = events.send(DeviceEvent::Phase(coordinator.phase()));
@@ -1408,9 +1657,25 @@ async fn handle_device_command(
             *transport_rx = None;
             coordinator.transition(SessionPhase::Disconnected);
             *generation = generation.wrapping_add(1);
+            let _ = events.send(DeviceEvent::SessionStarted(*generation));
             let _ = events.send(DeviceEvent::Phase(SessionPhase::Connecting));
             coordinator.transition(SessionPhase::Connecting);
-            match RuntimeSession::connect(*generation, events.clone()).await {
+            let Some(result) = cancellable_setup(
+                RuntimeSession::connect(*generation, events.clone()),
+                commands,
+                deferred,
+                events,
+            )
+            .await
+            else {
+                execute_actions(
+                    vec![coordinator.transition(SessionPhase::Disconnected)],
+                    None,
+                    events,
+                );
+                return true;
+            };
+            match result {
                 Ok((mut connected, rx)) => {
                     if let Err(error) = coordinator.set_att_mtu(connected.mtu()) {
                         let _ = connected.disconnect("invalid_att_mtu").await;
@@ -1419,15 +1684,16 @@ async fn handle_device_command(
                         let _ = events.send(DeviceEvent::Error(error.to_string()));
                         return true;
                     }
-                    let connected = match ActiveSession::new(connected, events.clone()).await {
-                        Ok(connected) => connected,
-                        Err(error) => {
-                            coordinator.transition(SessionPhase::Error);
-                            let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
-                            let _ = events.send(DeviceEvent::Error(error.to_string()));
-                            return true;
-                        }
-                    };
+                    let connected =
+                        match ActiveSession::new(connected, *generation, events.clone()).await {
+                            Ok(connected) => connected,
+                            Err(error) => {
+                                coordinator.transition(SessionPhase::Error);
+                                let _ = events.send(DeviceEvent::Phase(SessionPhase::Error));
+                                let _ = events.send(DeviceEvent::Error(error.to_string()));
+                                return true;
+                            }
+                        };
                     coordinator.transition(SessionPhase::GattReady);
                     let _ = events.send(DeviceEvent::Phase(SessionPhase::GattReady));
                     let _ = events.send(DeviceEvent::Backend(connected.backend));
@@ -1466,36 +1732,40 @@ async fn handle_device_command(
             execute_actions(vec![action], None, events);
         }
         DeviceCommand::Send(command) => {
-            if coordinator.phase() != SessionPhase::Ready {
-                warn!(command = ?command, phase = ?coordinator.phase(), "FLOW user command ignored before Ready");
-                let _ = events.send(DeviceEvent::CommandError(format!(
-                    "FLOW 8 command rejected while session is {:?}; wait for Ready",
-                    coordinator.phase()
-                )));
-                return true;
-            }
-            if matches!(command, TxCommand::GetMixerState) {
-                info!(source = "user_semantic_request", phase = ?coordinator.phase(), "FLOW 0x37 action source");
-            }
-            let key = ContinuousKey::for_command(&command);
-            match coordinator.encode_command(&command) {
-                Ok(actions) => {
-                    if matches!(command, TxCommand::GetMixerState) {
-                        let phase = coordinator.transition(SessionPhase::StateSyncing);
-                        coordinator.state_request_pending_or_sent = true;
-                        execute_actions(vec![phase], session.as_ref(), events);
-                    }
-                    execute_actions_with_key(actions, session.as_ref(), events, key);
-                }
-                Err(error) => {
-                    let _ = events.send(DeviceEvent::CommandError(error.to_string()));
-                }
+            send_user_command(command, None, session.as_ref(), coordinator, events);
+        }
+        DeviceCommand::SendTracked {
+            id,
+            generation: expected,
+            command,
+        } => {
+            if expected != *generation {
+                report_command_failure(
+                    events,
+                    Some(id),
+                    "Command belongs to an ended device session".into(),
+                );
+            } else {
+                send_user_command(command, Some(id), session.as_ref(), coordinator, events);
             }
         }
-        DeviceCommand::StateApplied if coordinator.phase() == SessionPhase::Ready => {
+        DeviceCommand::StateApplied {
+            generation: ack_generation,
+            revision,
+        } if ack_generation != *generation
+            || session
+                .as_ref()
+                .is_none_or(|active| active.state_revision.load(Ordering::Relaxed) != revision) =>
+        {
+            debug!(
+                ack_generation,
+                revision, "ignored stale FLOW state apply acknowledgment"
+            );
+        }
+        DeviceCommand::StateApplied { .. } if coordinator.phase() == SessionPhase::Ready => {
             debug!("ignoring redundant FLOW 8 state apply acknowledgment after Ready");
         }
-        DeviceCommand::StateApplied => match coordinator.state_applied() {
+        DeviceCommand::StateApplied { .. } => match coordinator.state_applied() {
             Ok(action) => {
                 info!("FLOW 8 Store apply acknowledged; session reached Ready");
                 execute_actions(vec![action], session.as_ref(), events);
@@ -1506,6 +1776,44 @@ async fn handle_device_command(
         },
     }
     true
+}
+
+fn send_user_command(
+    command: TxCommand,
+    command_id: Option<u64>,
+    session: Option<&ActiveSession>,
+    coordinator: &mut Flow8Session,
+    events: &EventSender,
+) {
+    if coordinator.phase() != SessionPhase::Ready {
+        warn!(command = ?command, phase = ?coordinator.phase(), "FLOW user command ignored before Ready");
+        report_command_failure(
+            events,
+            command_id,
+            format!(
+                "FLOW 8 command rejected while session is {:?}; wait for Ready",
+                coordinator.phase()
+            ),
+        );
+        return;
+    }
+    if matches!(command, TxCommand::GetMixerState) {
+        info!(source = "user_semantic_request", phase = ?coordinator.phase(), "FLOW 0x37 action source");
+    }
+    let key = ContinuousKey::for_command(&command);
+    match coordinator.encode_command(&command) {
+        Ok(actions) => {
+            if matches!(command, TxCommand::GetMixerState) {
+                let phase = coordinator.transition(SessionPhase::StateSyncing);
+                coordinator.state_request_pending_or_sent = true;
+                execute_actions(vec![phase], session, events);
+            }
+            execute_actions_tracked(actions, session, events, key, command_id);
+        }
+        Err(error) => {
+            report_command_failure(events, command_id, error.to_string());
+        }
+    }
 }
 
 async fn handle_transport_rx(
@@ -1535,7 +1843,14 @@ async fn handle_transport_rx(
 
     match event {
         TransportRx::Packet { bytes, .. } => {
-            trace!(raw = %hex_bytes(&bytes), "FLOW RX raw packet");
+            if bytes.first() != Some(&0x39) && events.raw_packet_events.load(Ordering::Acquire) {
+                let _ = events.send(DeviceEvent::RawRx(bytes.clone()));
+            }
+            if bytes.first() == Some(&0x39) {
+                trace!(bytes = bytes.len(), "FLOW RX client identity redacted");
+            } else {
+                trace!(raw = %hex_bytes(&bytes), "FLOW RX raw packet");
+            }
             if bytes.first() == Some(&0x38) {
                 info!(
                     generation = active_generation,
@@ -1557,7 +1872,6 @@ async fn handle_transport_rx(
                     active.mark_handshake_rx();
                 }
             }
-            let _ = events.send(DeviceEvent::RawRx(bytes.clone()));
             let actions = coordinator.notification(&bytes);
             for action in &actions {
                 match action {
@@ -1654,7 +1968,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 async fn device_actor(
     mut commands: mpsc::UnboundedReceiver<DeviceCommand>,
-    mut user_commands: mpsc::Receiver<TxCommand>,
+    mut user_commands: mpsc::Receiver<DeviceCommand>,
     events: EventSender,
 ) {
     let startup_client_id = match client_identity::load_or_create() {
@@ -1669,11 +1983,38 @@ async fn device_actor(
     let mut session: Option<ActiveSession> = None;
     let mut transport_rx: Option<mpsc::UnboundedReceiver<TransportRx>> = None;
     let mut generation = 0u64;
+    let mut deferred = VecDeque::new();
 
     loop {
         if events.overflowed() {
             warn!("FLOW GUI event queue overflow; closing the active transport session");
-            break;
+            if let Some(active) = session.take() {
+                active.disconnect("gui_event_queue_overflow").await;
+            }
+            transport_rx = None;
+            coordinator.transition(SessionPhase::Disconnected);
+            coordinator.transition(SessionPhase::Error);
+            // User edits queued for the old session must not reach a reconnect.
+            while user_commands.try_recv().is_ok() {}
+            events.finish_overflow_recovery();
+            continue;
+        }
+        if let Some(command) = deferred.pop_front() {
+            if !handle_device_command(
+                command,
+                &mut session,
+                &mut transport_rx,
+                &mut coordinator,
+                &mut generation,
+                &events,
+                &mut commands,
+                &mut deferred,
+            )
+            .await
+            {
+                break;
+            }
+            continue;
         }
         if let Some(rx) = transport_rx.as_mut() {
             tokio::select! {
@@ -1687,6 +2028,8 @@ async fn device_actor(
                         &mut coordinator,
                         &mut generation,
                         &events,
+                        &mut commands,
+                        &mut deferred,
                     ).await {
                         break;
                     }
@@ -1716,12 +2059,14 @@ async fn device_actor(
                 command = user_commands.recv() => {
                     let Some(command) = command else { break; };
                     if !handle_device_command(
-                        DeviceCommand::Send(command),
+                        command,
                         &mut session,
                         &mut transport_rx,
                         &mut coordinator,
                         &mut generation,
                         &events,
+                        &mut commands,
+                        &mut deferred,
                     ).await {
                         break;
                     }
@@ -1732,7 +2077,7 @@ async fn device_actor(
                 biased;
                 _ = events.overflow_notify.notified() => continue,
                 command = commands.recv() => command,
-                command = user_commands.recv() => command.map(DeviceCommand::Send),
+                command = user_commands.recv() => command,
             };
             let Some(command) = command else {
                 break;
@@ -1744,6 +2089,8 @@ async fn device_actor(
                 &mut coordinator,
                 &mut generation,
                 &events,
+                &mut commands,
+                &mut deferred,
             )
             .await
             {
@@ -1819,6 +2166,7 @@ mod tests {
             effects: [zero_fx(12), zero_fx(13)],
             headphone_volume_db: 0.0,
             flags: [false; 13],
+            raw_flags: 0,
             tempo_bpm: 120,
             selected_output: 15,
             last_snapshot: 0,
@@ -1840,7 +2188,13 @@ mod tests {
     fn queue_protocol_command(mailbox: &WriterMailbox, command: TxCommand) {
         let key = ContinuousKey::for_command(&command);
         let frame = flow8_protocol::encode(&command).unwrap();
-        mailbox.push(WriterCommand::Write { frame, key }).unwrap();
+        mailbox
+            .push(WriterCommand::Write {
+                frame,
+                key,
+                command_id: None,
+            })
+            .unwrap();
     }
 
     #[test]

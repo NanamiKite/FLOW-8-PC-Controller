@@ -41,6 +41,6 @@ cargo build --workspace
 cargo run -p flow8-gui
 ```
 
-On Windows use `$env:CARGO_TARGET_DIR="$env:LOCALAPPDATA\flow8-rust-target"`. The independent DirectHCI repository is currently a sibling path dependency. Hardware success cannot be claimed from compilation or offline tests; report exactly which Windows FLOW 8 milestones were observed.
+On Windows use `$env:CARGO_TARGET_DIR="$env:LOCALAPPDATA\flow8-rust-target"`. The independent DirectHCI SDK is pinned to a Git revision; a sibling checkout is not required and the controller runtime remains external. Hardware success cannot be claimed from compilation or offline tests; report exactly which Windows FLOW 8 milestones were observed.
 
 Keep changes focused and verify proportionately. Do not run large test suites when the user explicitly asks for only compile checks.

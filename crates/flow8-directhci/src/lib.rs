@@ -5,6 +5,8 @@
 //! values. It contains no FLOW packet parser, handshake, fragmentation, or
 //! mixer-state logic.
 
+#![cfg(target_os = "windows")]
+
 use std::time::Duration;
 
 use directhci_ble::{
@@ -389,7 +391,7 @@ async fn transport_loop(
     // Independent long-lived futures share this one BLE session. A serial
     // WithResponse write cannot stop polling the passive notification stream.
     let exit = tokio::select! {
-        exit = writer_loop(&connection, &characteristic, &mut commands, &events) => exit,
+        exit = writer_loop(&connection, &characteristic, &mut commands) => exit,
         exit = notification_pump(&mut notifications, characteristic.value_handle, &events) => exit,
     };
     let (source, reply) = match exit {
@@ -423,7 +425,6 @@ async fn writer_loop(
     connection: &BleConnection,
     characteristic: &GattCharacteristic,
     commands: &mut mpsc::Receiver<TransportCommand>,
-    events: &mpsc::Sender<Flow8DirectHciEvent>,
 ) -> TransportExit {
     while let Some(command) = commands.recv().await {
         match command {
@@ -440,9 +441,9 @@ async fn writer_loop(
                     Ok(()) => info!(bytes = byte_count, "DirectHCI write complete"),
                     Err(error) => {
                         warn!(bytes = byte_count, %error, "DirectHCI write failed");
-                        let _ = events
-                            .send(Flow8DirectHciEvent::Error(error.to_string()))
-                            .await;
+                        // An operation failure belongs to its write reply, not
+                        // the connection-wide RX error channel. A real peer or
+                        // SDK disconnection is reported by the notification pump.
                     }
                 }
                 let _ = reply.send(result);
@@ -466,17 +467,6 @@ async fn notification_pump(
     loop {
         match notifications.recv().await {
             Ok(Some(event)) if event.handle == value_handle => {
-                let state_fragment = event.value.first() == Some(&0x38);
-                if state_fragment {
-                    info!(
-                        handle = event.handle,
-                        fragment_count_byte = ?event.value.get(1),
-                        sequence_byte = ?event.value.get(2),
-                        fragment_index_byte = ?event.value.get(3),
-                        bytes = event.value.len(),
-                        "FLOW 0x38 SDK stream ingress"
-                    );
-                }
                 debug!(
                     handle = event.handle,
                     bytes = event.value.len(),
@@ -486,9 +476,6 @@ async fn notification_pump(
                     .send(Flow8DirectHciEvent::Notification(event.value))
                     .await
                     .is_ok();
-                if state_fragment {
-                    info!(forwarded, "FLOW 0x38 adapter forwarding result");
-                }
                 if !forwarded {
                     return TransportExit::Receiver {
                         source: "rx_event_consumer_closed",
