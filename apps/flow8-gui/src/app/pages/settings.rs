@@ -1,18 +1,15 @@
 use crate::app::{ControlGesture, EqEditingMode, Flow8App};
 use crate::i18n::{
-    Language, destination_name, display_name, localized_status_message, native_stage_text,
-    session_state_text, setting_switch_text,
+    Language, display_name, localized_status_message, native_stage_text, session_state_text,
+    setting_switch_text,
 };
 use crate::metrics::{SETTINGS_CONTENT_MAX_WIDTH, SettingsGridLayout, UI_SCALE_MAX, UI_SCALE_MIN};
-use crate::theme::{BLUE, GREEN, RED, SECONDARY, TEXT, YELLOW, card, card_frame, section_heading};
+use crate::theme::{BLUE, RED, SECONDARY, TEXT, YELLOW, card, card_frame, section_heading};
 use crate::widgets::{committed_text, state_button_sized};
+use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_core::{KnownSetting, SemanticCommand};
-use flow8_model::{DELAY_TICKS_PER_MILLISECOND, DEVICE_NAME_MAX_BYTES};
-use flow8_model::{
-    DeviceSettingsState, HeadphoneSource, InputId, MixBusId, MixDestination, MonitorRoutingSource,
-    TapPoint,
-};
+use flow8_model::{DEVICE_NAME_MAX_BYTES, DeviceSettingsState, InputId};
 
 impl Flow8App {
     pub(in crate::app) fn settings_page(&mut self, ui: &mut egui::Ui) {
@@ -53,44 +50,21 @@ impl Flow8App {
                                 ui,
                                 grid,
                                 0,
-                                |this, ui| {
-                                    this.application_settings_card(ui, grid);
-                                },
-                                |this, ui| {
-                                    this.mixer_display_settings_card(ui, grid);
-                                },
+                                true,
+                                |this, ui| this.application_settings_card(ui, grid),
+                                |this, ui| this.mixer_display_settings_card(ui, grid),
                             );
 
-                            let device_ready = self.device_controls_ready();
-                            ui.add_enabled_ui(device_ready, |ui| {
-                                settings_row_gap(ui, grid);
-                                settings_grid_row(
-                                    self,
-                                    ui,
-                                    grid,
-                                    1,
-                                    |this, ui| {
-                                        this.device_settings_card(ui, grid, &settings);
-                                    },
-                                    |this, ui| {
-                                        this.monitor_settings_card(ui, grid, &settings);
-                                    },
-                                );
-
-                                settings_row_gap(ui, grid);
-                                settings_grid_row(
-                                    self,
-                                    ui,
-                                    grid,
-                                    2,
-                                    |this, ui| {
-                                        this.usb_headphones_settings_card(ui, grid, &settings);
-                                    },
-                                    |this, ui| {
-                                        this.output_settings_card(ui, grid, &settings);
-                                    },
-                                );
-                            });
+                            settings_row_gap(ui, grid);
+                            settings_grid_row(
+                                self,
+                                ui,
+                                grid,
+                                1,
+                                true,
+                                |this, ui| this.device_settings_card(ui, grid, &settings),
+                                |this, ui| this.connection_settings_card(ui, grid),
+                            );
 
                             if !self.discovered_devices.is_empty() {
                                 settings_row_gap(ui, grid);
@@ -102,12 +76,29 @@ impl Flow8App {
             });
     }
 
-    fn application_settings_card(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
-        let mut labels = vec![
+    fn application_settings_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        grid: SettingsGridLayout,
+    ) -> Prepared {
+        let labels = [
             self.language.tr("Language", "语言"),
             self.language.tr("UI Scale", "界面缩放"),
             self.language.tr("Control Gesture", "控制手势"),
             self.language.tr("EQ Editing Mode", "EQ 编辑模式"),
+        ];
+        let grid = settings_labels(ui, grid, &labels);
+        settings_card(ui, grid, |ui| {
+            self.application_preferences_section(ui, grid);
+        })
+    }
+
+    fn connection_settings_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        grid: SettingsGridLayout,
+    ) -> Prepared {
+        let mut labels = vec![
             self.language.tr("Mode", "模式"),
             self.language.tr("Status", "状态"),
         ];
@@ -119,7 +110,6 @@ impl Flow8App {
         }
         let grid = settings_labels(ui, grid, &labels);
         settings_card(ui, grid, |ui| {
-            self.application_preferences_section(ui, grid);
             self.connection_settings_section(ui, grid);
         })
     }
@@ -170,11 +160,12 @@ impl Flow8App {
                 }
             },
         );
-        ui.add_enabled_ui(false, |ui| {
-            settings_form_row(
+        ui.scope(|ui| {
+            settings_device_row(
                 ui,
                 grid,
                 self.language.tr("Control Gesture", "控制手势"),
+                false,
                 |ui| {
                     for (mode, label) in [
                         (ControlGesture::Linear, self.language.tr("Linear", "线性")),
@@ -190,10 +181,11 @@ impl Flow8App {
                     }
                 },
             );
-            settings_form_row(
+            settings_device_row(
                 ui,
                 grid,
                 self.language.tr("EQ Editing Mode", "EQ 编辑模式"),
+                false,
                 |ui| {
                     for (mode, label) in [
                         (
@@ -219,7 +211,6 @@ impl Flow8App {
     }
 
     fn connection_settings_section(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
-        ui.separator();
         section_heading(ui, self.language.tr("CONNECTION", "连接"), BLUE);
         settings_form_row(ui, grid, self.language.tr("Mode", "模式"), |ui| {
             ui.label(self.language.tr("Bluetooth", "蓝牙"));
@@ -259,7 +250,11 @@ impl Flow8App {
         }
     }
 
-    fn mixer_display_settings_card(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
+    fn mixer_display_settings_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        grid: SettingsGridLayout,
+    ) -> Prepared {
         let grid = settings_labels(
             ui,
             grid,
@@ -299,23 +294,14 @@ impl Flow8App {
             );
             ui.separator();
             ui.label(self.language.tr("Visible mixer inputs", "可见混音输入"));
-            egui::Grid::new("settings-visible-inputs")
-                .num_columns(2)
-                .spacing(Vec2::new(grid.gap, 4.0 * grid.scale))
-                .show(ui, |ui| {
-                    for (index, input) in InputId::ALL.into_iter().enumerate() {
-                        ui.checkbox(
-                            &mut self.preferences.channel_visible[input.index()],
-                            display_name(input, self.language),
-                        );
-                        if index % 2 == 1 {
-                            ui.end_row();
-                        }
-                    }
-                    if InputId::ALL.len() % 2 != 0 {
-                        ui.end_row();
-                    }
-                });
+            ui.horizontal_wrapped(|ui| {
+                for input in InputId::ALL {
+                    ui.checkbox(
+                        &mut self.preferences.channel_visible[input.index()],
+                        display_name(input, self.language),
+                    );
+                }
+            });
         })
     }
 
@@ -324,7 +310,8 @@ impl Flow8App {
         ui: &mut egui::Ui,
         grid: SettingsGridLayout,
         settings: &DeviceSettingsState,
-    ) {
+    ) -> Prepared {
+        let ready = self.device_controls_ready();
         let grid = settings_labels(
             ui,
             grid,
@@ -341,10 +328,11 @@ impl Flow8App {
                 self.language.tr("DEVICE / CONTROL", "设备 / 控制"),
                 BLUE,
             );
-            settings_form_row(
+            settings_device_row(
                 ui,
                 grid,
                 self.language.tr("Device Name", "设备名称"),
+                ready,
                 |ui| {
                     if let Some(name) = committed_text(
                         ui,
@@ -352,458 +340,48 @@ impl Flow8App {
                         settings.device_name.effective().map(String::as_str),
                         DEVICE_NAME_MAX_BYTES,
                         self.language,
-                    ) {
+                    ) && ready
+                    {
                         self.dispatch(SemanticCommand::SetSetting(KnownSetting::DeviceName(name)));
                     }
                 },
             );
-            let footswitch = settings
-                .footswitch_fx_mode
-                .effective()
-                .copied()
-                .unwrap_or(false);
-            settings_form_row(
+            let footswitch = settings.footswitch_fx_mode.effective().copied();
+            settings_device_row(
                 ui,
                 grid,
                 self.language.tr("Footswitch Mode", "脚踏开关模式"),
+                ready,
                 |ui| {
-                    for (fx_mode, label) in
-                        [(true, "FX"), (false, self.language.tr("Snapshot", "快照"))]
-                    {
-                        if settings_button(ui, grid, footswitch == fx_mode, label, BLUE).clicked() {
-                            self.dispatch(SemanticCommand::SetSetting(
-                                KnownSetting::FootswitchFxMode(fx_mode),
-                            ));
-                        }
-                    }
-                },
-            );
-            let linked = settings
-                .device_linked_selection
-                .effective()
-                .copied()
-                .unwrap_or(false);
-            settings_form_row(
-                ui,
-                grid,
-                self.language
-                    .tr("Device-linked Output Selection", "设备联动输出选择"),
-                |ui| {
-                    if settings_button(
+                    if let Some(fx_mode) = settings_choice(
                         ui,
                         grid,
-                        linked,
-                        setting_switch_text(self.language, linked),
+                        footswitch,
+                        [(true, "FX"), (false, self.language.tr("Snapshot", "快照"))],
                         BLUE,
-                    )
-                    .clicked()
-                    {
-                        self.dispatch(SemanticCommand::SetSetting(
-                            KnownSetting::DeviceLinkedSelection(!linked),
-                        ));
-                    }
-                },
-            );
-        })
-    }
-
-    fn monitor_settings_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        grid: SettingsGridLayout,
-        settings: &DeviceSettingsState,
-    ) {
-        let grid = settings_labels(
-            ui,
-            grid,
-            &[
-                self.language.tr("Monitor Source", "监听来源"),
-                self.language.tr("Monitor Tap", "监听取样点"),
-                self.language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
-            ],
-        );
-        settings_card(ui, grid, |ui| {
-            section_heading(ui, self.language.tr("MONITOR ROUTING", "监听路由"), GREEN);
-            let current = settings
-                .monitor_routing
-                .effective()
-                .copied()
-                .unwrap_or(MonitorRoutingSource::MonitorMix);
-            settings_form_row(
-                ui,
-                grid,
-                self.language.tr("Monitor Source", "监听来源"),
-                |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for (candidate, label) in [
-                            (MonitorRoutingSource::MonitorMix, "MON"),
-                            (MonitorRoutingSource::Usb12, "USB 1/2"),
-                            (MonitorRoutingSource::Usb34, "USB 3/4"),
-                        ] {
-                            if settings_button(ui, grid, current == candidate, label, GREEN)
-                                .clicked()
-                            {
-                                self.dispatch(SemanticCommand::SetSetting(
-                                    KnownSetting::MonitorRouting(candidate),
-                                ));
-                            }
-                        }
-                    });
-                },
-            );
-            let post = settings
-                .monitor_post_fader
-                .effective()
-                .copied()
-                .unwrap_or(false);
-            settings_form_row(
-                ui,
-                grid,
-                self.language.tr("Monitor Tap", "监听取样点"),
-                |ui| {
-                    if settings_button(ui, grid, post, if post { "POST" } else { "PRE" }, GREEN)
-                        .clicked()
-                    {
-                        self.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorPostFader(
-                            !post,
+                    ) {
+                        self.dispatch(SemanticCommand::SetSetting(KnownSetting::FootswitchFxMode(
+                            fx_mode,
                         )));
                     }
                 },
             );
-            let linked = self
-                .store
-                .state
-                .routing
-                .monitor_link
-                .stereo_linked
-                .effective()
-                .copied()
-                .unwrap_or(false);
-            settings_form_row(
+            let linked = settings.device_linked_selection.effective().copied();
+            settings_device_row(
                 ui,
                 grid,
-                self.language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
+                self.language
+                    .tr("Device-linked Output Selection", "设备联动输出选择"),
+                ready,
                 |ui| {
-                    if settings_button(
-                        ui,
-                        grid,
-                        linked,
-                        setting_switch_text(self.language, linked),
-                        GREEN,
-                    )
-                    .clicked()
-                    {
+                    if let Some(value) = settings_switch(ui, grid, linked, self.language, BLUE) {
                         self.dispatch(SemanticCommand::SetSetting(
-                            KnownSetting::MonitorStereoLink(!linked),
+                            KnownSetting::DeviceLinkedSelection(value),
                         ));
                     }
                 },
             );
         })
-    }
-
-    fn usb_headphones_settings_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        grid: SettingsGridLayout,
-        settings: &DeviceSettingsState,
-    ) {
-        let grid = settings_labels(
-            ui,
-            grid,
-            &[
-                self.language.tr("USB Streaming", "USB 推流"),
-                self.language
-                    .tr("USB 1/2 → Input 5/6", "USB 1/2 → 输入 5/6"),
-                self.language
-                    .tr("USB 3/4 → Input 7/8", "USB 3/4 → 输入 7/8"),
-                self.language
-                    .tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
-                self.language
-                    .tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
-                self.language.tr("Headphone Source", "耳机信号源"),
-                self.language.tr("Headphone Tap", "耳机取样点"),
-            ],
-        );
-        settings_card(ui, grid, |ui| {
-            self.usb_source_settings_section(ui, grid, settings);
-            self.headphone_settings_section(ui, grid);
-        })
-    }
-
-    fn usb_source_settings_section(
-        &mut self,
-        ui: &mut egui::Ui,
-        grid: SettingsGridLayout,
-        settings: &DeviceSettingsState,
-    ) {
-        section_heading(
-            ui,
-            self.language.tr("USB / HEADPHONES", "USB / 耳机"),
-            GREEN,
-        );
-        for (active, label, command) in [
-            (
-                settings.usb_streaming.effective().copied().unwrap_or(false),
-                self.language.tr("USB Streaming", "USB 推流"),
-                0_u8,
-            ),
-            (
-                settings
-                    .input56_from_usb12
-                    .effective()
-                    .copied()
-                    .unwrap_or(false),
-                self.language
-                    .tr("USB 1/2 → Input 5/6", "USB 1/2 → 输入 5/6"),
-                1_u8,
-            ),
-            (
-                settings
-                    .input78_from_usb34
-                    .effective()
-                    .copied()
-                    .unwrap_or(false),
-                self.language
-                    .tr("USB 3/4 → Input 7/8", "USB 3/4 → 输入 7/8"),
-                2_u8,
-            ),
-            (
-                settings.phones_only.effective().copied().unwrap_or(false),
-                self.language
-                    .tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
-                3_u8,
-            ),
-        ] {
-            settings_form_row(ui, grid, label, |ui| {
-                if settings_button(
-                    ui,
-                    grid,
-                    active,
-                    setting_switch_text(self.language, active),
-                    GREEN,
-                )
-                .clicked()
-                {
-                    let setting = match command {
-                        0 => KnownSetting::UsbStreaming(!active),
-                        1 => KnownSetting::Input56FromUsb12(!active),
-                        2 => KnownSetting::Input78FromUsb34(!active),
-                        _ => KnownSetting::PhonesOnly(!active),
-                    };
-                    self.dispatch(SemanticCommand::SetSetting(setting));
-                }
-            });
-        }
-        let bt_usb_switch = settings.bt_usb_switch.effective().copied().unwrap_or(false);
-        settings_form_row(
-            ui,
-            grid,
-            self.language
-                .tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
-            |ui| {
-                if settings_button(
-                    ui,
-                    grid,
-                    bt_usb_switch,
-                    setting_switch_text(self.language, bt_usb_switch),
-                    GREEN,
-                )
-                .clicked()
-                {
-                    self.dispatch(SemanticCommand::SetSetting(KnownSetting::BtUsbSwitch(
-                        !bt_usb_switch,
-                    )));
-                }
-            },
-        );
-    }
-
-    fn headphone_settings_section(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
-        let headphone_source = self
-            .store
-            .state
-            .routing
-            .headphones
-            .source
-            .effective()
-            .copied()
-            .unwrap_or(HeadphoneSource::Main);
-        settings_form_row(
-            ui,
-            grid,
-            self.language.tr("Headphone Source", "耳机信号源"),
-            |ui| {
-                for (source, label) in [
-                    (HeadphoneSource::Main, "MAIN"),
-                    (HeadphoneSource::Monitor, "MON"),
-                ] {
-                    if settings_button(ui, grid, headphone_source == source, label, GREEN).clicked()
-                    {
-                        self.dispatch(SemanticCommand::SetSetting(
-                            KnownSetting::HeadphonesUseMonitor(source == HeadphoneSource::Monitor),
-                        ));
-                    }
-                }
-            },
-        );
-        let headphone_tap = self
-            .store
-            .state
-            .routing
-            .headphones
-            .tap_point
-            .effective()
-            .copied()
-            .unwrap_or(TapPoint::PostFader);
-        settings_form_row(
-            ui,
-            grid,
-            self.language.tr("Headphone Tap", "耳机取样点"),
-            |ui| {
-                for (tap, label) in [(TapPoint::PreFader, "PRE"), (TapPoint::PostFader, "POST")] {
-                    if settings_button(ui, grid, headphone_tap == tap, label, GREEN).clicked() {
-                        self.dispatch(SemanticCommand::SetSetting(
-                            KnownSetting::HeadphonesPostFader(tap == TapPoint::PostFader),
-                        ));
-                    }
-                }
-            },
-        );
-    }
-
-    fn output_settings_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        grid: SettingsGridLayout,
-        settings: &DeviceSettingsState,
-    ) {
-        let grid = settings_labels(
-            ui,
-            grid,
-            &["MAIN -10 dBV", "MON -10 dBV", "MAIN", "MON1", "MON2"],
-        );
-        settings_card(ui, grid, |ui| {
-            section_heading(ui, self.language.tr("OUTPUT", "输出"), TEXT);
-            ui.label(
-                egui::RichText::new(self.language.tr("OUTPUT LEVEL", "输出电平"))
-                    .size(self.metrics.small_font)
-                    .color(SECONDARY),
-            );
-            let main_pad = settings
-                .main_minus_10_dbv
-                .effective()
-                .copied()
-                .unwrap_or(false);
-            settings_form_row(ui, grid, "MAIN -10 dBV", |ui| {
-                if settings_button(
-                    ui,
-                    grid,
-                    main_pad,
-                    setting_switch_text(self.language, main_pad),
-                    TEXT,
-                )
-                .clicked()
-                {
-                    self.dispatch(SemanticCommand::SetSetting(KnownSetting::MainMinus10Dbv(
-                        !main_pad,
-                    )));
-                }
-            });
-            let monitor_pad = settings
-                .monitor_minus_10_dbv
-                .effective()
-                .copied()
-                .unwrap_or(false);
-            settings_form_row(ui, grid, "MON -10 dBV", |ui| {
-                if settings_button(
-                    ui,
-                    grid,
-                    monitor_pad,
-                    setting_switch_text(self.language, monitor_pad),
-                    TEXT,
-                )
-                .clicked()
-                {
-                    self.dispatch(SemanticCommand::SetSetting(
-                        KnownSetting::MonitorMinus10Dbv(!monitor_pad),
-                    ));
-                }
-            });
-            ui.separator();
-            self.output_delay_settings(ui, grid);
-        })
-    }
-
-    fn output_delay_settings(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
-        section_heading(ui, self.language.tr("OUTPUT DELAY", "输出延迟"), TEXT);
-        for (index, bus, destination) in [
-            (0, MixBusId::Main, MixDestination::Main),
-            (1, MixBusId::Monitor1, MixDestination::Monitor1),
-            (2, MixBusId::Monitor2, MixDestination::Monitor2),
-        ] {
-            let delay = &self
-                .store
-                .state
-                .bus_for_destination(destination)
-                .expect("MAIN and MON outputs have bus state")
-                .delay_ticks;
-            let current_ticks = delay.effective().copied();
-            let confirmed_ticks = delay.confirmed;
-            if !self.delay_ms_dirty[index] {
-                self.delay_ms_draft[index] = current_ticks.map(format_delay_ms).unwrap_or_default();
-            }
-            settings_form_row(ui, grid, destination_name(destination), |ui| {
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.delay_ms_draft[index])
-                            .id_salt(("output-delay-ms", index))
-                            .desired_width(100.0 * self.metrics.ui_scale),
-                    )
-                    .changed()
-                {
-                    self.delay_ms_dirty[index] = true;
-                }
-                ui.label("ms");
-                if ui
-                    .add_enabled(
-                        self.delay_ms_dirty[index],
-                        egui::Button::new(self.language.tr("Apply", "应用")),
-                    )
-                    .clicked()
-                {
-                    match parse_delay_ms(&self.delay_ms_draft[index]) {
-                        Some(ticks) => {
-                            if current_ticks != Some(ticks) {
-                                self.dispatch(SemanticCommand::SetDelay { bus, ticks });
-                            }
-                            self.delay_ms_dirty[index] = false;
-                        }
-                        None => {
-                            self.message = self
-                                .language
-                                .tr(
-                                    "Enter a valid non-negative delay.",
-                                    "请输入有效的非负延迟值。",
-                                )
-                                .into();
-                        }
-                    }
-                }
-            });
-            if let Some(ticks) = confirmed_ticks {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}: {} ms · {} ticks",
-                        self.language.tr("Device reported", "设备回报"),
-                        format_delay_ms(ticks),
-                        ticks,
-                    ))
-                    .size(self.metrics.small_font)
-                    .color(SECONDARY),
-                );
-            }
-        }
     }
 
     fn last_scan_settings_card(&mut self, ui: &mut egui::Ui) {
@@ -828,24 +406,14 @@ impl Flow8App {
     }
 }
 
-fn format_delay_ms(ticks: u32) -> String {
-    format!("{:.3}", ticks as f64 / DELAY_TICKS_PER_MILLISECOND)
-}
-
-fn parse_delay_ms(value: &str) -> Option<u32> {
-    let milliseconds = value.trim().parse::<f64>().ok()?;
-    let ticks = (milliseconds * DELAY_TICKS_PER_MILLISECOND).round();
-    (milliseconds.is_finite() && milliseconds >= 0.0 && ticks <= u32::MAX as f64)
-        .then_some(ticks as u32)
-}
-
 fn settings_grid_row(
     app: &mut Flow8App,
     ui: &mut egui::Ui,
     layout: SettingsGridLayout,
     row_id: u8,
-    left: impl FnOnce(&mut Flow8App, &mut egui::Ui),
-    right: impl FnOnce(&mut Flow8App, &mut egui::Ui),
+    align_bottoms: bool,
+    left: impl FnOnce(&mut Flow8App, &mut egui::Ui) -> Prepared,
+    right: impl FnOnce(&mut Flow8App, &mut egui::Ui) -> Prepared,
 ) {
     if layout.two_columns {
         // Both cards start at the same top edge. Advance the parent only once,
@@ -865,7 +433,8 @@ fn settings_grid_row(
                 ))
                 .layout(Layout::top_down(Align::Min)),
         );
-        left(app, &mut left_ui);
+        let mut left_card = left(app, &mut left_ui);
+        left_card.allocate_space(&mut left_ui);
         let left_bottom = left_ui.min_rect().bottom();
 
         let mut right_ui = ui.new_child(
@@ -877,36 +446,51 @@ fn settings_grid_row(
                 ))
                 .layout(Layout::top_down(Align::Min)),
         );
-        right(app, &mut right_ui);
+        let mut right_card = right(app, &mut right_ui);
+        right_card.allocate_space(&mut right_ui);
         let right_bottom = right_ui.min_rect().bottom();
+
+        if align_bottoms {
+            // Extend only the frames to this pair's natural content height.
+            // Leave controls in place and keep single-column cards natural.
+            let height = left_card
+                .content_ui
+                .min_rect()
+                .height()
+                .max(right_card.content_ui.min_rect().height());
+            for card in [&mut left_card, &mut right_card] {
+                let mut rect = card.content_ui.min_rect();
+                rect.max.y = rect.min.y + height;
+                card.content_ui.expand_to_include_rect(rect);
+            }
+        }
+        left_card.paint(&left_ui);
+        right_card.paint(&right_ui);
 
         ui.advance_cursor_after_rect(egui::Rect::from_min_max(
             egui::pos2(left_x, top),
             egui::pos2(right_x + layout.column_width, left_bottom.max(right_bottom)),
         ));
     } else {
-        left(app, ui);
+        left(app, ui).end(ui);
         settings_row_gap(ui, layout);
-        right(app, ui);
+        right(app, ui).end(ui);
     }
 }
 
-fn settings_card<R>(
+fn settings_card(
     ui: &mut egui::Ui,
     layout: SettingsGridLayout,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    card_frame()
-        .corner_radius(6)
-        .inner_margin(16)
-        .show(ui, |ui| {
-            ui.set_width((layout.column_width - 34.0).max(0.0));
-            ui.spacing_mut().item_spacing = Vec2::new(layout.control_gap, layout.row_gap);
-            ui.spacing_mut().icon_width = (18.0 * layout.scale).round();
-            ui.spacing_mut().icon_width_inner = (12.0 * layout.scale).round();
-            add(ui)
-        })
-        .inner
+    add: impl FnOnce(&mut egui::Ui),
+) -> Prepared {
+    let mut card = card_frame().corner_radius(6).inner_margin(16).begin(ui);
+    let ui = &mut card.content_ui;
+    ui.set_width((layout.column_width - 34.0).max(0.0));
+    ui.spacing_mut().item_spacing = Vec2::new(layout.control_gap, layout.row_gap);
+    ui.spacing_mut().icon_width = (18.0 * layout.scale).round();
+    ui.spacing_mut().icon_width_inner = (12.0 * layout.scale).round();
+    add(ui);
+    card
 }
 
 fn settings_form_row(
@@ -927,6 +511,7 @@ fn settings_form_row(
                 Vec2::new(layout.label_width, layout.row_height),
                 Layout::left_to_right(Align::Center),
                 |ui| {
+                    ui.set_max_width(layout.label_width);
                     ui.set_min_size(Vec2::new(layout.label_width, layout.row_height));
                     ui.add(egui::Label::new(label).wrap());
                 },
@@ -943,6 +528,81 @@ fn settings_form_row(
 fn settings_row_gap(ui: &mut egui::Ui, layout: SettingsGridLayout) {
     // The preceding row already advanced the cursor by item_spacing.y.
     ui.add_space((layout.gap - ui.spacing().item_spacing.y).max(0.0));
+}
+
+fn settings_device_row(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    label: &str,
+    enabled: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    settings_form_row(ui, layout, label, |ui| {
+        // Keep labels readable; only the actual controls are unavailable.
+        ui.add_enabled_ui(enabled, add);
+    });
+}
+
+fn settings_switch(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    value: Option<bool>,
+    language: Language,
+    accent: egui::Color32,
+) -> Option<bool> {
+    settings_toggle(
+        ui,
+        layout,
+        value,
+        [
+            setting_switch_text(language, false),
+            setting_switch_text(language, true),
+        ],
+        accent,
+    )
+}
+
+fn settings_toggle(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    value: Option<bool>,
+    labels: [&str; 2],
+    accent: egui::Color32,
+) -> Option<bool> {
+    let label = value.map_or("—", |value| labels[usize::from(value)]);
+    let clicked = ui
+        .scope(|ui| {
+            // A disconnected row is already disabled; avoid dimming it twice.
+            if value.is_none() && ui.is_enabled() {
+                ui.disable();
+            }
+            settings_button(ui, layout, value == Some(true), label, accent).clicked()
+        })
+        .inner;
+    clicked.then(|| value.map(|value| !value)).flatten()
+}
+
+fn settings_choice<T: Copy + PartialEq, const N: usize>(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    value: Option<T>,
+    choices: [(T, &str); N],
+    accent: egui::Color32,
+) -> Option<T> {
+    let mut selected = None;
+    ui.scope(|ui| {
+        if value.is_none() && ui.is_enabled() {
+            ui.disable();
+        }
+        ui.horizontal_wrapped(|ui| {
+            for (candidate, label) in choices {
+                if settings_button(ui, layout, value == Some(candidate), label, accent).clicked() {
+                    selected = Some(candidate);
+                }
+            }
+        });
+    });
+    selected
 }
 
 fn settings_labels(

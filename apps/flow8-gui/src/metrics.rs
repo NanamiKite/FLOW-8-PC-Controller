@@ -157,12 +157,10 @@ impl SettingsGridLayout {
                 .x
         };
         let label_width = [
-            language.tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
             language.tr("Device-linked Output Selection", "设备联动输出选择"),
             language.tr("Show Output Delay Indicator", "显示输出延迟指示"),
             language.tr("Connection progress", "连接进度"),
-            language.tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
-            language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
+            language.tr("Last connection error", "最近连接错误"),
         ]
         .into_iter()
         .map(measure)
@@ -173,7 +171,6 @@ impl SettingsGridLayout {
         let choice_width = [
             "English",
             "简体中文",
-            "USB 3/4",
             language.tr("Parametric", "参数"),
             language.tr("Snapshot", "快照"),
         ]
@@ -183,8 +180,8 @@ impl SettingsGridLayout {
             + button_padding;
         let choice_width = choice_width.ceil();
         let control_gap = metrics.spacing;
-        let control_width = (3.0 * choice_width + 2.0 * control_gap).max(220.0 * metrics.ui_scale);
-        // Reserve room for three source buttons, labels (long labels may wrap),
+        let control_width = (2.0 * choice_width + control_gap).max(220.0 * metrics.ui_scale);
+        // Reserve room for two preference choices, labels (long labels may wrap),
         // the card's 16-point padding and one-point border, and the row gap.
         let min_column_width = label_width + control_width + 34.0 + control_gap;
         let two_columns = content_width >= 2.0 * min_column_width + gap;

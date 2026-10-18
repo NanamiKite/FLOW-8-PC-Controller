@@ -1,6 +1,6 @@
 use super::inspector::fx_setup_values;
 use crate::app::Flow8App;
-use crate::i18n::{Language, waiting_for_device_text};
+use crate::i18n::{Language, destination_name, waiting_for_device_text};
 use crate::metrics::{ROUTING_CONTENT_MAX_WIDTH, STATE_BUTTON_MIN_WIDTH, UiMetrics};
 use crate::theme::{
     BLUE, GREEN, MIXER_DIVIDER, PURPLE, SECONDARY, TEXT, card_frame, section_heading,
@@ -9,7 +9,10 @@ use crate::widgets::state_button_sized;
 use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Vec2};
 use flow8_core::{KnownSetting, SemanticCommand, SessionState};
-use flow8_model::{FxId, HeadphoneSource, TapPoint};
+use flow8_model::{
+    DELAY_TICKS_PER_MILLISECOND, FxId, HeadphoneSource, MixBusId, MixDestination,
+    MonitorRoutingSource, TapPoint,
+};
 
 impl Flow8App {
     pub(in crate::app) fn routing_page(&mut self, ui: &mut egui::Ui) {
@@ -18,11 +21,14 @@ impl Flow8App {
         ui.add_space(20.0);
         ui.with_layout(Layout::top_down(Align::Center), |ui| {
             ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
-                ui.heading(egui::RichText::new(self.language.tr("Routing", "路由")).color(TEXT));
+                ui.heading(
+                    egui::RichText::new(self.language.tr("Routing & Outputs", "路由与输出"))
+                        .color(TEXT),
+                );
                 let subtitle = if self.device_controls_ready() {
                     self.language.tr(
-                        "USB audio, FX returns and physical outputs",
-                        "USB 音频、效果器返回与物理输出",
+                        "Audio sources, monitoring and physical outputs",
+                        "音频来源、监听与物理输出",
                     )
                 } else if matches!(
                     self.store.state.session,
@@ -109,7 +115,7 @@ impl Flow8App {
         routing_card(
             ui,
             layout,
-            language.tr("USB AUDIO", "USB 音频"),
+            language.tr("USB / BLUETOOTH", "USB / 蓝牙"),
             BLUE,
             |ui| {
                 let streaming = settings.usb_streaming.effective().copied();
@@ -146,6 +152,25 @@ impl Flow8App {
                         self.dispatch(SemanticCommand::SetSetting(setting(value)));
                     }
                 }
+                ui.separator();
+                for (label, current, setting) in [
+                    (
+                        language.tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
+                        settings.phones_only.effective().copied(),
+                        KnownSetting::PhonesOnly as fn(bool) -> KnownSetting,
+                    ),
+                    (
+                        language.tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
+                        settings.bt_usb_switch.effective().copied(),
+                        KnownSetting::BtUsbSwitch as fn(bool) -> KnownSetting,
+                    ),
+                ] {
+                    if let Some(value) = setting_row(ui, layout, label, |ui| {
+                        routing_switch(ui, layout, current, ready, language, BLUE)
+                    }) {
+                        self.dispatch(SemanticCommand::SetSetting(setting(value)));
+                    }
+                }
             },
         )
     }
@@ -157,12 +182,47 @@ impl Flow8App {
         let linked = routing.monitor_link.stereo_linked.effective().copied();
         let source = routing.headphones.source.effective().copied();
         let tap = routing.headphones.tap_point.effective().copied();
+        let monitor_source = routing.settings.monitor_routing.effective().copied();
+        let monitor_post = routing.settings.monitor_post_fader.effective().copied();
         routing_card(
             ui,
             layout,
             language.tr("MONITOR / HEADPHONES", "监听 / 耳机"),
             GREEN,
             |ui| {
+                if let Some(value) = setting_row(
+                    ui,
+                    layout,
+                    language.tr("Monitor source", "监听来源"),
+                    |ui| {
+                        routing_choice(
+                            ui,
+                            layout,
+                            ready,
+                            monitor_source,
+                            [
+                                (MonitorRoutingSource::MonitorMix, "MON"),
+                                (MonitorRoutingSource::Usb12, "USB 1/2"),
+                                (MonitorRoutingSource::Usb34, "USB 3/4"),
+                            ],
+                            GREEN,
+                        )
+                    },
+                ) {
+                    self.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorRouting(
+                        value,
+                    )));
+                }
+                if let Some(value) = setting_row(
+                    ui,
+                    layout,
+                    language.tr("Monitor tap", "监听取样点"),
+                    |ui| routing_toggle(ui, layout, monitor_post, ready, ["PRE", "POST"], GREEN),
+                ) {
+                    self.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorPostFader(
+                        value,
+                    )));
+                }
                 if let Some(value) = setting_row(
                     ui,
                     layout,
@@ -280,6 +340,85 @@ impl Flow8App {
         )
     }
 
+    fn output_delay_settings(&mut self, ui: &mut egui::Ui, layout: RoutingLayout) {
+        let ready = self.device_controls_ready();
+        let layout = RoutingLayout {
+            label_width: layout.output_label_width,
+            ..layout
+        };
+        section_heading(ui, self.language.tr("OUTPUT DELAY", "输出延迟"), TEXT);
+        for (index, bus, destination) in [
+            (0, MixBusId::Main, MixDestination::Main),
+            (1, MixBusId::Monitor1, MixDestination::Monitor1),
+            (2, MixBusId::Monitor2, MixDestination::Monitor2),
+        ] {
+            let delay = &self
+                .store
+                .state
+                .bus_for_destination(destination)
+                .expect("MAIN and MON outputs have bus state")
+                .delay_ticks;
+            let current_ticks = delay.effective().copied();
+            let confirmed_ticks = delay.confirmed;
+            if !self.delay_ms_dirty[index] {
+                self.delay_ms_draft[index] = current_ticks.map(format_delay_ms).unwrap_or_default();
+            }
+            setting_row(ui, layout, destination_name(destination), |ui| {
+                ui.add_enabled_ui(ready, |ui| {
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.delay_ms_draft[index])
+                                .id_salt(("output-delay-ms", index))
+                                .hint_text("—")
+                                .desired_width(100.0 * self.metrics.ui_scale),
+                        )
+                        .changed()
+                    {
+                        self.delay_ms_dirty[index] = true;
+                    }
+                    ui.label("ms");
+                    if ui
+                        .add_enabled(
+                            self.delay_ms_dirty[index],
+                            egui::Button::new(self.language.tr("Apply", "应用")),
+                        )
+                        .clicked()
+                    {
+                        match parse_delay_ms(&self.delay_ms_draft[index]) {
+                            Some(ticks) => {
+                                if current_ticks != Some(ticks) {
+                                    self.dispatch(SemanticCommand::SetDelay { bus, ticks });
+                                }
+                                self.delay_ms_dirty[index] = false;
+                            }
+                            None => {
+                                self.message = self
+                                    .language
+                                    .tr(
+                                        "Enter a valid non-negative delay.",
+                                        "请输入有效的非负延迟值。",
+                                    )
+                                    .into();
+                            }
+                        }
+                    }
+                });
+            });
+            if let Some(ticks) = confirmed_ticks {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}: {} ms · {} ticks",
+                        self.language.tr("Device reported", "设备回报"),
+                        format_delay_ms(ticks),
+                        ticks,
+                    ))
+                    .size(self.metrics.small_font)
+                    .color(SECONDARY),
+                );
+            }
+        }
+    }
+
     fn physical_output_routing_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -365,12 +504,25 @@ impl Flow8App {
                         egui::Stroke::new(1.0, MIXER_DIVIDER),
                     );
                 });
+                ui.separator();
+                self.output_delay_settings(ui, layout);
             },
         )
     }
 }
 
 const CARD_INSET: f32 = 16.0;
+
+fn format_delay_ms(ticks: u32) -> String {
+    format!("{:.3}", ticks as f64 / DELAY_TICKS_PER_MILLISECOND)
+}
+
+fn parse_delay_ms(value: &str) -> Option<u32> {
+    let milliseconds = value.trim().parse::<f64>().ok()?;
+    let ticks = (milliseconds * DELAY_TICKS_PER_MILLISECOND).round();
+    (milliseconds.is_finite() && milliseconds >= 0.0 && ticks <= u32::MAX as f64)
+        .then_some(ticks as u32)
+}
 
 #[derive(Clone, Copy)]
 struct RoutingLayout {
@@ -409,16 +561,21 @@ impl RoutingLayout {
             language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
             language.tr("Headphone source", "耳机来源"),
             language.tr("Headphone tap", "耳机取样点"),
+            language.tr("Monitor source", "监听来源"),
+            language.tr("Monitor tap", "监听取样点"),
+            language.tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
+            language.tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
         ]
         .into_iter()
         .map(measure)
         .fold(0.0, f32::max)
+        .min(220.0 * metrics.ui_scale)
             + gap;
         let button_padding = 2.0 * ui.spacing().button_padding.x + 4.0;
-        let choice_width = (measure("MONITOR") + button_padding)
+        let choice_width = (measure("MONITOR").max(measure("USB 3/4")) + button_padding)
             .ceil()
             .max(STATE_BUTTON_MIN_WIDTH);
-        let choices_width = 2.0 * choice_width + metrics.spacing;
+        let choices_width = 3.0 * choice_width + 2.0 * metrics.spacing;
         let source_width = measure("USB 3/4").max(84.0 * metrics.ui_scale);
         let arrow_width = 28.0 * metrics.ui_scale;
         let fx_button_width = ["MAIN", "MON1", "MON2"]
@@ -495,13 +652,14 @@ fn setting_row<R>(
     label: &str,
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             Vec2::new(layout.label_width, layout.row_height),
             Layout::left_to_right(Align::Center),
             |ui| {
+                ui.set_max_width(layout.label_width);
                 ui.set_min_size(Vec2::new(layout.label_width, layout.row_height));
-                ui.label(egui::RichText::new(label).color(TEXT));
+                ui.add(egui::Label::new(egui::RichText::new(label).color(TEXT)).wrap());
             },
         );
         control(ui)
@@ -591,11 +749,25 @@ fn routing_switch(
     language: Language,
     accent: Color32,
 ) -> Option<bool> {
-    let label = match value {
-        Some(true) => language.tr("On", "开启"),
-        Some(false) => language.tr("Off", "关闭"),
-        None => "—",
-    };
+    routing_toggle(
+        ui,
+        layout,
+        value,
+        ready,
+        [language.tr("Off", "关闭"), language.tr("On", "开启")],
+        accent,
+    )
+}
+
+fn routing_toggle(
+    ui: &mut egui::Ui,
+    layout: RoutingLayout,
+    value: Option<bool>,
+    ready: bool,
+    labels: [&str; 2],
+    accent: Color32,
+) -> Option<bool> {
+    let label = value.map_or("—", |value| labels[usize::from(value)]);
     let clicked = ui
         .add_enabled_ui(ready && value.is_some(), |ui| {
             state_button_sized(

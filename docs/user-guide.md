@@ -16,14 +16,14 @@ The app creates a stable client identity on first use and reuses it later. Do no
 
 ## Working with the mixer
 
-The top navigation switches between **MIXER**, **STAGE**, **FX1**, **FX2**, **MON1**, **MON2**, **MAIN**, and **MAIN OUT**. The **Setup** menu opens **Preferences**, **Snapshots**, and **Routing**. Clicking a channel strip selects it for editing; use the destination tabs to choose which bus's levels you are viewing.
+The top navigation switches between **MIXER**, **STAGE**, **FX1**, **FX2**, **MON1**, **MON2**, **MAIN**, and **MAIN OUT**. The **Setup** menu opens **Preferences**, **Snapshots**, and **Routing & Outputs**. Clicking a channel strip selects it for editing; use the destination tabs to choose which bus's levels you are viewing.
 
 - **MIXER / input detail:** inspect and change input level, mute/solo, gain, HPF, EQ, compressor and applicable input controls. Only controls relevant to the selected input are available. Enabling 48 V phantom power asks for confirmation; check the connected equipment first.
 - **MAIN / MON1 / MON2:** show each mix bus and its output controls. Bus selection does not silently change a physical output route.
 - **FX1 / FX2:** select an effect preset and adjust the exposed effect parameters. Preset names and some parameter meanings still need device calibration; use the device-reported state as the confirmation.
-- **Routing:** inspect the signal relationships and adjust the controls that are enabled for the active connection.
+- **Routing & Outputs:** USB/Bluetooth routing, monitor and headphone sources/tap points, MON stereo linking, FX returns, output level modes, and output delay. These audio settings are grouped here rather than duplicated in Preferences.
 - **STAGE:** a visual view of channel and meter state. **MAIN OUT** is a signal-topology view, not a second set of bus controls.
-- **Preferences:** language, UI scale, display choices, and supported device settings. Unsupported or unidentified device settings remain unavailable rather than sending guessed commands.
+- **Preferences:** language, UI scale, display choices, visible inputs, device name, footswitch mode, device-linked output selection, and connection information. Device controls remain unavailable until the connection is ready; settings without a known value are not shown as off or as a default selection.
 
 Requests may take time over Bluetooth. A pending value is not proof that the mixer accepted it. During a fader gesture and briefly after release, known intermediate echoes of that gesture may be absorbed while displaying its latest target. A different device value or a failed command ends this hold; the confirmed device state remains authoritative.
 

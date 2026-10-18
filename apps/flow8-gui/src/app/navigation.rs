@@ -53,7 +53,7 @@ impl Flow8App {
                             if small_tab(
                                 ui,
                                 self.page == Page::Routing,
-                                self.language.tr("Routing", "路由"),
+                                self.language.tr("Routing & Outputs", "路由与输出"),
                                 TEXT,
                             )
                             .clicked()
