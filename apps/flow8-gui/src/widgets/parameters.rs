@@ -1,6 +1,7 @@
 use crate::i18n::Language;
+use crate::metrics::PARAMETER_VALUE_MIN_WIDTH;
 use crate::theme::{RED, TEXT};
-use eframe::egui::{self, Align, Layout};
+use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_model::{ParameterSpec, specs};
 
 pub(crate) struct ParameterRowResponse {
@@ -72,8 +73,15 @@ fn parameter_row_impl(
                     ui.label(egui::RichText::new(label).color(TEXT));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().slider_width =
-                        (ui.available_width() - 100.0 * scale).clamp(36.0, 140.0 * scale);
+                    // Slider's built-in DragValue uses this minimum in both
+                    // button and text-edit mode. Reserve the same value column
+                    // regardless of a unit suffix or the current number of digits.
+                    let value_width = PARAMETER_VALUE_MIN_WIDTH * scale;
+                    let slider_width =
+                        (ui.available_width() - value_width - 2.0 * ui.spacing().item_spacing.x)
+                            .clamp(36.0, 140.0 * scale);
+                    ui.spacing_mut().interact_size.x = value_width;
+                    ui.spacing_mut().slider_width = slider_width;
                     let suffix = match spec.unit {
                         flow8_model::Unit::Decibels => " dB",
                         flow8_model::Unit::Hertz => " Hz",
@@ -176,6 +184,8 @@ pub(crate) fn committed_text(
             .id(id)
             .hint_text("—")
             .desired_width(ui.available_width())
+            .min_size(Vec2::new(0.0, ui.spacing().interact_size.y))
+            .vertical_align(Align::Center)
             .char_limit(maximum),
     );
     let escape = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape));

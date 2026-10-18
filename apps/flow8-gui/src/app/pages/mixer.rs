@@ -4,7 +4,7 @@ use crate::metrics::LayoutMetrics;
 use crate::theme::{BLUE, MASTER_SURFACE, SECONDARY, TEXT, YELLOW};
 use crate::widgets::{
     StripAction, channel_strip, fader_level_text, fader_sized, meter_widget_sized, mixer_divider,
-    strip_controls,
+    state_button_sized, strip_controls,
 };
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Align, Layout, Stroke, Vec2};
@@ -107,16 +107,26 @@ impl Flow8App {
                     |ui| {
                         ui.spacing_mut().item_spacing.x = metrics.spacing;
                         ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.inspector_input,
-                                true,
-                                self.language.tr("Input", "输入详情"),
+                            let tab_size = Vec2::new(
+                                ((ui.available_width() - metrics.spacing) / 2.0).floor(),
+                                metrics.control_height,
                             );
-                            ui.selectable_value(
-                                &mut self.inspector_input,
-                                false,
-                                self.language.tr("Output / FX", "输出 / FX"),
-                            );
+                            for (input, label) in [
+                                (true, self.language.tr("Input", "输入详情")),
+                                (false, self.language.tr("Output / FX", "输出 / FX")),
+                            ] {
+                                if state_button_sized(
+                                    ui,
+                                    self.inspector_input == input,
+                                    label,
+                                    BLUE,
+                                    tab_size,
+                                )
+                                .clicked()
+                                {
+                                    self.inspector_input = input;
+                                }
+                            }
                         });
                         ui.separator();
                         let scroll_height = ui.available_height().max(40.0);

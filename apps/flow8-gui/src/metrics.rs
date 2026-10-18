@@ -14,6 +14,7 @@ pub(super) const TOPOLOGY_CONTENT_MAX_WIDTH: f32 = 1180.0;
 pub(super) const TAB_BUTTON_MIN_WIDTH: f32 = 72.0;
 pub(super) const DESTINATION_BUTTON_MIN_WIDTH: f32 = 68.0;
 pub(super) const STATE_BUTTON_MIN_WIDTH: f32 = 52.0;
+pub(super) const PARAMETER_VALUE_MIN_WIDTH: f32 = 88.0;
 pub(super) const INSPECTOR_HEADING_SIZE: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

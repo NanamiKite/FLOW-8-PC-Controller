@@ -1,7 +1,7 @@
 use crate::app::Flow8App;
 use crate::app::confirmation::ConfirmationAction;
 use crate::i18n::{destination_name, display_name, waiting_for_device_text};
-use crate::theme::{BLUE, RED, SECONDARY, TEXT, YELLOW, card, inspector_heading};
+use crate::theme::{BLUE, RED, SECONDARY, TEXT, YELLOW, card, section_heading};
 use crate::widgets::mute_button;
 use crate::widgets::{
     committed_text, eq_gain_graph, eq_gain_row, fader_level_text, parameter_row,
@@ -31,22 +31,23 @@ impl Flow8App {
         id: InputId,
         channel: &InputChannelState,
     ) {
-        if ui
-            .small_button(self.language.tr("Refresh channel", "刷新通道"))
-            .clicked()
-        {
-            self.dispatch(SemanticCommand::RequestChannelState {
-                target: ChannelStateTarget::Input(id),
-            });
-        }
         ui.horizontal(|ui| {
-            inspector_heading(ui, self.language.tr("INPUT DETAIL", "输入详情"), SECONDARY);
+            ui.label(
+                egui::RichText::new(display_name(id, self.language))
+                    .size(self.metrics.body_font)
+                    .strong()
+                    .color(TEXT),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(display_name(id, self.language))
-                        .strong()
-                        .color(TEXT),
-                );
+                if ui
+                    .button(self.language.tr("Refresh", "刷新"))
+                    .on_hover_text(self.language.tr("Refresh channel", "刷新通道"))
+                    .clicked()
+                {
+                    self.dispatch(SemanticCommand::RequestChannelState {
+                        target: ChannelStateTarget::Input(id),
+                    });
+                }
             });
         });
         ui.separator();
@@ -244,7 +245,7 @@ impl Flow8App {
     fn input_eq_controls(&mut self, ui: &mut egui::Ui, id: InputId, channel: &InputChannelState) {
         if channel.capabilities.peq {
             ui.separator();
-            inspector_heading(
+            section_heading(
                 ui,
                 self.language.tr("4-BAND PEQ", "四段参数均衡"),
                 SECONDARY,
