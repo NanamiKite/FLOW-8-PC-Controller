@@ -2,7 +2,9 @@
 
 [简体中文](README.zh-CN.md)
 
-An unofficial native FLOW 8 BLE desktop client for the Behringer FLOW 8 digital mixer. It connects over Bluetooth LE, synchronizes the mixer's state, and sends control changes through the FLOW 8 protocol. **This is not a USB-MIDI-based controller.**
+I just wanted to control this mixer from my Surface. I hope you find it useful too.
+
+An unofficial native FLOW 8 BLE desktop client for the Behringer FLOW 8 digital mixer. It connects over Bluetooth LE, synchronizes the mixer's state, and sends control changes through the FLOW 8 protocol.
 
 This project is independent of Behringer and Music Tribe.
 
@@ -33,18 +35,11 @@ Download the Windows x64 installer from this repository's [Releases](../../relea
 
 ## Quick start
 
-1. On Windows, start DirectHCI in its Control Panel and prepare/select a supported Bluetooth controller. On Linux, ensure the system Bluetooth service is available.
+1. On Windows, start the service in DirectHCI Control Panel and prepare/select a supported Bluetooth controller. On Linux, ensure the system Bluetooth service is available.
 2. Start FLOW 8 PC Controller. On Windows, the current DirectHCI acquisition path requires **Run as administrator**. For a new client identity, enable **PAIR REMOTE / PAIR APP** on the mixer.
 3. Click **Connect**. The app scans for `FLOW 8 LE` as part of connecting; **Scan** is optional if you only want to view nearby devices first. Wait for **Ready** before changing mixer controls.
 
 The first connection creates a reusable client identity in your user profile; do not delete it casually. The [user guide](docs/user-guide.md) covers the pages, snapshots, disconnect/reconnect, and common problems.
-
-
-## Architecture and development
-
-The Rust GUI sends semantic operations to one Store and session runtime. A shared FLOW codec handles packets; platform transports move raw characteristic values. Windows defaults to the DirectHCI SDK and external `directhcid`; FLOW 8 PC Controller does not manage Windows drivers or Raw HCI. See [architecture](docs/architecture.md), [protocol](docs/protocol.md), and [development setup](docs/DEVELOPMENT.md).
-
-The historical C++/Qt implementation is on the separate `c++` branch. This branch is the Rust application.
 
 ## License
 
