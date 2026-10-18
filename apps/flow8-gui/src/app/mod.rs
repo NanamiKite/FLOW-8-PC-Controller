@@ -1,9 +1,9 @@
 use self::confirmation::PendingConfirmation;
 use crate::fonts::configure_fonts;
-use crate::i18n::{Language, native_stage_text, session_phase_text, session_state_text};
+use crate::i18n::{Language, native_stage_text, session_phase_text};
 use crate::metrics::UiMetrics;
-use crate::theme::{BG, BORDER, SECONDARY, SURFACE, TOOLBAR_SURFACE, configure_style};
-use eframe::egui::{self, Align, Layout, Stroke, Vec2};
+use crate::theme::{BG, SECONDARY, TOOLBAR_SURFACE, configure_style};
+use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage, SessionPhase};
 use flow8_core::{Flow8Store, SemanticCommand, SessionState};
 use flow8_model::{EvidenceStatus, InputChannelState, MixBusId, MixDestination, specs};
@@ -603,12 +603,6 @@ impl eframe::App for Flow8App {
             }
             ui.spacing_mut().item_spacing = Vec2::splat(self.metrics.spacing);
             let device_ready = self.device_controls_ready();
-            if !device_ready
-                && !self.disconnect_request_pending
-                && !matches!(self.page, Page::Settings | Page::Routing)
-            {
-                device_unsynced_notice(ui, self.store.state.session, self.language);
-            }
             match self.page {
                 Page::Mixer
                 | Page::Fx1
@@ -691,34 +685,4 @@ fn core_session_state(phase: SessionPhase) -> SessionState {
         SessionPhase::Ready => SessionState::Ready,
         SessionPhase::Error => SessionState::Error,
     }
-}
-
-fn device_unsynced_notice(ui: &mut egui::Ui, state: SessionState, language: Language) {
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.add_space(18.0);
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(8)
-            .inner_margin(egui::Margin::same(18))
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(language.tr(
-                        "Connect to FLOW 8 to enable controls.",
-                        "连接 FLOW 8 后即可使用控制功能。",
-                    ))
-                    .strong(),
-                );
-                ui.label(language.tr(
-                    "Current settings will appear after synchronization.",
-                    "同步完成后将显示当前设备设置。",
-                ));
-                ui.label(format!(
-                    "{}: {}",
-                    language.tr("Status", "状态"),
-                    session_state_text(state, language)
-                ));
-            });
-    });
 }

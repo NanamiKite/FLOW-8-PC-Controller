@@ -149,7 +149,8 @@ fn enhanced_click_feedback(
 pub(crate) fn badge(ui: &mut egui::Ui, label: &str, active: bool) {
     ui.label(
         egui::RichText::new(label)
-            .size(8.0)
+            .text_style(egui::TextStyle::Button)
+            .strong()
             .color(if active { ACTIVE_BADGE_TEXT } else { SECONDARY })
             .background_color(if active {
                 ACTIVE_BADGE_SURFACE

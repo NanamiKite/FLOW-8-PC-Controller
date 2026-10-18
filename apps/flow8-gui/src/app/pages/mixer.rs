@@ -3,8 +3,8 @@ use crate::i18n::{channel_number, destination_name};
 use crate::metrics::LayoutMetrics;
 use crate::theme::{BLUE, MASTER_SURFACE, SECONDARY, TEXT, YELLOW};
 use crate::widgets::{
-    StripAction, channel_strip, fader_level_text, fader_sized, meter_widget_sized, mixer_divider,
-    state_button_sized, strip_controls,
+    StripAction, channel_strip, fader_level_text, fader_min_width, fader_sized, meter_widget_sized,
+    mixer_divider, state_button_sized, strip_controls,
 };
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Align, Layout, Stroke, Vec2};
@@ -351,10 +351,12 @@ impl Flow8App {
                         Vec2::new(ui.available_width(), fader_height),
                         Layout::left_to_right(Align::Min),
                         |ui| {
+                            let fader_width =
+                                (72.0 * self.metrics.ui_scale).max(fader_min_width(ui));
                             if fader_sized(
                                 ui,
                                 &mut master,
-                                72.0 * self.metrics.ui_scale,
+                                fader_width,
                                 fader_height,
                                 0.75,
                                 confirmed_master,

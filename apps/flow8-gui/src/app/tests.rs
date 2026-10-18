@@ -3,7 +3,7 @@ use crate::app::pages::snapshots::{
     DeviceSlotStatus, centered_snapshot_content, device_slot_status, snapshot_action_button,
     snapshot_card, snapshot_name_row, snapshot_status_badge,
 };
-use crate::app::{Flow8App, Page, device_unsynced_notice};
+use crate::app::{Flow8App, Page};
 use crate::fonts::configure_fonts;
 use crate::i18n::Language;
 use crate::metrics::{LayoutMetrics, SnapshotGridLayout, UiMetrics};
@@ -484,7 +484,7 @@ fn production_gui_starts_disconnected_without_simulator_source() {
         ..Default::default()
     };
     let mut output = context.run_ui(raw, |ui| {
-        device_unsynced_notice(ui, app.store.state.session, app.language);
+        app.connection_bar(ui);
         ui.add_enabled_ui(false, |ui| app.mixer(ui));
     });
     assert!(!output.shapes.is_empty());

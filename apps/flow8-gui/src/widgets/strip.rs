@@ -2,7 +2,8 @@ use crate::i18n::{Language, display_name};
 use crate::metrics::UiMetrics;
 use crate::theme::{BLUE, BORDER, MIXER_DIVIDER, RED, SECONDARY, SURFACE, TEXT, YELLOW};
 use crate::widgets::{
-    badge, fader_level_text, fader_sized, meter_widget_sized, pan_control, pan_text, state_button,
+    badge, fader_level_text, fader_min_width, fader_sized, meter_widget_sized, pan_control,
+    pan_text, state_button,
 };
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Align, Layout, Sense, Stroke, Vec2};
@@ -166,6 +167,7 @@ pub(crate) fn channel_strip(
                         let fader_width = (content_width * 0.65)
                             .clamp(68.0, 82.0)
                             .min(content_width - metrics.spacing - 20.0)
+                            .max(fader_min_width(ui))
                             .round_ui();
                         let meter_width = (content_width - fader_width - metrics.spacing).max(20.0);
                         let changed = fader_sized(

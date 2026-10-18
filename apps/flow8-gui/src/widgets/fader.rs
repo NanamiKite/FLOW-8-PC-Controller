@@ -1,7 +1,7 @@
 use crate::theme::{BLUE, CONTROL_THUMB, CONTROL_THUMB_BORDER, CONTROL_TRACK, SECONDARY, YELLOW};
 use crate::widgets::{accessible_slider_input, accessible_slider_node};
 use eframe::egui::emath::GuiRounding as _;
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2};
 
 // Only the active drag lives in GUI memory. After release, Core reconciles
 // pending and confirmed values; the widget never hides device state itself.
@@ -63,6 +63,8 @@ impl FaderGesture {
 
 // Reserve a small bottom detent for mute, separate from finite fader levels.
 const FADER_MUTE_GAP: f32 = 0.07;
+const FADER_TRACK_CENTER_X: f32 = 26.0;
+const FADER_THUMB_WIDTH: f32 = 29.0;
 pub(crate) const FADER_SCALE: [(f32, &str); 5] = [
     (1.0, "10"),
     (0.75, "0"),
@@ -70,6 +72,26 @@ pub(crate) const FADER_SCALE: [(f32, &str); 5] = [
     (0.25, "-30"),
     (0.0, "-∞"),
 ];
+
+fn scale_label_offset(ui: &egui::Ui) -> f32 {
+    // Keep the labels clear of the moving thumb, not just the thin track.
+    FADER_TRACK_CENTER_X + FADER_THUMB_WIDTH / 2.0 + ui.spacing().item_spacing.x
+}
+
+pub(crate) fn fader_min_width(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let label_width = FADER_SCALE
+        .iter()
+        .map(|(_, label)| {
+            ui.painter()
+                .layout_no_wrap((*label).to_owned(), font.clone(), SECONDARY)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    // Callers reserve this width before placing the adjacent meter.
+    (scale_label_offset(ui) + label_width + 4.0).ceil()
+}
 
 fn fader_visual_position(value: f32) -> f32 {
     if value <= 0.0 {
@@ -100,10 +122,12 @@ pub(crate) fn fader_sized(
     default: f32,
     _confirmed: Option<f32>,
 ) -> Response {
-    let (rect, mut response) =
-        ui.allocate_exact_size(Vec2::new(width, height).round_ui(), Sense::click_and_drag());
+    let (rect, mut response) = ui.allocate_exact_size(
+        Vec2::new(width.max(fader_min_width(ui)), height).round_ui(),
+        Sense::click_and_drag(),
+    );
     let track = Rect::from_center_size(
-        Pos2::new(rect.left() + 26.0, rect.center().y),
+        Pos2::new(rect.left() + FADER_TRACK_CENTER_X, rect.center().y),
         Vec2::new(5.0, (rect.height() - 24.0).max(1.0)),
     );
     let pointer_held =
@@ -127,7 +151,7 @@ pub(crate) fn fader_sized(
             let fine = ui.input(|input| input.modifiers.shift);
             let thumb = Rect::from_center_size(
                 Pos2::new(track.center().x, fader_thumb_y(track, *value)),
-                Vec2::new(29.0, 15.0),
+                Vec2::new(FADER_THUMB_WIDTH, 15.0),
             );
             let mut gesture = previous.unwrap_or_else(|| {
                 FaderGesture::begin(
@@ -203,6 +227,8 @@ pub(crate) fn fader_sized(
         2.0,
         YELLOW,
     );
+    let scale_font = egui::TextStyle::Button.resolve(ui.style());
+    let scale_label_x = rect.left() + scale_label_offset(ui);
     for (level, label) in FADER_SCALE {
         let y = fader_thumb_y(track, level);
         painter.line_segment(
@@ -213,15 +239,18 @@ pub(crate) fn fader_sized(
             Stroke::new(1.0, SECONDARY),
         );
         painter.text(
-            Pos2::new(track.right() + 12.0, y),
+            Pos2::new(scale_label_x, y),
             egui::Align2::LEFT_CENTER,
             label,
-            FontId::proportional(10.0),
+            scale_font.clone(),
             SECONDARY,
         );
     }
     let thumb_y = fader_thumb_y(track, *value);
-    let thumb = Rect::from_center_size(Pos2::new(track.center().x, thumb_y), Vec2::new(29.0, 15.0));
+    let thumb = Rect::from_center_size(
+        Pos2::new(track.center().x, thumb_y),
+        Vec2::new(FADER_THUMB_WIDTH, 15.0),
+    );
     painter.rect_filled(
         thumb,
         4.0,

@@ -103,5 +103,10 @@ pub(super) fn configure_style(context: &egui::Context, metrics: UiMetrics) {
 }
 
 pub(super) fn section_heading(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
-    ui.label(egui::RichText::new(text).strong().color(color))
+    ui.label(
+        egui::RichText::new(text)
+            .text_style(egui::TextStyle::Body)
+            .strong()
+            .color(color),
+    )
 }

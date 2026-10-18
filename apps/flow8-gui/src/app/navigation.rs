@@ -153,10 +153,12 @@ impl Flow8App {
                             egui::RichText::new(self.language.tr("Bluetooth", "蓝牙"))
                                 .color(SECONDARY),
                         );
-                        let status = format!(
-                            "● {}",
+                        let state_text = if self.disconnect_request_pending {
+                            self.language.tr("Disconnecting", "正在断开")
+                        } else {
                             session_state_text(self.store.state.session, self.language)
-                        );
+                        };
+                        let status = format!("● {state_text}");
                         ui.label(egui::RichText::new(status).strong().color(
                             if self.store.state.session == SessionState::Error {
                                 RED
@@ -164,6 +166,33 @@ impl Flow8App {
                                 BLUE
                             },
                         ));
+                        if !self.device_controls_ready() && !self.disconnect_request_pending {
+                            let hint = match self.store.state.session {
+                                SessionState::Disconnected => self.language.tr(
+                                    "Connect to FLOW 8 to enable controls. Settings will appear after synchronization.",
+                                    "连接 FLOW 8 后即可使用控制功能，同步完成后显示设备设置。",
+                                ),
+                                SessionState::Error => self.language.tr(
+                                    "Check the connection error below, then try again.",
+                                    "请检查下方连接错误后重试。",
+                                ),
+                                _ => self.language.tr(
+                                    "Settings and controls will be available after synchronization.",
+                                    "同步完成后将显示设备设置并启用控制。",
+                                ),
+                            };
+                            // Buttons and the current state take priority. The hint
+                            // uses only the remaining space, without growing the bar.
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(hint)
+                                        .size(self.metrics.secondary_font)
+                                        .color(SECONDARY),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(hint);
+                        }
                     });
                 });
                 if let Some(error) = &self.last_ble_error {

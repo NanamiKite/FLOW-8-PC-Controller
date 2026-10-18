@@ -12,7 +12,7 @@ pub(crate) use buttons::{
     badge, destination_button, mute_button, small_tab, state_button, state_button_sized,
 };
 pub(crate) use eq_graph::{eq_gain_graph, output_eq_graph};
-pub(crate) use fader::{fader_level_text, fader_sized};
+pub(crate) use fader::{fader_level_text, fader_min_width, fader_sized};
 pub(crate) use meters::meter_widget_sized;
 pub(crate) use pan::{pan_control, pan_text};
 pub(crate) use parameters::{committed_text, eq_gain_row, parameter_row, parameter_value_row};
