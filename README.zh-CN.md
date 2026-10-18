@@ -2,7 +2,10 @@
 
 [English](README.md)
 
-一款面向 Behringer FLOW 8 数字调音台的非官方原生 BLE 桌面客户端。它通过蓝牙低功耗连接，直接使用 FLOW 8 协议同步调音台状态并发送控制命令，**不通过 USB MIDI 控制调音台**。
+
+我只是想用surface控制这个调音台，希望能帮到你
+
+一款面向 Behringer FLOW 8 数字调音台的非官方原生 BLE 桌面客户端。它通过蓝牙低功耗连接，直接使用 FLOW 8 协议同步调音台状态并发送控制命令。
 
 本项目与 Behringer、Music Tribe 无关联。
 
@@ -38,12 +41,6 @@
 3. 直接点击 **连接**。程序会在连接过程中自动扫描 `FLOW 8 LE`；如果只想先查看附近设备，可以单独点击 **扫描**。看到 **已就绪（Ready）** 后再操作混音控制。
 
 首次连接会在用户配置目录创建可复用的客户端身份，不要随意删除。各页面、快照、断开重连和常见问题见[用户指南](docs/user-guide.zh-CN.md)。
-
-## 架构与开发
-
-Rust 图形界面向统一 Store 和会话运行时发送语义操作；公共 FLOW 编解码器处理数据包，平台传输层只转发特征值。Windows 默认使用 DirectHCI SDK 与外部 `directhcid`，FLOW 8 PC Controller 不管理 Windows 驱动或 Raw HCI。参见[架构](docs/architecture.md)、[协议](docs/protocol.md)和[开发说明](docs/DEVELOPMENT.md)。
-
-旧版 C++／Qt 实现在独立的 `c++` 分支；当前分支是 Rust 应用。
 
 ## 许可证
 
