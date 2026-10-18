@@ -1,4 +1,4 @@
-use crate::metrics::{INSPECTOR_HEADING_SIZE, UiMetrics};
+use crate::metrics::UiMetrics;
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Color32, FontId, Stroke, Vec2};
 use flow8_model::MixDestination;
@@ -104,13 +104,4 @@ pub(super) fn configure_style(context: &egui::Context, metrics: UiMetrics) {
 
 pub(super) fn section_heading(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
     ui.label(egui::RichText::new(text).strong().color(color))
-}
-
-pub(super) fn inspector_heading(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
-    ui.label(
-        egui::RichText::new(text)
-            .size(INSPECTOR_HEADING_SIZE)
-            .strong()
-            .color(color),
-    )
 }

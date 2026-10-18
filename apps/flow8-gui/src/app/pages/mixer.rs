@@ -22,6 +22,7 @@ impl Flow8App {
 
     fn mixer_contents(&mut self, ui: &mut egui::Ui) {
         let metrics = self.metrics;
+        let device_ready = self.device_controls_ready();
         ui.add_space(metrics.spacing);
         ui.horizontal(|ui| {
             ui.label(
@@ -94,7 +95,9 @@ impl Flow8App {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             egui::Frame::new().inner_margin(4).show(ui, |ui| {
-                                self.destination_master(ui, layout.fader_height, strip_height);
+                                ui.add_enabled_ui(device_ready, |ui| {
+                                    self.destination_master(ui, layout.fader_height, strip_height);
+                                });
                             });
                         });
                 },
@@ -136,27 +139,31 @@ impl Flow8App {
                             .max_height(scroll_height)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                egui::Frame::new().inner_margin(4).show(ui, |ui| {
-                                    if self.inspector_input {
-                                        if let Some(id) = self.store.state.selected_input {
-                                            ui.push_id(id.index(), |ui| {
-                                                self.input_inspector(ui, id)
-                                            });
+                                // Browsing and scrolling are local UI operations;
+                                // only the device controls require a ready session.
+                                ui.add_enabled_ui(device_ready, |ui| {
+                                    egui::Frame::new().inner_margin(4).show(ui, |ui| {
+                                        if self.inspector_input {
+                                            if let Some(id) = self.store.state.selected_input {
+                                                ui.push_id(id.index(), |ui| {
+                                                    self.input_inspector(ui, id)
+                                                });
+                                            } else {
+                                                ui.label(self.language.tr(
+                                                    "Select an input channel to edit.",
+                                                    "选择输入通道以查看详情。",
+                                                ));
+                                            }
                                         } else {
-                                            ui.label(self.language.tr(
-                                                "Select an input channel to edit.",
-                                                "选择输入通道以查看详情。",
-                                            ));
+                                            ui.push_id(
+                                                (
+                                                    "output",
+                                                    self.store.state.selected_destination.index(),
+                                                ),
+                                                |ui| self.output_inspector(ui),
+                                            );
                                         }
-                                    } else {
-                                        ui.push_id(
-                                            (
-                                                "output",
-                                                self.store.state.selected_destination.index(),
-                                            ),
-                                            |ui| self.output_inspector(ui),
-                                        );
-                                    }
+                                    });
                                 });
                             });
                     },
@@ -173,6 +180,7 @@ impl Flow8App {
         fader_height: f32,
     ) -> f32 {
         let metrics = self.metrics;
+        let device_ready = self.device_controls_ready();
         let mut strip_height: f32 = 0.0;
         let channels = visible_channels.max(1) as f32;
         let strip_width = ((available_width - 8.0 - metrics.spacing * (channels - 1.0)) / channels)
@@ -218,21 +226,24 @@ impl Flow8App {
                             let strip = ui.push_id(
                                 (id.index(), self.store.state.selected_destination.index()),
                                 |ui| {
-                                    channel_strip(
-                                        ui,
-                                        &channel,
-                                        meter_db,
-                                        eq_modified,
-                                        self.store.state.selected_destination,
-                                        selected,
-                                        source_heading,
-                                        self.language,
-                                        self.preferences.show_channel_icons,
-                                        self.preferences.show_mute_buttons,
-                                        metrics,
-                                        strip_width,
-                                        fader_height,
-                                    )
+                                    ui.add_enabled_ui(device_ready, |ui| {
+                                        channel_strip(
+                                            ui,
+                                            &channel,
+                                            meter_db,
+                                            eq_modified,
+                                            self.store.state.selected_destination,
+                                            selected,
+                                            source_heading,
+                                            self.language,
+                                            self.preferences.show_channel_icons,
+                                            self.preferences.show_mute_buttons,
+                                            metrics,
+                                            strip_width,
+                                            fader_height,
+                                        )
+                                    })
+                                    .inner
                                 },
                             );
                             strip_height = strip_height.max(strip.response.rect.height());

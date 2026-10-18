@@ -1,5 +1,7 @@
 use crate::app::{Flow8App, bus_id_for_destination};
-use eframe::egui;
+use crate::i18n::{destination_name, display_name};
+use crate::theme::TEXT;
+use eframe::egui::{self, Align, Layout};
 use flow8_core::{ChannelStateTarget, SemanticCommand};
 use flow8_model::{FxId, MixDestination};
 
@@ -8,16 +10,33 @@ mod input;
 mod output;
 
 impl Flow8App {
+    fn inspector_header(&mut self, ui: &mut egui::Ui, target: ChannelStateTarget) {
+        let title = match target {
+            ChannelStateTarget::Input(input) => display_name(input, self.language),
+            ChannelStateTarget::Destination(destination) => destination_name(destination),
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .size(self.metrics.body_font)
+                    .strong()
+                    .color(TEXT),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .button(self.language.tr("Refresh", "刷新"))
+                    .on_hover_text(self.language.tr("Refresh channel", "刷新通道"))
+                    .clicked()
+                {
+                    self.dispatch(SemanticCommand::RequestChannelState { target });
+                }
+            });
+        });
+        ui.separator();
+    }
+
     pub(in crate::app) fn output_inspector(&mut self, ui: &mut egui::Ui) {
         let destination = self.store.state.selected_destination;
-        if ui
-            .small_button(self.language.tr("Refresh channel", "刷新通道"))
-            .clicked()
-        {
-            self.dispatch(SemanticCommand::RequestChannelState {
-                target: ChannelStateTarget::Destination(destination),
-            });
-        }
         if let Some(bus_id) = bus_id_for_destination(destination)
             && let Some(bus) = self.store.state.bus_for_destination(destination).cloned()
         {

@@ -1,74 +1,22 @@
 use crate::app::Flow8App;
 use crate::i18n::{destination_name, display_name};
+use crate::metrics::{DESTINATION_BUTTON_MIN_WIDTH, STATE_BUTTON_MIN_WIDTH};
 use crate::theme::{
-    BLUE, BORDER, GREEN, RED, STAGE_RING, STAGE_SELECTED_SURFACE, STAGE_SURFACE, SURFACE,
-    SURFACE_ALT, TEXT, YELLOW,
+    BLUE, BORDER, GREEN, RED, SECONDARY, STAGE_RING, STAGE_SELECTED_SURFACE, STAGE_SURFACE,
+    SURFACE, SURFACE_ALT, TEXT, YELLOW,
 };
 use crate::widgets::{
     accessible_slider_input, accessible_slider_node, destination_button, fader_level_text,
-    state_button,
+    state_button_sized,
 };
 use eframe::egui::{self, Align, FontId, Layout, Rect, Sense, Stroke, StrokeKind, Vec2};
 use flow8_core::{ChannelStateTarget, SemanticCommand};
-use flow8_model::specs;
 use flow8_model::{InputId, MixDestination};
 
 impl Flow8App {
     pub(in crate::app) fn stage_page(&mut self, ui: &mut egui::Ui) {
         ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(18.0);
-            ui.heading(egui::RichText::new(self.language.tr("Stage View", "舞台视图")).color(TEXT));
-            ui.separator();
-            if state_button(
-                ui,
-                !self.stage_layout_mode,
-                self.language.tr("Control", "控制"),
-                YELLOW,
-            )
-            .clicked()
-            {
-                self.stage_layout_mode = false;
-            }
-            if state_button(
-                ui,
-                self.stage_layout_mode,
-                self.language.tr("Layout", "布局"),
-                BLUE,
-            )
-            .clicked()
-            {
-                self.stage_layout_mode = true;
-            }
-            for destination in MixDestination::ALL {
-                if destination_button(
-                    ui,
-                    self.store.state.selected_destination == destination,
-                    destination_name(destination),
-                )
-                .clicked()
-                {
-                    if self.store.state.selected_destination != destination {
-                        self.store.state.selected_destination = destination;
-                        if self.device_controls_ready() {
-                            self.dispatch(SemanticCommand::RequestChannelState {
-                                target: ChannelStateTarget::Destination(destination),
-                            });
-                        }
-                    }
-                }
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(format!(
-                    "{:.0} BPM",
-                    self.store
-                        .state
-                        .global_tempo_bpm
-                        .effective()
-                        .unwrap_or(&specs::TEMPO_DISPLAY.default)
-                ));
-            });
-        });
+        self.stage_toolbar(ui);
         ui.add_space(8.0);
         let (canvas, _) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), ui.available_height().max(460.0)),
@@ -77,7 +25,10 @@ impl Flow8App {
         ui.painter().rect_filled(canvas, 8.0, STAGE_SURFACE);
         for id in InputId::ALL {
             let index = id.index();
-            let size = Vec2::new(170.0, 178.0);
+            // Reserve the actual themed button height, rather than letting a
+            // standard-height button overflow a 23-point slot at the bottom.
+            let button_height = self.metrics.control_height;
+            let size = Vec2::new(170.0, 155.0 + button_height);
             let max_x = (canvas.width() - size.x - 8.0).max(0.0);
             let max_y = (canvas.height() - size.y - 8.0).max(0.0);
             self.stage_positions[index].x = self.stage_positions[index].x.clamp(8.0, max_x);
@@ -199,8 +150,7 @@ impl Flow8App {
             let channel = self.store.state.channels[index].clone();
             let route = channel.route_levels[self.store.state.selected_destination.index()]
                 .effective()
-                .copied()
-                .unwrap_or(0.0);
+                .copied();
             let meter = self.input_meter_display[index].display_db;
             let selected = self.store.state.selected_input == Some(id);
             ui.painter().rect_filled(
@@ -235,13 +185,13 @@ impl Flow8App {
                 rect.center_top() + Vec2::new(0.0, 18.0),
                 egui::Align2::CENTER_CENTER,
                 display_name(id, self.language),
-                FontId::proportional(15.0),
+                FontId::proportional(self.metrics.body_font),
                 TEXT,
             );
-            let center = rect.center() + Vec2::new(0.0, -2.0);
+            let center = rect.center_top() + Vec2::new(0.0, 87.0);
             ui.painter()
                 .circle_stroke(center, 39.0, Stroke::new(7.0, STAGE_RING));
-            let filled = (route * 24.0).round() as usize;
+            let filled = (route.unwrap_or(0.0) * 24.0).round() as usize;
             for segment in 0..filled {
                 let angle = std::f32::consts::PI * (0.75 + segment as f32 / 18.0);
                 let a = center + Vec2::angled(angle) * 35.0;
@@ -251,24 +201,27 @@ impl Flow8App {
             ui.painter().text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                fader_level_text(route),
-                FontId::proportional(13.0),
+                route
+                    .map(fader_level_text)
+                    .unwrap_or_else(|| "—".to_owned()),
+                FontId::proportional(self.metrics.body_font),
                 TEXT,
             );
             let meter_width = ((meter + 60.0) / 70.0).clamp(0.0, 1.0) * (rect.width() - 24.0);
             let meter_rect = Rect::from_min_size(
-                rect.left_bottom() + Vec2::new(12.0, -41.0),
+                rect.left_bottom() + Vec2::new(12.0, -button_height - 18.0),
                 Vec2::new(meter_width, 5.0),
             );
             ui.painter()
                 .rect_filled(meter_rect, 2.0, if meter >= 0.0 { RED } else { GREEN });
+            let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
             let mute_rect = Rect::from_min_size(
-                rect.left_bottom() + Vec2::new(12.0, -30.0),
-                Vec2::new(66.0, 23.0),
+                rect.left_bottom() + Vec2::new(12.0, -button_height - 8.0),
+                Vec2::new(button_width, button_height),
             );
             let solo_rect = Rect::from_min_size(
-                rect.right_bottom() + Vec2::new(-78.0, -30.0),
-                Vec2::new(66.0, 23.0),
+                rect.right_bottom() + Vec2::new(-12.0 - button_width, -button_height - 8.0),
+                Vec2::new(button_width, button_height),
             );
             let muted = channel.muted.effective().copied().unwrap_or(false);
             if ui
@@ -305,5 +258,111 @@ impl Flow8App {
                 });
             }
         }
+    }
+
+    fn stage_toolbar(&mut self, ui: &mut egui::Ui) {
+        let control_label = self.language.tr("Control", "控制");
+        let layout_label = self.language.tr("Layout", "布局");
+        let bus_label = self.language.tr("Mix bus", "混音总线");
+        let measure = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(
+                    text.to_owned(),
+                    FontId::proportional(self.metrics.body_font),
+                    TEXT,
+                )
+                .size()
+                .x
+        };
+        let button_padding = 2.0 * ui.spacing().button_padding.x + 4.0;
+        let mode_width = (measure(control_label).max(measure(layout_label)) + button_padding)
+            .max(STATE_BUTTON_MIN_WIDTH)
+            .ceil();
+        let bus_width = (measure("MON1").max(measure("MAIN")) + button_padding)
+            .max(DESTINATION_BUTTON_MIN_WIDTH)
+            .ceil();
+        let gap = self.metrics.spacing;
+        let height = self.metrics.control_height;
+        let bus_group_width = measure(bus_label) + 5.0 * (bus_width + gap);
+        // Keep each control group together when the toolbar wraps. The margin
+        // aligns the header with the initial stage cards, not the window edge.
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(34, 0))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0 * gap;
+                    ui.heading(
+                        egui::RichText::new(self.language.tr("Stage View", "舞台视图")).color(TEXT),
+                    );
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(2.0 * mode_width + gap, height),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            for (layout_mode, label, accent) in
+                                [(false, control_label, YELLOW), (true, layout_label, BLUE)]
+                            {
+                                if state_button_sized(
+                                    ui,
+                                    self.stage_layout_mode == layout_mode,
+                                    label,
+                                    accent,
+                                    Vec2::new(mode_width, height),
+                                )
+                                .clicked()
+                                {
+                                    self.stage_layout_mode = layout_mode;
+                                }
+                            }
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(bus_group_width, height),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            ui.label(egui::RichText::new(bus_label).color(SECONDARY));
+                            for destination in MixDestination::ALL {
+                                let response = ui
+                                    .allocate_ui_with_layout(
+                                        Vec2::new(bus_width, height),
+                                        Layout::centered_and_justified(
+                                            egui::Direction::LeftToRight,
+                                        ),
+                                        |ui| {
+                                            destination_button(
+                                                ui,
+                                                self.store.state.selected_destination
+                                                    == destination,
+                                                destination_name(destination),
+                                            )
+                                        },
+                                    )
+                                    .inner;
+                                if response.clicked() {
+                                    if self.store.state.selected_destination != destination {
+                                        self.store.state.selected_destination = destination;
+                                        if self.device_controls_ready() {
+                                            self.dispatch(SemanticCommand::RequestChannelState {
+                                                target: ChannelStateTarget::Destination(
+                                                    destination,
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
+                    let tempo = self
+                        .store
+                        .state
+                        .global_tempo_bpm
+                        .effective()
+                        .map(|tempo| format!("{tempo:.0} BPM"))
+                        .unwrap_or_else(|| "— BPM".to_owned());
+                    ui.add(egui::Label::new(egui::RichText::new(tempo).color(SECONDARY)).extend());
+                });
+            });
     }
 }

@@ -1,10 +1,10 @@
 use crate::app::Flow8App;
 use crate::i18n::waiting_for_device_text;
-use crate::theme::{GREEN, SECONDARY, card, inspector_heading};
+use crate::theme::{GREEN, SECONDARY, card, section_heading};
 use crate::widgets::mute_button;
 use crate::widgets::{output_eq_graph, parameter_row, state_button};
 use eframe::egui;
-use flow8_core::{KnownSetting, MuteTarget, SemanticCommand};
+use flow8_core::{ChannelStateTarget, KnownSetting, MuteTarget, SemanticCommand};
 use flow8_model::DELAY_TICKS_PER_MILLISECOND;
 use flow8_model::{MixBusId, MixBusState, specs};
 
@@ -15,8 +15,11 @@ impl Flow8App {
         bus_id: MixBusId,
         bus: &MixBusState,
     ) {
-        ui.add_space(8.0);
         card(ui, |ui| {
+            self.inspector_header(
+                ui,
+                ChannelStateTarget::Destination(self.store.state.selected_destination),
+            );
             self.bus_header_controls(ui, bus_id, bus);
             self.bus_dynamics_controls(ui, bus_id, bus);
             self.bus_eq_controls(ui, bus_id, bus);
@@ -25,11 +28,6 @@ impl Flow8App {
     }
 
     fn bus_header_controls(&mut self, ui: &mut egui::Ui, bus_id: MixBusId, bus: &MixBusState) {
-        inspector_heading(
-            ui,
-            self.language.tr("OUTPUT PROCESSING", "输出处理"),
-            SECONDARY,
-        );
         ui.horizontal(|ui| {
             let muted = bus.muted.effective().copied().unwrap_or(false);
             if mute_button(ui, muted, self.language.tr("Mute", "静音")).clicked() {
@@ -94,7 +92,11 @@ impl Flow8App {
 
     fn bus_eq_controls(&mut self, ui: &mut egui::Ui, bus_id: MixBusId, bus: &MixBusState) {
         ui.separator();
-        ui.label(egui::RichText::new(self.language.tr("9-band GEQ", "9 段图示均衡")).strong());
+        section_heading(
+            ui,
+            self.language.tr("9-band GEQ", "9 段图示均衡"),
+            SECONDARY,
+        );
         if let Some((index, gain_db)) = output_eq_graph(ui, &bus.eq, self.metrics) {
             let band = &bus.eq.bands[index];
             if let (Some(frequency), Some(q)) = (band.frequency_hz.effective(), band.q.effective())

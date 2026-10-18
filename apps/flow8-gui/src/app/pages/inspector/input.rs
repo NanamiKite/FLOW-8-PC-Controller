@@ -7,7 +7,7 @@ use crate::widgets::{
     committed_text, eq_gain_graph, eq_gain_row, fader_level_text, parameter_row,
     parameter_value_row, state_button,
 };
-use eframe::egui::{self, Align, Layout};
+use eframe::egui;
 use flow8_core::{ChannelStateTarget, SemanticCommand};
 use flow8_model::CHANNEL_LABEL_MAX_BYTES;
 use flow8_model::{InputChannelState, InputId, specs};
@@ -31,26 +31,7 @@ impl Flow8App {
         id: InputId,
         channel: &InputChannelState,
     ) {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(display_name(id, self.language))
-                    .size(self.metrics.body_font)
-                    .strong()
-                    .color(TEXT),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .button(self.language.tr("Refresh", "刷新"))
-                    .on_hover_text(self.language.tr("Refresh channel", "刷新通道"))
-                    .clicked()
-                {
-                    self.dispatch(SemanticCommand::RequestChannelState {
-                        target: ChannelStateTarget::Input(id),
-                    });
-                }
-            });
-        });
-        ui.separator();
+        self.inspector_header(ui, ChannelStateTarget::Input(id));
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(self.language.tr("Label", "名称")).color(TEXT));
             let edited = ui

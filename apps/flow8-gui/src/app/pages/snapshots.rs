@@ -11,6 +11,7 @@ use flow8_model::SnapshotSlotState;
 impl Flow8App {
     pub(in crate::app) fn snapshots_page(&mut self, ui: &mut egui::Ui) {
         ui.add_space(18.0);
+        let device_ready = self.device_controls_ready();
         let snapshots = self.store.state.snapshots.device_slots.clone();
         let viewport_width = ui.available_width().min(ui.clip_rect().width()).max(0.0);
         let layout = SnapshotGridLayout::new(
@@ -20,9 +21,23 @@ impl Flow8App {
             snapshots.len(),
         );
         let _ = centered_snapshot_content(ui, layout.group_width(), |ui| {
-            ui.heading(
-                egui::RichText::new(self.language.tr("Device Snapshots", "设备快照")).color(TEXT),
-            );
+            ui.horizontal(|ui| {
+                ui.heading(
+                    egui::RichText::new(self.language.tr("Device Snapshots", "设备快照"))
+                        .color(TEXT),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            device_ready,
+                            egui::Button::new(self.language.tr("Refresh slots", "刷新槽位")),
+                        )
+                        .clicked()
+                    {
+                        self.dispatch(SemanticCommand::RequestSnapshotNames);
+                    }
+                });
+            });
             ui.label(
                 egui::RichText::new(self.language.tr(
                     "These slots are stored on FLOW 8.",
@@ -30,12 +45,6 @@ impl Flow8App {
                 ))
                 .color(SECONDARY),
             );
-            if ui
-                .button(self.language.tr("Refresh slots", "刷新槽位"))
-                .clicked()
-            {
-                self.dispatch(SemanticCommand::RequestSnapshotNames);
-            }
             ui.add_space(10.0);
             for row in snapshots.chunks(layout.columns) {
                 ui.horizontal(|ui| {
@@ -74,7 +83,7 @@ impl Flow8App {
                                 if snapshot_action_button(
                                     ui,
                                     self.language.tr("Load", "载入"),
-                                    occupied,
+                                    device_ready && occupied,
                                     button_size,
                                 )
                                 .clicked()
@@ -89,7 +98,7 @@ impl Flow8App {
                                 if snapshot_action_button(
                                     ui,
                                     self.language.tr("Save", "保存"),
-                                    !busy,
+                                    device_ready && !busy,
                                     button_size,
                                 )
                                 .clicked()
@@ -109,7 +118,7 @@ impl Flow8App {
                                 if snapshot_action_button(
                                     ui,
                                     self.language.tr("Delete", "删除"),
-                                    occupied,
+                                    device_ready && occupied,
                                     button_size,
                                 )
                                 .clicked()
@@ -124,7 +133,7 @@ impl Flow8App {
                                 if snapshot_action_button(
                                     ui,
                                     self.language.tr("Rename", "重命名"),
-                                    occupied,
+                                    device_ready && occupied,
                                     button_size,
                                 )
                                 .clicked()
@@ -286,5 +295,5 @@ pub(in crate::app) fn snapshot_action_button(
     enabled: bool,
     size: Vec2,
 ) -> Response {
-    ui.add_enabled(enabled, egui::Button::new(label).small().min_size(size))
+    ui.add_enabled(enabled, egui::Button::new(label).min_size(size))
 }

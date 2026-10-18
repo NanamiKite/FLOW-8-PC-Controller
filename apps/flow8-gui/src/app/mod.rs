@@ -616,18 +616,13 @@ impl eframe::App for Flow8App {
                 | Page::Monitor1
                 | Page::Monitor2
                 | Page::Main => {
-                    ui.add_enabled_ui(device_ready, |ui| self.mixer(ui));
+                    self.mixer(ui);
                 }
                 Page::Stage => {
                     ui.add_enabled_ui(device_ready, |ui| self.stage_page(ui));
                 }
                 Page::MainOut => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("main-out-scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.add_enabled_ui(device_ready, |ui| self.main_out_page(ui));
-                        });
+                    self.main_out_page(ui);
                 }
                 Page::Routing => {
                     egui::ScrollArea::vertical()
@@ -642,7 +637,7 @@ impl eframe::App for Flow8App {
                         .id_salt("snapshots-scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.add_enabled_ui(device_ready, |ui| self.snapshots_page(ui));
+                            self.snapshots_page(ui);
                         });
                 }
                 Page::Settings => self.settings_page(ui),

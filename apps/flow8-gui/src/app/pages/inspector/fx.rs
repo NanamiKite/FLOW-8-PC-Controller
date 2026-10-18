@@ -1,10 +1,10 @@
 use super::fx_setup_values;
 use crate::app::Flow8App;
-use crate::theme::{PURPLE, SECONDARY, card, inspector_heading};
+use crate::theme::{PURPLE, SECONDARY, card, section_heading};
 use crate::widgets::mute_button;
 use crate::widgets::{parameter_row, state_button};
 use eframe::egui;
-use flow8_core::{MuteTarget, SemanticCommand};
+use flow8_core::{ChannelStateTarget, MuteTarget, SemanticCommand};
 use flow8_model::{FX_PRESET_COUNT, FxId, FxState, fx_preset_info, specs};
 
 impl Flow8App {
@@ -15,8 +15,11 @@ impl Flow8App {
         index: usize,
         effect: &FxState,
     ) {
-        ui.add_space(8.0);
         card(ui, |ui| {
+            self.inspector_header(
+                ui,
+                ChannelStateTarget::Destination(self.store.state.selected_destination),
+            );
             self.fx_header_controls(ui, fx_id, effect);
             self.fx_preset_controls(ui, fx_id, index, effect);
             self.fx_pan_controls(ui, fx_id, effect);
@@ -26,7 +29,6 @@ impl Flow8App {
     }
 
     fn fx_header_controls(&mut self, ui: &mut egui::Ui, fx_id: FxId, effect: &FxState) {
-        inspector_heading(ui, self.language.tr("FX ENGINE", "效果器"), PURPLE);
         ui.horizontal(|ui| {
             let muted = effect.muted.effective().copied().unwrap_or(false);
             if mute_button(ui, muted, self.language.tr("Mute", "静音")).clicked() {
@@ -131,6 +133,12 @@ impl Flow8App {
                 .changed();
                 *value = display.round() as u8;
             }
+            ui.separator();
+            section_heading(
+                ui,
+                self.language.tr("Return routing", "返回路由"),
+                SECONDARY,
+            );
             ui.horizontal_wrapped(|ui| {
                 for (index, label) in ["MAIN", "MON1", "MON2"].into_iter().enumerate() {
                     if state_button(ui, routes[index], label, PURPLE).clicked() {
