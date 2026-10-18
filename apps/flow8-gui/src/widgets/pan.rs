@@ -1,5 +1,5 @@
 use crate::metrics::UiMetrics;
-use crate::theme::{BLUE, CONTROL_THUMB, CONTROL_TRACK, SECONDARY};
+use crate::theme::palette;
 use crate::widgets::{accessible_slider_input, accessible_slider_node};
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Color32, Pos2, Response, Sense, Stroke, StrokeKind, Vec2};
@@ -11,6 +11,7 @@ pub(crate) fn pan_control(
     width: f32,
     metrics: UiMetrics,
 ) -> Response {
+    let colors = palette(ui);
     let (rect, mut response) = ui.allocate_exact_size(
         Vec2::new(width, 20.0 * metrics.ui_scale).round_ui(),
         Sense::click_and_drag(),
@@ -49,7 +50,7 @@ pub(crate) fn pan_control(
         ui.painter().rect_stroke(
             rect.expand(2.0),
             3.0,
-            Stroke::new(1.0, BLUE),
+            Stroke::new(1.0, colors.blue),
             StrokeKind::Inside,
         );
     }
@@ -62,14 +63,14 @@ pub(crate) fn pan_control(
             Pos2::new(rect.left(), track_y),
             Pos2::new(rect.right(), track_y),
         ],
-        Stroke::new(3.0, CONTROL_TRACK),
+        Stroke::new(3.0, colors.control_track),
     );
     ui.painter().line_segment(
         [
             Pos2::new(rect.center().x, rect.top()),
             Pos2::new(rect.center().x, rect.bottom()),
         ],
-        Stroke::new(1.0, SECONDARY),
+        Stroke::new(1.0, colors.secondary),
     );
     let x = egui::lerp(rect.left()..=rect.right(), (*value + 1.0) / 2.0);
     ui.painter().circle_filled(
@@ -78,9 +79,16 @@ pub(crate) fn pan_control(
         if response.hovered() {
             Color32::WHITE
         } else {
-            CONTROL_THUMB
+            colors.control_thumb
         },
     );
+    if !ui.visuals().dark_mode {
+        ui.painter().circle_stroke(
+            Pos2::new(x, track_y),
+            6.0,
+            Stroke::new(1.0, colors.control_thumb_border),
+        );
+    }
     let cursor = if response.dragged() {
         egui::CursorIcon::Grabbing
     } else {

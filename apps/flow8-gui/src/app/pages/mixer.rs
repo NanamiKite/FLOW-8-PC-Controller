@@ -1,7 +1,7 @@
 use crate::app::{Flow8App, input_eq_modified};
 use crate::i18n::{channel_number, destination_name};
 use crate::metrics::LayoutMetrics;
-use crate::theme::{BLUE, MASTER_SURFACE, SECONDARY, TEXT, YELLOW};
+use crate::theme::palette;
 use crate::widgets::{
     StripAction, channel_strip, fader_level_text, fader_min_width, fader_sized, meter_widget_sized,
     mixer_divider, state_button_sized, strip_controls,
@@ -21,6 +21,7 @@ impl Flow8App {
     }
 
     fn mixer_contents(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         let metrics = self.metrics;
         let device_ready = self.device_controls_ready();
         ui.add_space(metrics.spacing);
@@ -32,7 +33,7 @@ impl Flow8App {
                     destination_name(self.store.state.selected_destination),
                 ))
                 .strong()
-                .color(YELLOW),
+                .color(colors.yellow),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.toggle_value(
@@ -122,7 +123,7 @@ impl Flow8App {
                                     ui,
                                     self.inspector_input == input,
                                     label,
-                                    BLUE,
+                                    colors.blue,
                                     tab_size,
                                 )
                                 .clicked()
@@ -288,10 +289,11 @@ impl Flow8App {
     }
 
     fn destination_master(&mut self, ui: &mut egui::Ui, fader_height: f32, strip_height: f32) {
+        let colors = palette(ui);
         let destination = self.store.state.selected_destination;
         egui::Frame::new()
-            .fill(MASTER_SURFACE)
-            .stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.7)))
+            .fill(colors.master_surface)
+            .stroke(Stroke::new(1.0, colors.blue.gamma_multiply(0.7)))
             .corner_radius(8)
             .inner_margin(8)
             .show(ui, |ui| {
@@ -312,14 +314,14 @@ impl Flow8App {
                             ))
                             .size(self.metrics.body_font)
                             .strong()
-                            .color(BLUE),
+                            .color(colors.blue),
                         );
                         ui.label(
                             egui::RichText::new(
                                 self.language.tr("Destination master", "目标总线主控"),
                             )
                             .size(10.0)
-                            .color(SECONDARY),
+                            .color(colors.secondary),
                         );
                         if ui
                             .button(self.language.tr("Output / FX", "输出 / FX"))
@@ -384,7 +386,7 @@ impl Flow8App {
                 ui.label(
                     egui::RichText::new(format!("{} dB", fader_level_text(master)))
                         .strong()
-                        .color(TEXT),
+                        .color(colors.text),
                 );
             });
     }

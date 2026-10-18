@@ -1,5 +1,5 @@
 use crate::app::{Flow8App, Page};
-use crate::theme::{RED, SECONDARY};
+use crate::theme::palette;
 use eframe::egui::{self, Vec2};
 use flow8_core::{SemanticCommand, SessionState};
 use flow8_model::InputId;
@@ -250,6 +250,7 @@ impl Flow8App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
+                let colors = palette(ui);
                 ui.set_max_width(420.0);
                 ui.label(description);
                 let mut can_confirm = true;
@@ -271,7 +272,11 @@ impl Flow8App {
                             SNAPSHOT_NAME_MAX_BYTES,
                             self.language.tr("UTF-8 bytes", "UTF-8 字节")
                         ))
-                        .color(if can_confirm { SECONDARY } else { RED }),
+                        .color(if can_confirm {
+                            colors.secondary
+                        } else {
+                            colors.red
+                        }),
                     );
                 }
                 ui.add_space(12.0);

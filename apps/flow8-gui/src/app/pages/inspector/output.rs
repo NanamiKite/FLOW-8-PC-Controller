@@ -1,6 +1,6 @@
 use crate::app::Flow8App;
 use crate::i18n::waiting_for_device_text;
-use crate::theme::{GREEN, SECONDARY, card, section_heading};
+use crate::theme::{card, palette, section_heading};
 use crate::widgets::mute_button;
 use crate::widgets::{output_eq_graph, parameter_row, state_button};
 use eframe::egui;
@@ -28,6 +28,7 @@ impl Flow8App {
     }
 
     fn bus_header_controls(&mut self, ui: &mut egui::Ui, bus_id: MixBusId, bus: &MixBusState) {
+        let colors = palette(ui);
         ui.horizontal(|ui| {
             let muted = bus.muted.effective().copied().unwrap_or(false);
             if mute_button(ui, muted, self.language.tr("Mute", "静音")).clicked() {
@@ -46,7 +47,7 @@ impl Flow8App {
                     .effective()
                     .copied()
                     .unwrap_or(false);
-                if state_button(ui, linked, "MON1 ↔ MON2", GREEN).clicked() {
+                if state_button(ui, linked, "MON1 ↔ MON2", colors.green).clicked() {
                     self.dispatch(SemanticCommand::SetSetting(
                         KnownSetting::MonitorStereoLink(!linked),
                     ));
@@ -91,11 +92,12 @@ impl Flow8App {
     }
 
     fn bus_eq_controls(&mut self, ui: &mut egui::Ui, bus_id: MixBusId, bus: &MixBusState) {
+        let colors = palette(ui);
         ui.separator();
         section_heading(
             ui,
             self.language.tr("9-band GEQ", "9 段图示均衡"),
-            SECONDARY,
+            colors.secondary,
         );
         if let Some((index, gain_db)) = output_eq_graph(ui, &bus.eq, self.metrics) {
             let band = &bus.eq.bands[index];
@@ -116,7 +118,7 @@ impl Flow8App {
                 "拖动节点 · Shift 精调 · 双击归零",
             ))
             .size(self.metrics.small_font)
-            .color(SECONDARY),
+            .color(colors.secondary),
         );
         ui.collapsing(self.language.tr("Band values", "各频段数值"), |ui| {
             for (index, band) in bus.eq.bands.iter().enumerate() {
@@ -149,6 +151,7 @@ impl Flow8App {
     }
 
     fn bus_delay_indicator(&mut self, ui: &mut egui::Ui, bus: &MixBusState) {
+        let colors = palette(ui);
         if self.preferences.show_output_delay_indicator {
             let ticks = bus.delay_ticks.effective().copied().unwrap_or(0);
             ui.label(
@@ -159,7 +162,7 @@ impl Flow8App {
                     ticks as f32 / DELAY_TICKS_PER_MILLISECOND as f32
                 ))
                 .size(10.0)
-                .color(SECONDARY),
+                .color(colors.secondary),
             );
         }
     }

@@ -1,6 +1,6 @@
 use crate::i18n::Language;
 use crate::metrics::PARAMETER_VALUE_MIN_WIDTH;
-use crate::theme::{RED, TEXT};
+use crate::theme::palette;
 use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_model::{ParameterSpec, specs};
 
@@ -58,19 +58,20 @@ fn parameter_row_impl(
     slider: bool,
     reset_hint: Option<&str>,
 ) -> ParameterRowResponse {
+    let colors = palette(ui);
     let original = *value;
     let scale = ui.spacing().interact_size.y / 30.0;
     let stacked = ui.available_width() < 330.0 * scale;
     let response = ui
         .vertical(|ui| {
             if stacked {
-                ui.label(egui::RichText::new(label).color(TEXT));
+                ui.label(egui::RichText::new(label).color(colors.text));
             }
             // horizontal() bounds vertical centering to one control row. A bare
             // with_layout() here would center the slider in the remaining viewport.
             ui.horizontal(|ui| {
                 if !stacked {
-                    ui.label(egui::RichText::new(label).color(TEXT));
+                    ui.label(egui::RichText::new(label).color(colors.text));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Slider's built-in DragValue uses this minimum in both
@@ -173,6 +174,7 @@ pub(crate) fn committed_text(
     maximum: usize,
     language: Language,
 ) -> Option<String> {
+    let colors = palette(ui);
     let id = ui.make_persistent_id(key);
     let draft_id = id.with("draft");
     let mut draft = ui
@@ -197,7 +199,7 @@ pub(crate) fn committed_text(
     if draft.len() > maximum {
         ui.label(
             egui::RichText::new(language.tr("Name is too long", "名称过长"))
-                .color(RED)
+                .color(colors.red)
                 .small(),
         );
     }

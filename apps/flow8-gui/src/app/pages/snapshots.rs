@@ -2,7 +2,7 @@ use crate::app::Flow8App;
 use crate::app::confirmation::ConfirmationAction;
 use crate::i18n::{Language, waiting_for_device_text};
 use crate::metrics::SnapshotGridLayout;
-use crate::theme::{GREEN, RED, SECONDARY, SURFACE_ALT, TEXT, YELLOW, card_frame};
+use crate::theme::{card_frame, palette};
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Align, FontId, Layout, Response, Sense, Vec2};
 use flow8_core::SemanticCommand;
@@ -10,6 +10,7 @@ use flow8_model::SnapshotSlotState;
 
 impl Flow8App {
     pub(in crate::app) fn snapshots_page(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         ui.add_space(18.0);
         let device_ready = self.device_controls_ready();
         let snapshots = self.store.state.snapshots.device_slots.clone();
@@ -24,7 +25,7 @@ impl Flow8App {
             ui.horizontal(|ui| {
                 ui.heading(
                     egui::RichText::new(self.language.tr("Device Snapshots", "设备快照"))
-                        .color(TEXT),
+                        .color(colors.text),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
@@ -43,7 +44,7 @@ impl Flow8App {
                     "These slots are stored on FLOW 8.",
                     "这些槽位保存在 FLOW 8 上。",
                 ))
-                .color(SECONDARY),
+                .color(colors.secondary),
             );
             ui.add_space(10.0);
             for row in snapshots.chunks(layout.columns) {
@@ -58,7 +59,7 @@ impl Flow8App {
                                 ui.label(
                                     egui::RichText::new(format!("{:02}", snapshot.slot + 1))
                                         .strong()
-                                        .color(YELLOW),
+                                        .color(colors.yellow),
                                 );
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     snapshot_status_badge(ui, &status, self.language);
@@ -180,7 +181,12 @@ fn ellipsize_snapshot_name(
     font: &FontId,
     max_width: f32,
 ) -> String {
-    let width = |text: String| painter.layout_no_wrap(text, font.clone(), TEXT).size().x;
+    let width = |text: String| {
+        painter
+            .layout_no_wrap(text, font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
     if width(name.to_owned()) <= max_width {
         return name.to_owned();
     }
@@ -204,18 +210,23 @@ pub(in crate::app) fn snapshot_status_badge(
     status: &DeviceSlotStatus,
     language: Language,
 ) -> Response {
+    let colors = palette(ui);
     let (label, fill, foreground) = match status {
         DeviceSlotStatus::Free => (
             language.tr("Free", "空闲"),
-            GREEN.gamma_multiply(0.35),
-            GREEN,
+            colors.green.gamma_multiply(0.35),
+            colors.green,
         ),
         DeviceSlotStatus::Occupied(_) => (
             language.tr("Occupied", "已占用"),
-            RED.gamma_multiply(0.35),
-            RED,
+            colors.red.gamma_multiply(0.35),
+            colors.red,
         ),
-        DeviceSlotStatus::Unknown => (language.tr("Unknown", "未知"), SURFACE_ALT, SECONDARY),
+        DeviceSlotStatus::Unknown => (
+            language.tr("Unknown", "未知"),
+            colors.surface_alt,
+            colors.secondary,
+        ),
     };
     egui::Frame::new()
         .fill(fill)
@@ -235,6 +246,7 @@ pub(in crate::app) fn snapshot_name_row(
     font_size: f32,
     language: Language,
 ) -> Response {
+    let colors = palette(ui);
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(width, (font_size * 1.4).round_ui()),
         Sense::hover(),
@@ -253,7 +265,7 @@ pub(in crate::app) fn snapshot_name_row(
             egui::Align2::LEFT_CENTER,
             display,
             font,
-            if busy { SECONDARY } else { TEXT },
+            if busy { colors.secondary } else { colors.text },
         );
     }
     if let Some(name) = name {
@@ -279,7 +291,7 @@ pub(in crate::app) fn snapshot_card<R>(
     inner_width: f32,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
-    card_frame().show(ui, |ui| {
+    card_frame(ui).show(ui, |ui| {
         ui.set_width(inner_width);
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             ui.set_width(inner_width);

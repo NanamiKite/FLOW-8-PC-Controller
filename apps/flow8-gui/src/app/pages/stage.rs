@@ -1,10 +1,7 @@
 use crate::app::Flow8App;
 use crate::i18n::{destination_name, display_name};
 use crate::metrics::{DESTINATION_BUTTON_MIN_WIDTH, STATE_BUTTON_MIN_WIDTH};
-use crate::theme::{
-    BLUE, BORDER, GREEN, RED, SECONDARY, STAGE_RING, STAGE_SELECTED_SURFACE, STAGE_SURFACE,
-    SURFACE, SURFACE_ALT, TEXT, YELLOW,
-};
+use crate::theme::palette;
 use crate::widgets::{
     accessible_slider_input, accessible_slider_node, destination_button, fader_level_text,
     state_button_sized,
@@ -15,6 +12,7 @@ use flow8_model::{InputId, MixDestination};
 
 impl Flow8App {
     pub(in crate::app) fn stage_page(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         ui.add_space(14.0);
         self.stage_toolbar(ui);
         ui.add_space(8.0);
@@ -22,7 +20,7 @@ impl Flow8App {
             Vec2::new(ui.available_width(), ui.available_height().max(460.0)),
             Sense::hover(),
         );
-        ui.painter().rect_filled(canvas, 8.0, STAGE_SURFACE);
+        ui.painter().rect_filled(canvas, 8.0, colors.stage_surface);
         for id in InputId::ALL {
             let index = id.index();
             // Reserve the actual themed button height, rather than letting a
@@ -157,9 +155,9 @@ impl Flow8App {
                 rect,
                 8.0,
                 if selected {
-                    STAGE_SELECTED_SURFACE
+                    colors.stage_selected_surface
                 } else {
-                    SURFACE_ALT
+                    colors.surface_alt
                 },
             );
             ui.painter().rect_stroke(
@@ -172,11 +170,11 @@ impl Flow8App {
                         1.0
                     },
                     if response.has_focus() {
-                        BLUE
+                        colors.blue
                     } else if selected {
-                        YELLOW
+                        colors.yellow
                     } else {
-                        BORDER
+                        colors.border
                     },
                 ),
                 StrokeKind::Inside,
@@ -186,17 +184,18 @@ impl Flow8App {
                 egui::Align2::CENTER_CENTER,
                 display_name(id, self.language),
                 FontId::proportional(self.metrics.body_font),
-                TEXT,
+                colors.text,
             );
             let center = rect.center_top() + Vec2::new(0.0, 87.0);
             ui.painter()
-                .circle_stroke(center, 39.0, Stroke::new(7.0, STAGE_RING));
+                .circle_stroke(center, 39.0, Stroke::new(7.0, colors.stage_ring));
             let filled = (route.unwrap_or(0.0) * 24.0).round() as usize;
             for segment in 0..filled {
                 let angle = std::f32::consts::PI * (0.75 + segment as f32 / 18.0);
                 let a = center + Vec2::angled(angle) * 35.0;
                 let b = center + Vec2::angled(angle) * 42.0;
-                ui.painter().line_segment([a, b], Stroke::new(3.0, YELLOW));
+                ui.painter()
+                    .line_segment([a, b], Stroke::new(3.0, colors.yellow));
             }
             ui.painter().text(
                 center,
@@ -205,15 +204,22 @@ impl Flow8App {
                     .map(fader_level_text)
                     .unwrap_or_else(|| "—".to_owned()),
                 FontId::proportional(self.metrics.body_font),
-                TEXT,
+                colors.text,
             );
             let meter_width = ((meter + 60.0) / 70.0).clamp(0.0, 1.0) * (rect.width() - 24.0);
             let meter_rect = Rect::from_min_size(
                 rect.left_bottom() + Vec2::new(12.0, -button_height - 18.0),
                 Vec2::new(meter_width, 5.0),
             );
-            ui.painter()
-                .rect_filled(meter_rect, 2.0, if meter >= 0.0 { RED } else { GREEN });
+            ui.painter().rect_filled(
+                meter_rect,
+                2.0,
+                if meter >= 0.0 {
+                    colors.red
+                } else {
+                    colors.green
+                },
+            );
             let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
             let mute_rect = Rect::from_min_size(
                 rect.left_bottom() + Vec2::new(12.0, -button_height - 8.0),
@@ -228,9 +234,9 @@ impl Flow8App {
                 .put(
                     mute_rect,
                     egui::Button::new(self.language.tr("MUTE", "静音")).fill(if muted {
-                        RED
+                        colors.red
                     } else {
-                        SURFACE
+                        colors.surface
                     }),
                 )
                 .clicked()
@@ -245,9 +251,9 @@ impl Flow8App {
                 .put(
                     solo_rect,
                     egui::Button::new(self.language.tr("SOLO", "独奏")).fill(if soloed {
-                        YELLOW
+                        colors.yellow
                     } else {
-                        SURFACE
+                        colors.surface
                     }),
                 )
                 .clicked()
@@ -261,6 +267,7 @@ impl Flow8App {
     }
 
     fn stage_toolbar(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         let control_label = self.language.tr("Control", "控制");
         let layout_label = self.language.tr("Layout", "布局");
         let bus_label = self.language.tr("Mix bus", "混音总线");
@@ -269,7 +276,7 @@ impl Flow8App {
                 .layout_no_wrap(
                     text.to_owned(),
                     FontId::proportional(self.metrics.body_font),
-                    TEXT,
+                    colors.text,
                 )
                 .size()
                 .x
@@ -292,16 +299,18 @@ impl Flow8App {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0 * gap;
                     ui.heading(
-                        egui::RichText::new(self.language.tr("Stage View", "舞台视图")).color(TEXT),
+                        egui::RichText::new(self.language.tr("Stage View", "舞台视图"))
+                            .color(colors.text),
                     );
                     ui.allocate_ui_with_layout(
                         Vec2::new(2.0 * mode_width + gap, height),
                         Layout::left_to_right(Align::Center),
                         |ui| {
                             ui.spacing_mut().item_spacing.x = gap;
-                            for (layout_mode, label, accent) in
-                                [(false, control_label, YELLOW), (true, layout_label, BLUE)]
-                            {
+                            for (layout_mode, label, accent) in [
+                                (false, control_label, colors.yellow),
+                                (true, layout_label, colors.blue),
+                            ] {
                                 if state_button_sized(
                                     ui,
                                     self.stage_layout_mode == layout_mode,
@@ -321,7 +330,7 @@ impl Flow8App {
                         Layout::left_to_right(Align::Center),
                         |ui| {
                             ui.spacing_mut().item_spacing.x = gap;
-                            ui.label(egui::RichText::new(bus_label).color(SECONDARY));
+                            ui.label(egui::RichText::new(bus_label).color(colors.secondary));
                             for destination in MixDestination::ALL {
                                 let response = ui
                                     .allocate_ui_with_layout(
@@ -361,7 +370,10 @@ impl Flow8App {
                         .effective()
                         .map(|tempo| format!("{tempo:.0} BPM"))
                         .unwrap_or_else(|| "— BPM".to_owned());
-                    ui.add(egui::Label::new(egui::RichText::new(tempo).color(SECONDARY)).extend());
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(tempo).color(colors.secondary))
+                            .extend(),
+                    );
                 });
             });
     }

@@ -2,7 +2,7 @@ use self::confirmation::PendingConfirmation;
 use crate::fonts::configure_fonts;
 use crate::i18n::{Language, native_stage_text, session_phase_text};
 use crate::metrics::UiMetrics;
-use crate::theme::{BG, SECONDARY, TOOLBAR_SURFACE, configure_style};
+use crate::theme::{configure_style, palette};
 use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_ble::{DeviceCommand, DeviceEvent, DeviceRuntime, NativeConnectionStage, SessionPhase};
 use flow8_core::{Flow8Store, SemanticCommand, SessionState};
@@ -45,6 +45,7 @@ enum EqEditingMode {
 
 #[derive(Debug, Clone)]
 struct AppPreferences {
+    theme: egui::Theme,
     show_mute_buttons: bool,
     show_channel_icons: bool,
     channel_visible: [bool; 7],
@@ -57,6 +58,7 @@ struct AppPreferences {
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
+            theme: egui::Theme::Dark,
             show_mute_buttons: true,
             show_channel_icons: true,
             channel_visible: [true; 7],
@@ -194,6 +196,7 @@ impl Flow8App {
 
     fn from_context(context: &egui::Context) -> Self {
         configure_fonts(context);
+        context.set_theme(egui::Theme::Dark);
         let metrics =
             UiMetrics::calculate(Vec2::new(1440.0, 920.0), context.pixels_per_point(), 1.0);
         configure_style(context, metrics);
@@ -566,6 +569,7 @@ impl Flow8App {
 
 impl eframe::App for Flow8App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let colors = palette(ui);
         let metrics = UiMetrics::calculate(
             ui.available_size(),
             ui.ctx().pixels_per_point(),
@@ -587,7 +591,7 @@ impl eframe::App for Flow8App {
         }
 
         ui.set_min_size(ui.available_size());
-        ui.painter().rect_filled(ui.max_rect(), 0.0, BG);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, colors.bg);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             self.connection_bar(ui);
@@ -638,13 +642,13 @@ impl eframe::App for Flow8App {
             }
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 egui::Frame::new()
-                    .fill(TOOLBAR_SURFACE)
+                    .fill(colors.toolbar_surface)
                     .inner_margin(egui::Margin::symmetric(18, 7))
                     .show(ui, |ui| {
                         ui.label(
                             egui::RichText::new(&self.message)
                                 .size(10.0)
-                                .color(SECONDARY),
+                                .color(colors.secondary),
                         );
                     });
             });

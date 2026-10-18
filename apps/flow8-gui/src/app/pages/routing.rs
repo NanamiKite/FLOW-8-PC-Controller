@@ -2,9 +2,7 @@ use super::inspector::fx_setup_values;
 use crate::app::Flow8App;
 use crate::i18n::{Language, destination_name, waiting_for_device_text};
 use crate::metrics::{ROUTING_CONTENT_MAX_WIDTH, STATE_BUTTON_MIN_WIDTH, UiMetrics};
-use crate::theme::{
-    BLUE, GREEN, MIXER_DIVIDER, PURPLE, SECONDARY, TEXT, card_frame, section_heading,
-};
+use crate::theme::{card_frame, palette, section_heading};
 use crate::widgets::state_button_sized;
 use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Vec2};
@@ -16,6 +14,7 @@ use flow8_model::{
 
 impl Flow8App {
     pub(in crate::app) fn routing_page(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         let width = (ui.available_width() - 48.0).clamp(0.0, ROUTING_CONTENT_MAX_WIDTH);
         let layout = RoutingLayout::new(ui, width, self.metrics, self.language);
         ui.add_space(20.0);
@@ -23,7 +22,7 @@ impl Flow8App {
             ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.heading(
                     egui::RichText::new(self.language.tr("Routing & Outputs", "路由与输出"))
-                        .color(TEXT),
+                        .color(colors.text),
                 );
                 let subtitle = if self.device_controls_ready() {
                     self.language.tr(
@@ -44,7 +43,7 @@ impl Flow8App {
                         "设备路由将在同步完成后显示。",
                     )
                 };
-                ui.label(egui::RichText::new(subtitle).color(SECONDARY));
+                ui.label(egui::RichText::new(subtitle).color(colors.secondary));
                 ui.add_space(12.0);
                 self.routing_card_pair(
                     ui,
@@ -109,6 +108,7 @@ impl Flow8App {
     }
 
     fn usb_routing_card(&mut self, ui: &mut egui::Ui, layout: RoutingLayout) -> Prepared {
+        let colors = palette(ui);
         let ready = self.device_controls_ready();
         let language = self.language;
         let settings = self.store.state.routing.settings.clone();
@@ -116,14 +116,14 @@ impl Flow8App {
             ui,
             layout,
             language.tr("USB / BLUETOOTH", "USB / 蓝牙"),
-            BLUE,
+            colors.blue,
             |ui| {
                 let streaming = settings.usb_streaming.effective().copied();
                 if let Some(value) = setting_row(
                     ui,
                     layout,
                     language.tr("Recording / Streaming", "录音 / 推流"),
-                    |ui| routing_switch(ui, layout, streaming, ready, language, BLUE),
+                    |ui| routing_switch(ui, layout, streaming, ready, language, colors.blue),
                 ) {
                     self.dispatch(SemanticCommand::SetSetting(KnownSetting::UsbStreaming(
                         value,
@@ -146,7 +146,7 @@ impl Flow8App {
                 ] {
                     if let Some(value) =
                         route_row(ui, layout, source, destination, layout.switch_width, |ui| {
-                            routing_switch(ui, layout, current, ready, language, BLUE)
+                            routing_switch(ui, layout, current, ready, language, colors.blue)
                         })
                     {
                         self.dispatch(SemanticCommand::SetSetting(setting(value)));
@@ -166,7 +166,7 @@ impl Flow8App {
                     ),
                 ] {
                     if let Some(value) = setting_row(ui, layout, label, |ui| {
-                        routing_switch(ui, layout, current, ready, language, BLUE)
+                        routing_switch(ui, layout, current, ready, language, colors.blue)
                     }) {
                         self.dispatch(SemanticCommand::SetSetting(setting(value)));
                     }
@@ -176,6 +176,7 @@ impl Flow8App {
     }
 
     fn monitor_routing_card(&mut self, ui: &mut egui::Ui, layout: RoutingLayout) -> Prepared {
+        let colors = palette(ui);
         let ready = self.device_controls_ready();
         let language = self.language;
         let routing = &self.store.state.routing;
@@ -188,7 +189,7 @@ impl Flow8App {
             ui,
             layout,
             language.tr("MONITOR / HEADPHONES", "监听 / 耳机"),
-            GREEN,
+            colors.green,
             |ui| {
                 if let Some(value) = setting_row(
                     ui,
@@ -205,7 +206,7 @@ impl Flow8App {
                                 (MonitorRoutingSource::Usb12, "USB 1/2"),
                                 (MonitorRoutingSource::Usb34, "USB 3/4"),
                             ],
-                            GREEN,
+                            colors.green,
                         )
                     },
                 ) {
@@ -217,7 +218,16 @@ impl Flow8App {
                     ui,
                     layout,
                     language.tr("Monitor tap", "监听取样点"),
-                    |ui| routing_toggle(ui, layout, monitor_post, ready, ["PRE", "POST"], GREEN),
+                    |ui| {
+                        routing_toggle(
+                            ui,
+                            layout,
+                            monitor_post,
+                            ready,
+                            ["PRE", "POST"],
+                            colors.green,
+                        )
+                    },
                 ) {
                     self.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorPostFader(
                         value,
@@ -227,7 +237,7 @@ impl Flow8App {
                     ui,
                     layout,
                     language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
-                    |ui| routing_switch(ui, layout, linked, ready, language, GREEN),
+                    |ui| routing_switch(ui, layout, linked, ready, language, colors.green),
                 ) {
                     self.dispatch(SemanticCommand::SetSetting(
                         KnownSetting::MonitorStereoLink(value),
@@ -248,7 +258,7 @@ impl Flow8App {
                                 (HeadphoneSource::Main, "MAIN"),
                                 (HeadphoneSource::Monitor, "MONITOR"),
                             ],
-                            GREEN,
+                            colors.green,
                         )
                     },
                 ) {
@@ -267,7 +277,7 @@ impl Flow8App {
                             ready,
                             tap,
                             [(TapPoint::PreFader, "PRE"), (TapPoint::PostFader, "POST")],
-                            GREEN,
+                            colors.green,
                         )
                     },
                 ) {
@@ -280,13 +290,14 @@ impl Flow8App {
     }
 
     fn fx_return_routing_card(&mut self, ui: &mut egui::Ui, layout: RoutingLayout) -> Prepared {
+        let colors = palette(ui);
         let ready = self.device_controls_ready();
         let language = self.language;
         routing_card(
             ui,
             layout,
             language.tr("FX RETURNS", "FX 返回路由"),
-            PURPLE,
+            colors.purple,
             |ui| {
                 let mut unavailable = false;
                 for (index, fx) in [FxId::Fx1, FxId::Fx2].into_iter().enumerate() {
@@ -306,7 +317,7 @@ impl Flow8App {
                                         ui,
                                         selected,
                                         label,
-                                        PURPLE,
+                                        colors.purple,
                                         Vec2::new(layout.fx_button_width, layout.row_height),
                                     )
                                     .clicked()
@@ -333,7 +344,7 @@ impl Flow8App {
                     ui.label(
                         egui::RichText::new(waiting_for_device_text(language))
                             .size(layout.secondary_font)
-                            .color(SECONDARY),
+                            .color(colors.secondary),
                     );
                 }
             },
@@ -341,12 +352,17 @@ impl Flow8App {
     }
 
     fn output_delay_settings(&mut self, ui: &mut egui::Ui, layout: RoutingLayout) {
+        let colors = palette(ui);
         let ready = self.device_controls_ready();
         let layout = RoutingLayout {
             label_width: layout.output_label_width,
             ..layout
         };
-        section_heading(ui, self.language.tr("OUTPUT DELAY", "输出延迟"), TEXT);
+        section_heading(
+            ui,
+            self.language.tr("OUTPUT DELAY", "输出延迟"),
+            colors.text,
+        );
         for (index, bus, destination) in [
             (0, MixBusId::Main, MixDestination::Main),
             (1, MixBusId::Monitor1, MixDestination::Monitor1),
@@ -413,7 +429,7 @@ impl Flow8App {
                         ticks,
                     ))
                     .size(self.metrics.small_font)
-                    .color(SECONDARY),
+                    .color(colors.secondary),
                 );
             }
         }
@@ -424,6 +440,7 @@ impl Flow8App {
         ui: &mut egui::Ui,
         layout: RoutingLayout,
     ) -> Prepared {
+        let colors = palette(ui);
         let ready = self.device_controls_ready();
         let language = self.language;
         let settings = self.store.state.routing.settings.clone();
@@ -431,7 +448,7 @@ impl Flow8App {
             ui,
             layout,
             language.tr("OUTPUTS", "物理输出"),
-            SECONDARY,
+            colors.secondary,
             |ui| {
                 let gap = layout.gap;
                 let group_width = (ui.available_width() - 2.0 * gap - 1.0).max(0.0);
@@ -447,7 +464,11 @@ impl Flow8App {
                         |ui| {
                             ui.spacing_mut().item_spacing.x = layout.control_gap;
                             ui.set_width(route_width);
-                            section_heading(ui, language.tr("Output sockets", "输出接口"), TEXT);
+                            section_heading(
+                                ui,
+                                language.tr("Output sockets", "输出接口"),
+                                colors.text,
+                            );
                             let routes = RoutingLayout {
                                 row_height: ui.text_style_height(&egui::TextStyle::Body).ceil(),
                                 ..layout
@@ -469,7 +490,11 @@ impl Flow8App {
                         |ui| {
                             ui.spacing_mut().item_spacing.x = layout.control_gap;
                             ui.set_width(level_width);
-                            section_heading(ui, language.tr("Output level", "输出电平"), TEXT);
+                            section_heading(
+                                ui,
+                                language.tr("Output level", "输出电平"),
+                                colors.text,
+                            );
                             let levels = RoutingLayout {
                                 label_width: layout.output_label_width,
                                 ..layout
@@ -501,7 +526,7 @@ impl Flow8App {
                     ui.painter().vline(
                         divider.center().x,
                         sections.y_range(),
-                        egui::Stroke::new(1.0, MIXER_DIVIDER),
+                        egui::Stroke::new(1.0, colors.mixer_divider),
                     );
                 });
                 ui.separator();
@@ -545,12 +570,13 @@ struct RoutingLayout {
 
 impl RoutingLayout {
     fn new(ui: &egui::Ui, width: f32, metrics: UiMetrics, language: Language) -> Self {
+        let colors = palette(ui);
         let measure = |text: &str| {
             ui.painter()
                 .layout_no_wrap(
                     text.to_owned(),
                     FontId::proportional(metrics.body_font),
-                    TEXT,
+                    colors.text,
                 )
                 .size()
                 .x
@@ -629,7 +655,8 @@ fn routing_card(
     accent: Color32,
     content: impl FnOnce(&mut egui::Ui),
 ) -> Prepared {
-    let mut card = card_frame()
+    let colors = palette(ui);
+    let mut card = card_frame(ui)
         .corner_radius(6)
         .inner_margin(CARD_INSET as i8)
         .begin(ui);
@@ -639,7 +666,7 @@ fn routing_card(
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(3.0, 14.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 1.0, accent);
-        ui.label(egui::RichText::new(title).strong().color(TEXT));
+        ui.label(egui::RichText::new(title).strong().color(colors.text));
     });
     ui.add_space(6.0);
     content(ui);
@@ -652,6 +679,7 @@ fn setting_row<R>(
     label: &str,
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+    let colors = palette(ui);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             Vec2::new(layout.label_width, layout.row_height),
@@ -659,7 +687,7 @@ fn setting_row<R>(
             |ui| {
                 ui.set_max_width(layout.label_width);
                 ui.set_min_size(Vec2::new(layout.label_width, layout.row_height));
-                ui.add(egui::Label::new(egui::RichText::new(label).color(TEXT)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(label).color(colors.text)).wrap());
             },
         );
         control(ui)
@@ -668,17 +696,18 @@ fn setting_row<R>(
 }
 
 fn route_source(ui: &mut egui::Ui, layout: RoutingLayout, source: &str) {
+    let colors = palette(ui);
     ui.allocate_ui_with_layout(
         Vec2::new(layout.source_width, layout.row_height),
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.set_min_size(Vec2::new(layout.source_width, layout.row_height));
-            ui.label(egui::RichText::new(source).strong().color(TEXT));
+            ui.label(egui::RichText::new(source).strong().color(colors.text));
         },
     );
     ui.add_sized(
         Vec2::new(layout.arrow_width, layout.row_height),
-        egui::Label::new(egui::RichText::new("→").color(SECONDARY)),
+        egui::Label::new(egui::RichText::new("→").color(colors.secondary)),
     );
 }
 
@@ -690,6 +719,7 @@ fn route_row<R>(
     control_width: f32,
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+    let colors = palette(ui);
     ui.horizontal(|ui| {
         route_source(ui, layout, source);
         let destination_width =
@@ -699,8 +729,11 @@ fn route_row<R>(
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.set_min_size(Vec2::new(destination_width, layout.row_height));
-                ui.add(egui::Label::new(egui::RichText::new(destination).color(TEXT)).truncate())
-                    .on_hover_text(destination);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(destination).color(colors.text))
+                        .truncate(),
+                )
+                .on_hover_text(destination);
             },
         );
         control(ui)
@@ -715,6 +748,7 @@ fn output_level_switch(
     ready: bool,
     language: Language,
 ) -> Option<bool> {
+    let colors = palette(ui);
     let (label, status) = match value {
         Some(true) => ("−10 dBV", language.tr("On", "开启")),
         Some(false) => ("−10 dBV", language.tr("Off", "关闭")),
@@ -726,7 +760,7 @@ fn output_level_switch(
                 ui,
                 value == Some(true),
                 label,
-                TEXT,
+                colors.text,
                 Vec2::new(layout.switch_width, layout.row_height),
             )
             .on_hover_text(status)

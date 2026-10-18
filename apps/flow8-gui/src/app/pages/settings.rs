@@ -4,7 +4,7 @@ use crate::i18n::{
     setting_switch_text,
 };
 use crate::metrics::{SETTINGS_CONTENT_MAX_WIDTH, SettingsGridLayout, UI_SCALE_MAX, UI_SCALE_MIN};
-use crate::theme::{BLUE, RED, SECONDARY, TEXT, YELLOW, card, card_frame, section_heading};
+use crate::theme::{card, card_frame, palette, section_heading};
 use crate::widgets::{committed_text, state_button_sized};
 use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, Layout, Vec2};
@@ -13,6 +13,7 @@ use flow8_model::{DEVICE_NAME_MAX_BYTES, DeviceSettingsState, InputId};
 
 impl Flow8App {
     pub(in crate::app) fn settings_page(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         egui::ScrollArea::vertical()
             .id_salt("settings-scroll")
             .auto_shrink([false, false])
@@ -27,14 +28,14 @@ impl Flow8App {
                         |ui| {
                             ui.heading(
                                 egui::RichText::new(self.language.tr("Preferences", "偏好设置"))
-                                    .color(TEXT),
+                                    .color(colors.text),
                             );
                             ui.label(
                                 egui::RichText::new(
                                     self.language
                                         .tr("Application and device settings", "应用与设备设置"),
                                 )
-                                .color(SECONDARY),
+                                .color(colors.secondary),
                             );
                             ui.add_space(12.0);
                             let settings = self.store.state.routing.settings.clone();
@@ -83,6 +84,7 @@ impl Flow8App {
     ) -> Prepared {
         let labels = [
             self.language.tr("Language", "语言"),
+            self.language.tr("Appearance", "外观"),
             self.language.tr("UI Scale", "界面缩放"),
             self.language.tr("Control Gesture", "控制手势"),
             self.language.tr("EQ Editing Mode", "EQ 编辑模式"),
@@ -115,14 +117,15 @@ impl Flow8App {
     }
 
     fn application_preferences_section(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
-        section_heading(ui, self.language.tr("APPLICATION", "应用"), BLUE);
+        let colors = palette(ui);
+        section_heading(ui, self.language.tr("APPLICATION", "应用"), colors.blue);
         settings_form_row(ui, grid, self.language.tr("Language", "语言"), |ui| {
             if settings_button(
                 ui,
                 grid,
                 self.language == Language::English,
                 "English",
-                BLUE,
+                colors.blue,
             )
             .clicked()
             {
@@ -135,13 +138,33 @@ impl Flow8App {
                 grid,
                 self.language == Language::Chinese,
                 "简体中文",
-                BLUE,
+                colors.blue,
             )
             .clicked()
             {
                 self.language = Language::Chinese;
                 self.message = localized_status_message(self.store.state.session, self.language);
                 ui.ctx().request_repaint();
+            }
+        });
+        settings_form_row(ui, grid, self.language.tr("Appearance", "外观"), |ui| {
+            for (theme, label) in [
+                (egui::Theme::Dark, self.language.tr("Dark", "深色")),
+                (egui::Theme::Light, self.language.tr("Light", "亮色")),
+            ] {
+                if settings_button(
+                    ui,
+                    grid,
+                    self.preferences.theme == theme,
+                    label,
+                    colors.blue,
+                )
+                .clicked()
+                {
+                    self.preferences.theme = theme;
+                    ui.ctx().set_theme(theme);
+                    ui.ctx().request_repaint();
+                }
             }
         });
         settings_form_row(
@@ -176,7 +199,7 @@ impl Flow8App {
                             grid,
                             self.preferences.control_gesture == mode,
                             label,
-                            BLUE,
+                            colors.blue,
                         );
                     }
                 },
@@ -202,7 +225,7 @@ impl Flow8App {
                             grid,
                             self.preferences.eq_editing_mode == mode,
                             label,
-                            BLUE,
+                            colors.blue,
                         );
                     }
                 },
@@ -211,7 +234,8 @@ impl Flow8App {
     }
 
     fn connection_settings_section(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
-        section_heading(ui, self.language.tr("CONNECTION", "连接"), BLUE);
+        let colors = palette(ui);
+        section_heading(ui, self.language.tr("CONNECTION", "连接"), colors.blue);
         settings_form_row(ui, grid, self.language.tr("Mode", "模式"), |ui| {
             ui.label(self.language.tr("Bluetooth", "蓝牙"));
         });
@@ -225,7 +249,7 @@ impl Flow8App {
                     "连接就绪后可编辑设备设置。",
                 ))
                 .size(self.metrics.small_font)
-                .color(SECONDARY),
+                .color(colors.secondary),
             );
         }
         if let Some(stage) = self.native_stage {
@@ -244,7 +268,7 @@ impl Flow8App {
                 grid,
                 self.language.tr("Last connection error", "最近连接错误"),
                 |ui| {
-                    ui.label(egui::RichText::new(error).color(RED));
+                    ui.label(egui::RichText::new(error).color(colors.red));
                 },
             );
         }
@@ -255,6 +279,7 @@ impl Flow8App {
         ui: &mut egui::Ui,
         grid: SettingsGridLayout,
     ) -> Prepared {
+        let colors = palette(ui);
         let grid = settings_labels(
             ui,
             grid,
@@ -266,7 +291,11 @@ impl Flow8App {
             ],
         );
         settings_card(ui, grid, |ui| {
-            section_heading(ui, self.language.tr("MIXER DISPLAY", "混音器显示"), YELLOW);
+            section_heading(
+                ui,
+                self.language.tr("MIXER DISPLAY", "混音器显示"),
+                colors.yellow,
+            );
             settings_form_row(
                 ui,
                 grid,
@@ -311,6 +340,7 @@ impl Flow8App {
         grid: SettingsGridLayout,
         settings: &DeviceSettingsState,
     ) -> Prepared {
+        let colors = palette(ui);
         let ready = self.device_controls_ready();
         let grid = settings_labels(
             ui,
@@ -326,7 +356,7 @@ impl Flow8App {
             section_heading(
                 ui,
                 self.language.tr("DEVICE / CONTROL", "设备 / 控制"),
-                BLUE,
+                colors.blue,
             );
             settings_device_row(
                 ui,
@@ -358,7 +388,7 @@ impl Flow8App {
                         grid,
                         footswitch,
                         [(true, "FX"), (false, self.language.tr("Snapshot", "快照"))],
-                        BLUE,
+                        colors.blue,
                     ) {
                         self.dispatch(SemanticCommand::SetSetting(KnownSetting::FootswitchFxMode(
                             fx_mode,
@@ -374,7 +404,9 @@ impl Flow8App {
                     .tr("Device-linked Output Selection", "设备联动输出选择"),
                 ready,
                 |ui| {
-                    if let Some(value) = settings_switch(ui, grid, linked, self.language, BLUE) {
+                    if let Some(value) =
+                        settings_switch(ui, grid, linked, self.language, colors.blue)
+                    {
                         self.dispatch(SemanticCommand::SetSetting(
                             KnownSetting::DeviceLinkedSelection(value),
                         ));
@@ -385,11 +417,12 @@ impl Flow8App {
     }
 
     fn last_scan_settings_card(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         card(ui, |ui| {
             section_heading(
                 ui,
                 self.language.tr("Last BLE Scan", "最近一次 BLE 扫描"),
-                BLUE,
+                colors.blue,
             );
             for device in &self.discovered_devices {
                 ui.label(format!(
@@ -483,7 +516,7 @@ fn settings_card(
     layout: SettingsGridLayout,
     add: impl FnOnce(&mut egui::Ui),
 ) -> Prepared {
-    let mut card = card_frame().corner_radius(6).inner_margin(16).begin(ui);
+    let mut card = card_frame(ui).corner_radius(6).inner_margin(16).begin(ui);
     let ui = &mut card.content_ui;
     ui.set_width((layout.column_width - 34.0).max(0.0));
     ui.spacing_mut().item_spacing = Vec2::new(layout.control_gap, layout.row_gap);
@@ -610,12 +643,13 @@ fn settings_labels(
     mut layout: SettingsGridLayout,
     labels: &[&str],
 ) -> SettingsGridLayout {
+    let colors = palette(ui);
     let font = egui::TextStyle::Body.resolve(ui.style());
     layout.label_width = labels
         .iter()
         .map(|label| {
             ui.painter()
-                .layout_no_wrap((*label).to_owned(), font.clone(), TEXT)
+                .layout_no_wrap((*label).to_owned(), font.clone(), colors.text)
                 .size()
                 .x
         })

@@ -1,8 +1,5 @@
 use crate::metrics::{DESTINATION_BUTTON_MIN_WIDTH, STATE_BUTTON_MIN_WIDTH, TAB_BUTTON_MIN_WIDTH};
-use crate::theme::{
-    ACTIVE_BADGE_SURFACE, ACTIVE_BADGE_TEXT, BORDER, CONTROL_BORDER, CONTROL_SURFACE,
-    DESTINATION_ACTIVE_FILL, DESTINATION_ACTIVE_TEXT, RED, SECONDARY, SURFACE_ALT, TEXT, YELLOW,
-};
+use crate::theme::palette;
 use eframe::egui::{self, Color32, Response, Stroke, StrokeKind, Vec2};
 
 pub(crate) fn small_tab(
@@ -11,13 +8,14 @@ pub(crate) fn small_tab(
     label: &str,
     accent: Color32,
 ) -> Response {
+    let colors = palette(ui);
     selection_button(
         ui,
         selected,
         label,
         accent,
         SelectionButtonStyle {
-            text: if selected { accent } else { SECONDARY },
+            text: if selected { accent } else { colors.secondary },
             fill: if selected {
                 accent.gamma_multiply(0.17)
             } else {
@@ -31,23 +29,31 @@ pub(crate) fn small_tab(
 }
 
 pub(crate) fn destination_button(ui: &mut egui::Ui, selected: bool, label: &str) -> Response {
+    let colors = palette(ui);
     selection_button(
         ui,
         selected,
         label,
-        YELLOW,
+        colors.yellow,
         SelectionButtonStyle {
             text: if selected {
-                DESTINATION_ACTIVE_TEXT
+                colors.destination_active_text
             } else {
-                SECONDARY
+                colors.secondary
             },
             fill: if selected {
-                DESTINATION_ACTIVE_FILL
+                colors.destination_active_fill
             } else {
-                SURFACE_ALT
+                colors.surface_alt
             },
-            stroke: Stroke::new(1.0, if selected { YELLOW } else { BORDER }),
+            stroke: Stroke::new(
+                1.0,
+                if selected {
+                    colors.yellow
+                } else {
+                    colors.border
+                },
+            ),
             radius: 6,
             min_width: DESTINATION_BUTTON_MIN_WIDTH,
         },
@@ -60,19 +66,43 @@ pub(crate) fn state_button(
     label: &str,
     accent: Color32,
 ) -> Response {
+    let colors = palette(ui);
     selection_button(
         ui,
         selected,
         label,
         accent,
         SelectionButtonStyle {
-            text: if selected { Color32::WHITE } else { TEXT },
-            fill: if selected {
-                accent.gamma_multiply(0.72)
+            text: if selected {
+                if ui.visuals().dark_mode {
+                    Color32::WHITE
+                } else {
+                    accent
+                }
             } else {
-                CONTROL_SURFACE
+                colors.text
             },
-            stroke: Stroke::new(1.0, if selected { accent } else { CONTROL_BORDER }),
+            fill: if selected {
+                if ui.visuals().dark_mode {
+                    accent.gamma_multiply(0.72)
+                } else {
+                    accent.gamma_multiply(0.14)
+                }
+            } else {
+                colors.control_surface
+            },
+            stroke: Stroke::new(
+                1.0,
+                if selected {
+                    if ui.visuals().dark_mode {
+                        accent
+                    } else {
+                        accent.gamma_multiply(0.35)
+                    }
+                } else {
+                    colors.control_border
+                },
+            ),
             radius: 5,
             min_width: STATE_BUTTON_MIN_WIDTH,
         },
@@ -80,7 +110,8 @@ pub(crate) fn state_button(
 }
 
 pub(crate) fn mute_button(ui: &mut egui::Ui, muted: bool, label: &str) -> Response {
-    state_button(ui, muted, label, RED)
+    let colors = palette(ui);
+    state_button(ui, muted, label, colors.red)
 }
 
 pub(crate) fn state_button_sized(
@@ -147,15 +178,20 @@ fn enhanced_click_feedback(
 }
 
 pub(crate) fn badge(ui: &mut egui::Ui, label: &str, active: bool) {
+    let colors = palette(ui);
     ui.label(
         egui::RichText::new(label)
             .text_style(egui::TextStyle::Button)
             .strong()
-            .color(if active { ACTIVE_BADGE_TEXT } else { SECONDARY })
-            .background_color(if active {
-                ACTIVE_BADGE_SURFACE
+            .color(if active {
+                colors.active_badge_text
             } else {
-                CONTROL_SURFACE
+                colors.secondary
+            })
+            .background_color(if active {
+                colors.active_badge_surface
+            } else {
+                colors.control_surface
             }),
     );
 }

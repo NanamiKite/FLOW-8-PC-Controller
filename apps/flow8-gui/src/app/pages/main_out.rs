@@ -3,9 +3,7 @@ use crate::i18n::{
     channel_number, destination_name, display_name, headphone_source_text, tap_point_text,
 };
 use crate::metrics::TOPOLOGY_CONTENT_MAX_WIDTH;
-use crate::theme::{
-    BLUE, GREEN, PURPLE, SECONDARY, TEXT, card_frame, section_heading, topology_bus_color,
-};
+use crate::theme::{card_frame, palette, section_heading, topology_bus_color};
 use crate::widgets::fader_level_text;
 use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, FontId, Layout, Vec2};
@@ -13,6 +11,7 @@ use flow8_model::{FxId, InputId, MixDestination};
 
 impl Flow8App {
     pub(in crate::app) fn main_out_page(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         egui::ScrollArea::vertical()
             .id_salt("main-out-topology-scroll")
             .auto_shrink([false, false])
@@ -29,14 +28,14 @@ impl Flow8App {
                                 egui::RichText::new(
                                     self.language.tr("Audio routing", "音频路由拓扑"),
                                 )
-                                .color(TEXT),
+                                .color(colors.text),
                             );
                             ui.label(
                                 egui::RichText::new(self.language.tr(
                                     "Input channels → mix buses → outputs",
                                     "输入通道 → 混音总线 → 输出",
                                 ))
-                                .color(SECONDARY),
+                                .color(colors.secondary),
                             );
                             ui.add_space(12.0);
                             let scale = self.metrics.ui_scale;
@@ -49,7 +48,7 @@ impl Flow8App {
                                     .layout_no_wrap(
                                         text.to_owned(),
                                         FontId::proportional(self.metrics.body_font),
-                                        TEXT,
+                                        colors.text,
                                     )
                                     .size()
                                     .x
@@ -120,9 +119,14 @@ impl Flow8App {
     }
 
     fn topology_sends_card(&self, ui: &mut egui::Ui) -> Prepared {
-        let mut card = card_frame().begin(ui);
+        let colors = palette(ui);
+        let mut card = card_frame(ui).begin(ui);
         let ui = &mut card.content_ui;
-        section_heading(ui, self.language.tr("CHANNEL SENDS", "通道发送"), BLUE);
+        section_heading(
+            ui,
+            self.language.tr("CHANNEL SENDS", "通道发送"),
+            colors.blue,
+        );
         ui.add_space(8.0);
         egui::ScrollArea::horizontal()
             .id_salt("main-out-channel-sends")
@@ -152,7 +156,7 @@ impl Flow8App {
                                 egui::Label::new(
                                     egui::RichText::new(destination_name(destination))
                                         .strong()
-                                        .color(topology_bus_color(destination)),
+                                        .color(topology_bus_color(ui, destination)),
                                 ),
                             );
                         }
@@ -189,7 +193,7 @@ impl Flow8App {
                             let title = format!("{source} · {name}");
                             ui.add_sized(
                                 [input_width, row_height],
-                                egui::Label::new(egui::RichText::new(&title).color(TEXT))
+                                egui::Label::new(egui::RichText::new(&title).color(colors.text))
                                     .truncate(),
                             )
                             .on_hover_text(title);
@@ -200,10 +204,10 @@ impl Flow8App {
                                 let (text, color) = match level {
                                     Some(value) if value > 0.0 => (
                                         format!("{} dB", fader_level_text(value)),
-                                        topology_bus_color(destination),
+                                        topology_bus_color(ui, destination),
                                     ),
-                                    Some(_) => ("−∞".to_owned(), SECONDARY),
-                                    None => ("—".to_owned(), SECONDARY),
+                                    Some(_) => ("−∞".to_owned(), colors.secondary),
+                                    None => ("—".to_owned(), colors.secondary),
                                 };
                                 ui.add_sized(
                                     [bus_width, row_height],
@@ -218,10 +222,11 @@ impl Flow8App {
     }
 
     fn topology_outputs_card(&self, ui: &mut egui::Ui) -> Prepared {
-        let mut card = card_frame().begin(ui);
+        let colors = palette(ui);
+        let mut card = card_frame(ui).begin(ui);
         let ui = &mut card.content_ui;
         ui.set_min_width(ui.available_width());
-        section_heading(ui, self.language.tr("OUTPUTS", "物理输出"), GREEN);
+        section_heading(ui, self.language.tr("OUTPUTS", "物理输出"), colors.green);
         egui::Grid::new("main-out-bus-sinks")
             .num_columns(3)
             .spacing(Vec2::new(
@@ -237,7 +242,7 @@ impl Flow8App {
                     ui.label(
                         egui::RichText::new(destination_name(destination))
                             .strong()
-                            .color(topology_bus_color(destination)),
+                            .color(topology_bus_color(ui, destination)),
                     );
                     ui.label("→");
                     let bus = self
@@ -263,7 +268,7 @@ impl Flow8App {
             });
 
         ui.separator();
-        section_heading(ui, self.language.tr("FX RETURNS", "FX 返回"), PURPLE);
+        section_heading(ui, self.language.tr("FX RETURNS", "FX 返回"), colors.purple);
         egui::Grid::new("main-out-fx-returns")
             .num_columns(3)
             .spacing(Vec2::new(
@@ -276,7 +281,7 @@ impl Flow8App {
                         FxId::Fx1 => "FX1",
                         FxId::Fx2 => "FX2",
                     };
-                    ui.label(egui::RichText::new(source).strong().color(PURPLE));
+                    ui.label(egui::RichText::new(source).strong().color(colors.purple));
                     ui.label("→");
                     let returns = [
                         (effect.return_to_main.effective().copied(), "MAIN"),
@@ -300,7 +305,7 @@ impl Flow8App {
             });
 
         ui.separator();
-        section_heading(ui, self.language.tr("HEADPHONES", "耳机"), GREEN);
+        section_heading(ui, self.language.tr("HEADPHONES", "耳机"), colors.green);
         egui::Grid::new("main-out-headphones")
             .num_columns(2)
             .spacing(Vec2::new(
@@ -308,7 +313,9 @@ impl Flow8App {
                 7.0 * self.metrics.ui_scale,
             ))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(self.language.tr("Source", "来源")).color(SECONDARY));
+                ui.label(
+                    egui::RichText::new(self.language.tr("Source", "来源")).color(colors.secondary),
+                );
                 let headphones = &self.store.state.routing.headphones;
                 let source = headphones
                     .source

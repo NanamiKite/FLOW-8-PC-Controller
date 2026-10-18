@@ -1,4 +1,4 @@
-use crate::theme::{BLUE, CONTROL_THUMB, CONTROL_THUMB_BORDER, CONTROL_TRACK, SECONDARY, YELLOW};
+use crate::theme::palette;
 use crate::widgets::{accessible_slider_input, accessible_slider_node};
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Color32, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2};
@@ -79,12 +79,13 @@ fn scale_label_offset(ui: &egui::Ui) -> f32 {
 }
 
 pub(crate) fn fader_min_width(ui: &egui::Ui) -> f32 {
+    let colors = palette(ui);
     let font = egui::TextStyle::Button.resolve(ui.style());
     let label_width = FADER_SCALE
         .iter()
         .map(|(_, label)| {
             ui.painter()
-                .layout_no_wrap((*label).to_owned(), font.clone(), SECONDARY)
+                .layout_no_wrap((*label).to_owned(), font.clone(), colors.secondary)
                 .size()
                 .x
         })
@@ -122,6 +123,7 @@ pub(crate) fn fader_sized(
     default: f32,
     _confirmed: Option<f32>,
 ) -> Response {
+    let colors = palette(ui);
     let (rect, mut response) = ui.allocate_exact_size(
         Vec2::new(width.max(fader_min_width(ui)), height).round_ui(),
         Sense::click_and_drag(),
@@ -216,16 +218,16 @@ pub(crate) fn fader_sized(
         painter.rect_stroke(
             rect.shrink(1.0),
             4.0,
-            Stroke::new(1.0, BLUE),
+            Stroke::new(1.0, colors.blue),
             StrokeKind::Inside,
         );
     }
-    painter.rect_filled(track, 2.0, CONTROL_TRACK);
+    painter.rect_filled(track, 2.0, colors.control_track);
     let fill_top = fader_thumb_y(track, *value);
     painter.rect_filled(
         Rect::from_min_max(Pos2::new(track.left(), fill_top), track.right_bottom()),
         2.0,
-        YELLOW,
+        colors.yellow,
     );
     let scale_font = egui::TextStyle::Button.resolve(ui.style());
     let scale_label_x = rect.left() + scale_label_offset(ui);
@@ -236,14 +238,14 @@ pub(crate) fn fader_sized(
                 Pos2::new(track.right() + 3.0, y),
                 Pos2::new(track.right() + 7.0, y),
             ],
-            Stroke::new(1.0, SECONDARY),
+            Stroke::new(1.0, colors.secondary),
         );
         painter.text(
             Pos2::new(scale_label_x, y),
             egui::Align2::LEFT_CENTER,
             label,
             scale_font.clone(),
-            SECONDARY,
+            colors.secondary,
         );
     }
     let thumb_y = fader_thumb_y(track, *value);
@@ -255,17 +257,17 @@ pub(crate) fn fader_sized(
         thumb,
         4.0,
         if pointer_held {
-            YELLOW
+            colors.yellow
         } else if response.hovered() {
             Color32::WHITE
         } else {
-            CONTROL_THUMB
+            colors.control_thumb
         },
     );
     painter.rect_stroke(
         thumb,
         4.0,
-        Stroke::new(1.0, CONTROL_THUMB_BORDER),
+        Stroke::new(1.0, colors.control_thumb_border),
         StrokeKind::Inside,
     );
     response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), "Level"));

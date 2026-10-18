@@ -1,8 +1,6 @@
 use crate::app::{Flow8App, Page};
 use crate::i18n::{Language, localized_status_message, native_stage_text, session_state_text};
-use crate::theme::{
-    BLUE, BORDER, GREEN, PURPLE, RED, SECONDARY, SURFACE, TEXT, TOOLBAR_SURFACE, YELLOW,
-};
+use crate::theme::palette;
 use crate::widgets::small_tab;
 use eframe::egui::{self, Align, Color32, Layout, Stroke};
 use flow8_ble::DeviceCommand;
@@ -12,8 +10,9 @@ use std::time::Duration;
 
 impl Flow8App {
     pub(super) fn connection_bar(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         egui::Frame::new()
-            .fill(SURFACE)
+            .fill(colors.surface)
             .inner_margin(egui::Margin::symmetric(18, 10))
             .show(ui, |ui| {
                 // The outer page uses zero spacing between bars; controls need their own gaps.
@@ -23,12 +22,12 @@ impl Flow8App {
                         egui::RichText::new("FLOW 8")
                             .size(22.0)
                             .strong()
-                            .color(TEXT),
+                            .color(colors.text),
                     );
                     ui.label(
                         egui::RichText::new(self.language.tr("PC CONTROLLER", "PC 控制器"))
                             .size(10.0)
-                            .color(SECONDARY),
+                            .color(colors.secondary),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.menu_button(self.language.tr("Setup", "设置"), |ui| {
@@ -43,7 +42,7 @@ impl Flow8App {
                                 ui,
                                 self.page == Page::Snapshots,
                                 self.language.tr("Snapshots", "快照"),
-                                TEXT,
+                                colors.text,
                             )
                             .clicked()
                             {
@@ -54,7 +53,7 @@ impl Flow8App {
                                 ui,
                                 self.page == Page::Routing,
                                 self.language.tr("Routing & Outputs", "路由与输出"),
-                                TEXT,
+                                colors.text,
                             )
                             .clicked()
                             {
@@ -151,7 +150,7 @@ impl Flow8App {
                         ui.add_space(self.metrics.spacing);
                         ui.label(
                             egui::RichText::new(self.language.tr("Bluetooth", "蓝牙"))
-                                .color(SECONDARY),
+                                .color(colors.secondary),
                         );
                         let state_text = if self.disconnect_request_pending {
                             self.language.tr("Disconnecting", "正在断开")
@@ -161,9 +160,9 @@ impl Flow8App {
                         let status = format!("● {state_text}");
                         ui.label(egui::RichText::new(status).strong().color(
                             if self.store.state.session == SessionState::Error {
-                                RED
+                                colors.red
                             } else {
-                                BLUE
+                                colors.blue
                             },
                         ));
                         if !self.device_controls_ready() && !self.disconnect_request_pending {
@@ -187,7 +186,7 @@ impl Flow8App {
                                 egui::Label::new(
                                     egui::RichText::new(hint)
                                         .size(self.metrics.secondary_font)
-                                        .color(SECONDARY),
+                                        .color(colors.secondary),
                                 )
                                 .truncate(),
                             )
@@ -203,44 +202,55 @@ impl Flow8App {
                             self.language.tr("Connection failed", "连接失败"),
                             error
                         ))
-                        .color(RED),
+                        .color(colors.red),
                     );
                 } else if let Some(stage) = self.native_stage {
                     ui.label(
                         egui::RichText::new(native_stage_text(stage, self.language))
                             .size(10.0)
-                            .color(SECONDARY),
+                            .color(colors.secondary),
                     );
                 }
             });
     }
 
     pub(super) fn layer_bar(&mut self, ui: &mut egui::Ui) {
+        let colors = palette(ui);
         egui::Frame::new()
-            .fill(TOOLBAR_SURFACE)
+            .fill(colors.toolbar_surface)
             .inner_margin(egui::Margin::symmetric(18, 7))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    self.layer_button(ui, Page::Mixer, self.language.tr("MIXER", "混音器"), YELLOW);
-                    self.layer_button(ui, Page::Stage, self.language.tr("STAGE", "舞台"), YELLOW);
+                    self.layer_button(
+                        ui,
+                        Page::Mixer,
+                        self.language.tr("MIXER", "混音器"),
+                        colors.yellow,
+                    );
+                    self.layer_button(
+                        ui,
+                        Page::Stage,
+                        self.language.tr("STAGE", "舞台"),
+                        colors.yellow,
+                    );
                     ui.separator();
-                    self.layer_button(ui, Page::Fx1, "FX1", PURPLE);
-                    self.layer_button(ui, Page::Fx2, "FX2", PURPLE);
-                    self.layer_button(ui, Page::Monitor1, "MON1", GREEN);
-                    self.layer_button(ui, Page::Monitor2, "MON2", GREEN);
-                    self.layer_button(ui, Page::Main, "MAIN", TEXT);
+                    self.layer_button(ui, Page::Fx1, "FX1", colors.purple);
+                    self.layer_button(ui, Page::Fx2, "FX2", colors.purple);
+                    self.layer_button(ui, Page::Monitor1, "MON1", colors.green);
+                    self.layer_button(ui, Page::Monitor2, "MON2", colors.green);
+                    self.layer_button(ui, Page::Main, "MAIN", colors.text);
                     self.layer_button(
                         ui,
                         Page::MainOut,
                         self.language.tr("MAIN OUT", "主输出"),
-                        TEXT,
+                        colors.text,
                     );
                 });
             });
         ui.painter().hline(
             ui.max_rect().x_range(),
             ui.cursor().top(),
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0, colors.border),
         );
     }
 

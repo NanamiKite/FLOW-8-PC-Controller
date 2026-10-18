@@ -1,6 +1,6 @@
 use crate::i18n::{Language, display_name};
 use crate::metrics::UiMetrics;
-use crate::theme::{BLUE, BORDER, MIXER_DIVIDER, RED, SECONDARY, SURFACE, TEXT, YELLOW};
+use crate::theme::palette;
 use crate::widgets::{
     badge, fader_level_text, fader_min_width, fader_sized, meter_widget_sized, pan_control,
     pan_text, state_button,
@@ -19,11 +19,12 @@ pub(crate) enum StripAction {
 }
 
 pub(crate) fn mixer_divider(ui: &mut egui::Ui, width: f32, height: f32) {
+    let colors = palette(ui);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        Stroke::new(1.0, MIXER_DIVIDER),
+        Stroke::new(1.0, colors.mixer_divider),
     );
 }
 
@@ -71,10 +72,18 @@ pub(crate) fn channel_strip(
     strip_width: f32,
     fader_height: f32,
 ) -> Option<StripAction> {
+    let colors = palette(ui);
     let mut action = None;
     egui::Frame::new()
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0, if selected { YELLOW } else { BORDER }))
+        .fill(colors.surface)
+        .stroke(Stroke::new(
+            1.0,
+            if selected {
+                colors.yellow
+            } else {
+                colors.border
+            },
+        ))
         .corner_radius(8)
         .inner_margin(8)
         .show(ui, |ui| {
@@ -87,7 +96,7 @@ pub(crate) fn channel_strip(
                         egui::RichText::new(source_heading)
                             .size(metrics.small_font)
                             .strong()
-                            .color(SECONDARY),
+                            .color(colors.secondary),
                     );
                     let icon = if channel.id == InputId::UsbBluetooth {
                         "▣"
@@ -100,7 +109,7 @@ pub(crate) fn channel_strip(
                         ui.label(
                             egui::RichText::new(icon)
                                 .size(20.0 * metrics.ui_scale)
-                                .color(if selected { YELLOW } else { TEXT }),
+                                .color(if selected { colors.yellow } else { colors.text }),
                         );
                     }
                     let name = channel
@@ -116,7 +125,11 @@ pub(crate) fn channel_strip(
                                 egui::RichText::new(name)
                                     .size(metrics.body_font)
                                     .strong()
-                                    .color(TEXT),
+                                    .color(if selected && !ui.visuals().dark_mode {
+                                        ui.visuals().selection.stroke.color
+                                    } else {
+                                        colors.text
+                                    }),
                             )
                             .selected(selected)
                             .truncate(),
@@ -138,7 +151,7 @@ pub(crate) fn channel_strip(
                     ui.label(
                         egui::RichText::new(status)
                             .size(metrics.small_font)
-                            .color(if phantom { RED } else { BLUE }),
+                            .color(if phantom { colors.red } else { colors.blue }),
                     );
                     ui.add_space(4.0);
                     let mut pan = *channel.pan.effective().unwrap_or(&0.0);
@@ -154,7 +167,7 @@ pub(crate) fn channel_strip(
                     ui.label(
                         egui::RichText::new(pan_text(pan, channel.id.is_stereo()))
                             .size(metrics.small_font)
-                            .color(SECONDARY),
+                            .color(colors.secondary),
                     );
                     ui.add_space(4.0);
                 });
@@ -192,18 +205,22 @@ pub(crate) fn channel_strip(
                 ui.label(
                     egui::RichText::new(format!("{} dB", fader_level_text(route)))
                         .strong()
-                        .color(TEXT),
+                        .color(colors.text),
                 );
                 ui.add_space(3.0);
                 ui.horizontal(|ui| {
                     if show_mute_buttons {
                         let muted = *channel.muted.effective().unwrap_or(&false);
-                        if state_button(ui, muted, language.tr("MUTE", "静音"), RED).clicked() {
+                        if state_button(ui, muted, language.tr("MUTE", "静音"), colors.red)
+                            .clicked()
+                        {
                             action = Some(StripAction::Mute(!muted));
                         }
                     }
                     let soloed = *channel.soloed.effective().unwrap_or(&false);
-                    if state_button(ui, soloed, language.tr("SOLO", "独奏"), YELLOW).clicked() {
+                    if state_button(ui, soloed, language.tr("SOLO", "独奏"), colors.yellow)
+                        .clicked()
+                    {
                         action = Some(StripAction::Solo(!soloed));
                     }
                 });

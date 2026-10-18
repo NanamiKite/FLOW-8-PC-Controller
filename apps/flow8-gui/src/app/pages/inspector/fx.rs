@@ -1,6 +1,6 @@
 use super::fx_setup_values;
 use crate::app::Flow8App;
-use crate::theme::{PURPLE, SECONDARY, card, section_heading};
+use crate::theme::{card, palette, section_heading};
 use crate::widgets::mute_button;
 use crate::widgets::{parameter_row, state_button};
 use eframe::egui;
@@ -47,6 +47,7 @@ impl Flow8App {
         index: usize,
         effect: &FxState,
     ) {
+        let colors = palette(ui);
         ui.add_space(6.0);
         let current_preset = effect.preset.effective().copied();
         let preset_label = current_preset
@@ -101,7 +102,7 @@ impl Flow8App {
                 "预设名称可能与设备显示不同。",
             ))
             .size(9.0 * self.metrics.ui_scale)
-            .color(SECONDARY),
+            .color(colors.secondary),
         );
     }
 
@@ -116,6 +117,7 @@ impl Flow8App {
     }
 
     fn fx_setup_controls(&mut self, ui: &mut egui::Ui, fx_id: FxId, effect: &FxState) {
+        let colors = palette(ui);
         let setup = fx_setup_values(effect);
         ui.add_enabled_ui(setup.is_some(), |ui| {
             // Placeholder values are only rendered in disabled controls;
@@ -137,11 +139,11 @@ impl Flow8App {
             section_heading(
                 ui,
                 self.language.tr("Return routing", "返回路由"),
-                SECONDARY,
+                colors.secondary,
             );
             ui.horizontal_wrapped(|ui| {
                 for (index, label) in ["MAIN", "MON1", "MON2"].into_iter().enumerate() {
-                    if state_button(ui, routes[index], label, PURPLE).clicked() {
+                    if state_button(ui, routes[index], label, colors.purple).clicked() {
                         routes[index] = !routes[index];
                         setup_changed = true;
                     }

@@ -1,6 +1,6 @@
 use crate::i18n::Language;
 use crate::metrics::UiMetrics;
-use crate::theme::{BLUE, BORDER, GRAPH_SURFACE, SECONDARY, YELLOW};
+use crate::theme::palette;
 use crate::widgets::{accessible_slider_input, accessible_slider_node};
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2};
@@ -12,6 +12,7 @@ pub(crate) fn eq_gain_graph(
     metrics: UiMetrics,
     language: Language,
 ) -> Option<(usize, f32)> {
+    let colors = palette(ui);
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), 96.0 * metrics.ui_scale),
         Sense::hover(),
@@ -23,14 +24,17 @@ pub(crate) fn eq_gain_graph(
             "EQ response graph; use the band controls to edit frequency, Q and gain",
         )
     });
-    ui.painter().rect_filled(rect, 4.0, GRAPH_SURFACE);
+    ui.painter().rect_filled(rect, 4.0, colors.graph_surface);
     for index in 1..4 {
         let x = egui::lerp(rect.left()..=rect.right(), index as f32 / 4.0);
         ui.painter()
-            .vline(x, rect.y_range(), Stroke::new(1.0, BORDER));
+            .vline(x, rect.y_range(), Stroke::new(1.0, colors.border));
     }
-    ui.painter()
-        .hline(rect.x_range(), rect.center().y, Stroke::new(1.0, BORDER));
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        Stroke::new(1.0, colors.border),
+    );
     let mut points = Vec::new();
     let mut edit = None;
     for (index, band) in channel.eq.bands.iter().enumerate() {
@@ -82,10 +86,10 @@ pub(crate) fn eq_gain_graph(
             Pos2::new(x, y),
             metrics,
             response.hovered() || response.has_focus(),
-            YELLOW,
+            colors.yellow,
         );
     }
-    draw_eq_line(ui, points, YELLOW);
+    draw_eq_line(ui, points, colors.yellow);
     edit
 }
 
@@ -97,6 +101,7 @@ fn eq_band_control(
     editable: bool,
     plot_height: f32,
 ) -> Option<f32> {
+    let colors = palette(ui);
     let label = format!("EQ band {} gain", index + 1);
     response.widget_info(|| {
         egui::WidgetInfo::slider(ui.is_enabled() && editable, f64::from(gain), &label)
@@ -134,7 +139,7 @@ fn eq_band_control(
         ui.painter().rect_stroke(
             response.rect,
             3.0,
-            Stroke::new(1.0, BLUE),
+            Stroke::new(1.0, colors.blue),
             StrokeKind::Inside,
         );
     }
@@ -163,11 +168,12 @@ pub(crate) fn output_eq_graph(
     eq: &EqState,
     metrics: UiMetrics,
 ) -> Option<(usize, f32)> {
+    let colors = palette(ui);
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), 176.0 * metrics.ui_scale).round_ui(),
         Sense::hover(),
     );
-    ui.painter().rect_filled(rect, 5.0, GRAPH_SURFACE);
+    ui.painter().rect_filled(rect, 5.0, colors.graph_surface);
     // Inset both end points and their labels so the scroll viewport never cuts them off.
     let plot = Rect::from_min_max(
         rect.min + Vec2::new(30.0, 14.0) * metrics.ui_scale,
@@ -185,14 +191,21 @@ pub(crate) fn output_eq_graph(
         ui.painter().hline(
             plot.x_range(),
             y,
-            Stroke::new(1.0, if gain == 0.0 { SECONDARY } else { BORDER }),
+            Stroke::new(
+                1.0,
+                if gain == 0.0 {
+                    colors.secondary
+                } else {
+                    colors.border
+                },
+            ),
         );
         ui.painter().text(
             Pos2::new(plot.left() - 5.0, y),
             egui::Align2::RIGHT_CENTER,
             format!("{gain:+.0}"),
             FontId::proportional(metrics.small_font),
-            SECONDARY,
+            colors.secondary,
         );
     }
     let steps = eq.bands.len().saturating_sub(1).max(1) as f32;
@@ -212,7 +225,7 @@ pub(crate) fn output_eq_graph(
         })
         .collect();
     // This is a band-gain line, not an invented DSP frequency response.
-    draw_eq_line(ui, points.clone(), BLUE);
+    draw_eq_line(ui, points.clone(), colors.blue);
     let mut edit = None;
     for (index, (point, band)) in points.iter().zip(&eq.bands).enumerate() {
         let frequency = band.frequency_hz.effective().copied();
@@ -223,7 +236,7 @@ pub(crate) fn output_eq_graph(
             None => "—".to_owned(),
         };
         ui.painter()
-            .vline(point.x, plot.y_range(), Stroke::new(1.0, BORDER));
+            .vline(point.x, plot.y_range(), Stroke::new(1.0, colors.border));
         let label_row = if index % 2 == 0 {
             0.0
         } else {
@@ -234,7 +247,7 @@ pub(crate) fn output_eq_graph(
             egui::Align2::CENTER_TOP,
             frequency_text,
             FontId::proportional(metrics.small_font),
-            SECONDARY,
+            colors.secondary,
         );
         let hit_size = Vec2::splat((plot.width() / (steps + 1.0)).min(20.0 * metrics.ui_scale));
         let editable = frequency.is_some()
@@ -262,7 +275,7 @@ pub(crate) fn output_eq_graph(
             *point,
             metrics,
             response.hovered() || response.dragged(),
-            BLUE,
+            colors.blue,
         );
         if let Some(next) = eq_band_control(ui, &response, index, gain, editable, plot.height()) {
             edit = Some((index, next));
@@ -281,7 +294,15 @@ fn draw_eq_point(
     ui.painter().circle_filled(
         point,
         4.0 * metrics.ui_scale,
-        if highlighted { Color32::WHITE } else { accent },
+        if highlighted {
+            if ui.visuals().dark_mode {
+                Color32::WHITE
+            } else {
+                palette(ui).text
+            }
+        } else {
+            accent
+        },
     );
 }
 

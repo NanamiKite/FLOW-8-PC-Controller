@@ -40,6 +40,7 @@ try {
     $guiPackage = $metadata.packages | Where-Object { $_.name -eq 'flow8-gui' } | Select-Object -First 1
     if (-not $guiPackage) { throw 'flow8-gui package is missing from the workspace.' }
     $appVersion = [string]$guiPackage.version
+    Write-Host "Building FLOW 8 PC Controller $appVersion ($rustHostTriple)"
 
     # Do not use an explicit --target on a matching Windows host: that creates
     # a second copy of release artifacts under the same target directory.
@@ -83,6 +84,13 @@ if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Inno Setup reported success but installer is missing: $installer"
 }
 
+$guiHash = (Get-FileHash -LiteralPath $guiExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+$checksumFile = "$installer.sha256"
+$installerFileName = Split-Path -Leaf $installer
+Set-Content -LiteralPath $checksumFile -Encoding ASCII -Value "$installerHash  $installerFileName"
+
 Write-Host "Installer: $installer"
-Write-Host "GUI SHA-256: $((Get-FileHash -LiteralPath $guiExe -Algorithm SHA256).Hash)"
-Write-Host "Installer SHA-256: $((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash)"
+Write-Host "Checksum file: $checksumFile"
+Write-Host "GUI SHA-256: $guiHash"
+Write-Host "Installer SHA-256: $installerHash"

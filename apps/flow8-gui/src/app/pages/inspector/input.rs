@@ -1,7 +1,7 @@
 use crate::app::Flow8App;
 use crate::app::confirmation::ConfirmationAction;
 use crate::i18n::{destination_name, display_name, waiting_for_device_text};
-use crate::theme::{BLUE, RED, SECONDARY, TEXT, YELLOW, card, section_heading};
+use crate::theme::{card, palette, section_heading};
 use crate::widgets::mute_button;
 use crate::widgets::{
     committed_text, eq_gain_graph, eq_gain_row, fader_level_text, parameter_row,
@@ -31,9 +31,10 @@ impl Flow8App {
         id: InputId,
         channel: &InputChannelState,
     ) {
+        let colors = palette(ui);
         self.inspector_header(ui, ChannelStateTarget::Input(id));
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(self.language.tr("Label", "名称")).color(TEXT));
+            ui.label(egui::RichText::new(self.language.tr("Label", "名称")).color(colors.text));
             let edited = ui
                 .add_enabled_ui(channel.icon.effective().is_some(), |ui| {
                     committed_text(
@@ -105,6 +106,7 @@ impl Flow8App {
         id: InputId,
         channel: &InputChannelState,
     ) {
+        let colors = palette(ui);
         let destination = self.store.state.selected_destination;
         let mut route = channel.route_levels[destination.index()]
             .effective()
@@ -116,7 +118,7 @@ impl Flow8App {
                 display_name(id, self.language),
                 destination_name(destination)
             ))
-            .color(TEXT),
+            .color(colors.text),
         );
         ui.horizontal(|ui| {
             ui.spacing_mut().slider_width =
@@ -128,7 +130,7 @@ impl Flow8App {
             ui.label(
                 egui::RichText::new(format!("{} dB", fader_level_text(route)))
                     .monospace()
-                    .color(TEXT),
+                    .color(colors.text),
             );
             if response.changed() {
                 self.dispatch(SemanticCommand::SetRouteLevel {
@@ -146,10 +148,11 @@ impl Flow8App {
         id: InputId,
         channel: &InputChannelState,
     ) {
+        let colors = palette(ui);
         ui.horizontal_wrapped(|ui| {
             if channel.capabilities.phantom {
                 let enabled = *channel.phantom_48v.effective().unwrap_or(&false);
-                if state_button(ui, enabled, "48 V", RED).clicked() {
+                if state_button(ui, enabled, "48 V", colors.red).clicked() {
                     if enabled {
                         self.pending_confirmation = None;
                         self.dispatch(SemanticCommand::SetPhantom {
@@ -163,7 +166,8 @@ impl Flow8App {
             }
             if channel.capabilities.phase {
                 let phase = *channel.phase_inverted.effective().unwrap_or(&false);
-                if state_button(ui, phase, self.language.tr("Phase", "极性"), BLUE).clicked() {
+                if state_button(ui, phase, self.language.tr("Phase", "极性"), colors.blue).clicked()
+                {
                     self.dispatch(SemanticCommand::SetPhase {
                         input: id,
                         inverted: !phase,
@@ -182,7 +186,7 @@ impl Flow8App {
                             ui,
                             setting.is_some_and(|(enabled, _)| enabled),
                             self.language.tr("Low Cut", "低切"),
-                            YELLOW,
+                            colors.yellow,
                         )
                         .clicked()
                     })
@@ -224,12 +228,13 @@ impl Flow8App {
     }
 
     fn input_eq_controls(&mut self, ui: &mut egui::Ui, id: InputId, channel: &InputChannelState) {
+        let colors = palette(ui);
         if channel.capabilities.peq {
             ui.separator();
             section_heading(
                 ui,
                 self.language.tr("4-BAND PEQ", "四段参数均衡"),
-                SECONDARY,
+                colors.secondary,
             );
             if let Some((band, gain)) = eq_gain_graph(ui, channel, self.metrics, self.language) {
                 let state = &channel.eq.bands[band];
@@ -251,7 +256,7 @@ impl Flow8App {
                     "拖动频段 · Shift 精调 · 双击频段或增益滑块归零",
                 ))
                 .size(self.metrics.small_font)
-                .color(SECONDARY),
+                .color(colors.secondary),
             );
             for (index, band) in channel.eq.bands.iter().enumerate() {
                 // The live values are presentation only: hashing them into
@@ -264,7 +269,7 @@ impl Flow8App {
                         band.frequency_hz.effective().unwrap_or(&0.0),
                         band.gain_db.effective().unwrap_or(&0.0)
                     ))
-                    .color(TEXT),
+                    .color(colors.text),
                 )
                 .id_salt(("input-peq-band", self.session_generation, id, index))
                 .show(ui, |ui| {
@@ -311,6 +316,7 @@ impl Flow8App {
         id: InputId,
         channel: &InputChannelState,
     ) {
+        let colors = palette(ui);
         ui.separator();
         if channel.capabilities.compressor {
             let mut compressor = channel
@@ -342,7 +348,8 @@ impl Flow8App {
                 });
             }
             let soloed = channel.soloed.effective().copied().unwrap_or(false);
-            if state_button(ui, soloed, self.language.tr("Solo", "独奏"), YELLOW).clicked() {
+            if state_button(ui, soloed, self.language.tr("Solo", "独奏"), colors.yellow).clicked()
+            {
                 self.dispatch(SemanticCommand::SetSolo {
                     input: id,
                     enabled: !soloed,

@@ -1,6 +1,6 @@
 use crate::app::{Flow8App, bus_id_for_destination};
 use crate::i18n::{destination_name, display_name};
-use crate::theme::TEXT;
+use crate::theme::palette;
 use eframe::egui::{self, Align, Layout};
 use flow8_core::{ChannelStateTarget, SemanticCommand};
 use flow8_model::{FxId, MixDestination};
@@ -11,6 +11,7 @@ mod output;
 
 impl Flow8App {
     fn inspector_header(&mut self, ui: &mut egui::Ui, target: ChannelStateTarget) {
+        let colors = palette(ui);
         let title = match target {
             ChannelStateTarget::Input(input) => display_name(input, self.language),
             ChannelStateTarget::Destination(destination) => destination_name(destination),
@@ -20,7 +21,7 @@ impl Flow8App {
                 egui::RichText::new(title)
                     .size(self.metrics.body_font)
                     .strong()
-                    .color(TEXT),
+                    .color(colors.text),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui

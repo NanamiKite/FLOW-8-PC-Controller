@@ -1,4 +1,4 @@
-use crate::theme::TEXT;
+use crate::theme::palette;
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, FontId, Vec2};
 
@@ -145,13 +145,14 @@ impl SettingsGridLayout {
         metrics: UiMetrics,
         language: Language,
     ) -> Self {
+        let colors = palette(ui);
         let gap = (18.0 * metrics.ui_scale).round_ui();
         let measure = |text: &str| {
             ui.painter()
                 .layout_no_wrap(
                     text.to_owned(),
                     FontId::proportional(metrics.body_font),
-                    TEXT,
+                    colors.text,
                 )
                 .size()
                 .x

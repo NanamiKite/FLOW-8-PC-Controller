@@ -488,8 +488,10 @@ is needed. From PowerShell at the repository root:
 
 The script builds the GUI with `cargo build --release --locked`, keeps Cargo
 artifacts under `%LOCALAPPDATA%\flow8-rust-target`, and writes the installer
-under `%LOCALAPPDATA%\FLOW 8 PC Controller\installer-output`. It prints SHA-256
-hashes for the GUI and installer. Before publishing a release, verify a fresh
+under `%LOCALAPPDATA%\FLOW 8 PC Controller\installer-output`. The installer version
+comes from the workspace Cargo metadata. It prints SHA-256 hashes for the GUI
+and installer, and saves an `.exe.sha256` checksum file beside the installer.
+Before publishing a release, verify a fresh
 install, upgrade, launch, controller connection through Ready, disconnect,
 uninstall, identity-file preservation, signing status and corresponding source.
 The FLOW installer never installs or removes DirectHCI, a driver, or user credentials.
