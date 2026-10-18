@@ -30,13 +30,6 @@ impl Flow8App {
                                 )
                                 .color(colors.text),
                             );
-                            ui.label(
-                                egui::RichText::new(self.language.tr(
-                                    "Input channels → mix buses → outputs",
-                                    "输入通道 → 混音总线 → 输出",
-                                ))
-                                .color(colors.secondary),
-                            );
                             ui.add_space(12.0);
                             let scale = self.metrics.ui_scale;
                             let gap = 2.0 * self.metrics.spacing;

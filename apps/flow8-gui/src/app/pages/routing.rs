@@ -3,10 +3,10 @@ use crate::app::Flow8App;
 use crate::i18n::{Language, destination_name, waiting_for_device_text};
 use crate::metrics::{ROUTING_CONTENT_MAX_WIDTH, STATE_BUTTON_MIN_WIDTH, UiMetrics};
 use crate::theme::{card_frame, palette, section_heading};
-use crate::widgets::state_button_sized;
+use crate::widgets::setting_button_sized;
 use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Vec2};
-use flow8_core::{KnownSetting, SemanticCommand, SessionState};
+use flow8_core::{KnownSetting, SemanticCommand};
 use flow8_model::{
     DELAY_TICKS_PER_MILLISECOND, FxId, HeadphoneSource, MixBusId, MixDestination,
     MonitorRoutingSource, TapPoint,
@@ -24,26 +24,6 @@ impl Flow8App {
                     egui::RichText::new(self.language.tr("Routing & Outputs", "路由与输出"))
                         .color(colors.text),
                 );
-                let subtitle = if self.device_controls_ready() {
-                    self.language.tr(
-                        "Audio sources, monitoring and physical outputs",
-                        "音频来源、监听与物理输出",
-                    )
-                } else if matches!(
-                    self.store.state.session,
-                    SessionState::Disconnected | SessionState::Error
-                ) {
-                    self.language.tr(
-                        "Connect to FLOW 8 to view and change device routing.",
-                        "连接 FLOW 8 后，可查看并调整设备路由。",
-                    )
-                } else {
-                    self.language.tr(
-                        "Device routing will be available after synchronization.",
-                        "设备路由将在同步完成后显示。",
-                    )
-                };
-                ui.label(egui::RichText::new(subtitle).color(colors.secondary));
                 ui.add_space(12.0);
                 self.routing_card_pair(
                     ui,
@@ -313,7 +293,7 @@ impl Flow8App {
                                     ["MAIN", "MON1", "MON2"].into_iter().enumerate()
                                 {
                                     let selected = routes.is_some_and(|values| values[route]);
-                                    if state_button_sized(
+                                    if setting_button_sized(
                                         ui,
                                         selected,
                                         label,
@@ -423,10 +403,9 @@ impl Flow8App {
             if let Some(ticks) = confirmed_ticks {
                 ui.label(
                     egui::RichText::new(format!(
-                        "{}: {} ms · {} ticks",
-                        self.language.tr("Device reported", "设备回报"),
+                        "{}: {} ms",
+                        self.language.tr("Current delay", "当前延迟"),
                         format_delay_ms(ticks),
-                        ticks,
                     ))
                     .size(self.metrics.small_font)
                     .color(colors.secondary),
@@ -756,7 +735,7 @@ fn output_level_switch(
     };
     let clicked = ui
         .add_enabled_ui(ready && value.is_some(), |ui| {
-            state_button_sized(
+            setting_button_sized(
                 ui,
                 value == Some(true),
                 label,
@@ -804,7 +783,7 @@ fn routing_toggle(
     let label = value.map_or("—", |value| labels[usize::from(value)]);
     let clicked = ui
         .add_enabled_ui(ready && value.is_some(), |ui| {
-            state_button_sized(
+            setting_button_sized(
                 ui,
                 value == Some(true),
                 label,
@@ -833,7 +812,7 @@ fn routing_choice<T: Copy + PartialEq, const N: usize>(
     ui.add_enabled_ui(ready && value.is_some(), |ui| {
         ui.horizontal(|ui| {
             for (candidate, label) in choices {
-                if state_button_sized(
+                if setting_button_sized(
                     ui,
                     value == Some(candidate),
                     label,

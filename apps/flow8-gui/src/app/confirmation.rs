@@ -265,19 +265,20 @@ impl Flow8App {
                             .hint_text(self.language.tr("Name", "名称")),
                     );
                     can_confirm = valid_snapshot_name(name);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} / {} {}",
-                            name.trim().len(),
-                            SNAPSHOT_NAME_MAX_BYTES,
-                            self.language.tr("UTF-8 bytes", "UTF-8 字节")
-                        ))
-                        .color(if can_confirm {
-                            colors.secondary
+                    if !can_confirm {
+                        let hint = if name.trim().is_empty() {
+                            self.language
+                                .tr("Enter a snapshot name.", "请输入快照名称。")
+                        } else if name.trim().len() > SNAPSHOT_NAME_MAX_BYTES {
+                            self.language.tr("Name is too long.", "名称过长，请缩短。")
                         } else {
-                            colors.red
-                        }),
-                    );
+                            self.language.tr(
+                                "Remove line breaks and special characters from the name.",
+                                "名称不能包含换行等特殊字符。",
+                            )
+                        };
+                        ui.label(egui::RichText::new(hint).color(colors.red));
+                    }
                 }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {

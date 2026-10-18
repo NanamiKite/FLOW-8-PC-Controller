@@ -316,13 +316,6 @@ impl Flow8App {
                             .strong()
                             .color(colors.blue),
                         );
-                        ui.label(
-                            egui::RichText::new(
-                                self.language.tr("Destination master", "目标总线主控"),
-                            )
-                            .size(10.0)
-                            .color(colors.secondary),
-                        );
                         if ui
                             .button(self.language.tr("Output / FX", "输出 / FX"))
                             .clicked()

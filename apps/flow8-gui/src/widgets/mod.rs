@@ -9,7 +9,8 @@ mod strip;
 
 pub(crate) use accessibility::{accessible_slider_input, accessible_slider_node};
 pub(crate) use buttons::{
-    badge, destination_button, mute_button, small_tab, state_button, state_button_sized,
+    badge, destination_button, mute_button, setting_button_sized, small_tab, state_button,
+    state_button_sized,
 };
 pub(crate) use eq_graph::{eq_gain_graph, output_eq_graph};
 pub(crate) use fader::{fader_level_text, fader_min_width, fader_sized};

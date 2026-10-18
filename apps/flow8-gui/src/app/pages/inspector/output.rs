@@ -156,9 +156,8 @@ impl Flow8App {
             let ticks = bus.delay_ticks.effective().copied().unwrap_or(0);
             ui.label(
                 egui::RichText::new(format!(
-                    "{}: {} ticks · {:.2} ms",
+                    "{}: {:.2} ms",
                     self.language.tr("Delay", "延迟"),
-                    ticks,
                     ticks as f32 / DELAY_TICKS_PER_MILLISECOND as f32
                 ))
                 .size(10.0)

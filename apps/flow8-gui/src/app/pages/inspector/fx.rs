@@ -47,7 +47,6 @@ impl Flow8App {
         index: usize,
         effect: &FxState,
     ) {
-        let colors = palette(ui);
         ui.add_space(6.0);
         let current_preset = effect.preset.effective().copied();
         let preset_label = current_preset
@@ -96,14 +95,6 @@ impl Flow8App {
         if let Some(preset) = selected_preset {
             self.dispatch(SemanticCommand::SetFxPreset { fx: fx_id, preset });
         }
-        ui.label(
-            egui::RichText::new(self.language.tr(
-                "Preset labels may differ from the device.",
-                "预设名称可能与设备显示不同。",
-            ))
-            .size(9.0 * self.metrics.ui_scale)
-            .color(colors.secondary),
-        );
     }
 
     fn fx_pan_controls(&mut self, ui: &mut egui::Ui, fx_id: FxId, effect: &FxState) {

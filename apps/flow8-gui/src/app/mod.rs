@@ -367,7 +367,7 @@ impl Flow8App {
                 DeviceEvent::ScanResults(devices) => {
                     self.message = format!(
                         "{}: {}",
-                        self.language.tr("BLE devices found", "扫描到的 BLE 设备"),
+                        self.language.tr("Devices found", "扫描到的设备"),
                         devices.len()
                     );
                     self.discovered_devices = devices;
@@ -427,7 +427,10 @@ impl Flow8App {
                     self.reset_device_requests();
                     self.store.apply_session_phase(SessionState::Error);
                     self.last_ble_error = Some(error.clone());
-                    self.message = format!("BLE: {error}");
+                    self.message = format!(
+                        "{}: {error}",
+                        self.language.tr("Connection failed", "连接失败")
+                    );
                 }
             }
         }
@@ -454,7 +457,8 @@ impl Flow8App {
         {
             self.message = format!(
                 "{}: {error}",
-                self.language.tr("RX state error", "接收状态错误")
+                self.language
+                    .tr("Could not update device settings", "无法更新设备设置")
             );
         } else if let Some((generation, revision)) = acknowledgment {
             if self.eq_initial.iter().all(Option::is_none) {

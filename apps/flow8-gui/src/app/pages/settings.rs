@@ -5,7 +5,7 @@ use crate::i18n::{
 };
 use crate::metrics::{SETTINGS_CONTENT_MAX_WIDTH, SettingsGridLayout, UI_SCALE_MAX, UI_SCALE_MIN};
 use crate::theme::{card, card_frame, palette, section_heading};
-use crate::widgets::{committed_text, state_button_sized};
+use crate::widgets::{committed_text, setting_button_sized};
 use eframe::egui::containers::frame::Prepared;
 use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_core::{KnownSetting, SemanticCommand};
@@ -29,13 +29,6 @@ impl Flow8App {
                             ui.heading(
                                 egui::RichText::new(self.language.tr("Preferences", "偏好设置"))
                                     .color(colors.text),
-                            );
-                            ui.label(
-                                egui::RichText::new(
-                                    self.language
-                                        .tr("Application and device settings", "应用与设备设置"),
-                                )
-                                .color(colors.secondary),
                             );
                             ui.add_space(12.0);
                             let settings = self.store.state.routing.settings.clone();
@@ -242,16 +235,6 @@ impl Flow8App {
         settings_form_row(ui, grid, self.language.tr("Status", "状态"), |ui| {
             ui.label(session_state_text(self.store.state.session, self.language));
         });
-        if !self.device_controls_ready() {
-            ui.label(
-                egui::RichText::new(self.language.tr(
-                    "Device settings are available when the connection is ready.",
-                    "连接就绪后可编辑设备设置。",
-                ))
-                .size(self.metrics.small_font)
-                .color(colors.secondary),
-            );
-        }
         if let Some(stage) = self.native_stage {
             settings_form_row(
                 ui,
@@ -421,18 +404,22 @@ impl Flow8App {
         card(ui, |ui| {
             section_heading(
                 ui,
-                self.language.tr("Last BLE Scan", "最近一次 BLE 扫描"),
+                self.language.tr("Devices found", "扫描到的设备"),
                 colors.blue,
             );
             for device in &self.discovered_devices {
                 ui.label(format!(
-                    "{} · {} · RSSI {:?}",
+                    "{} · {} · {}: {}",
                     device
                         .name
                         .as_deref()
                         .unwrap_or_else(|| { self.language.tr("Unknown", "未知") }),
                     device.address,
-                    device.rssi
+                    self.language.tr("Signal", "信号"),
+                    device
+                        .rssi
+                        .map(|value| format!("{value} dBm"))
+                        .unwrap_or_else(|| "—".to_owned())
                 ));
             }
         })
@@ -666,7 +653,7 @@ fn settings_button(
     label: &str,
     accent: egui::Color32,
 ) -> egui::Response {
-    state_button_sized(
+    setting_button_sized(
         ui,
         selected,
         label,

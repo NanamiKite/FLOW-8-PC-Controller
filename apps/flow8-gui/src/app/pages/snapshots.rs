@@ -39,13 +39,6 @@ impl Flow8App {
                     }
                 });
             });
-            ui.label(
-                egui::RichText::new(self.language.tr(
-                    "These slots are stored on FLOW 8.",
-                    "这些槽位保存在 FLOW 8 上。",
-                ))
-                .color(colors.secondary),
-            );
             ui.add_space(10.0);
             for row in snapshots.chunks(layout.columns) {
                 ui.horizontal(|ui| {

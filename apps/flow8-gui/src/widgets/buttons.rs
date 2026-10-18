@@ -86,7 +86,9 @@ pub(crate) fn state_button(
                 if ui.visuals().dark_mode {
                     accent.gamma_multiply(0.72)
                 } else {
-                    accent.gamma_multiply(0.14)
+                    // A selection must remain distinct from the neutral button
+                    // fill, including inside a disabled settings row.
+                    accent.gamma_multiply(0.32)
                 }
             } else {
                 colors.control_surface
@@ -97,7 +99,7 @@ pub(crate) fn state_button(
                     if ui.visuals().dark_mode {
                         accent
                     } else {
-                        accent.gamma_multiply(0.35)
+                        accent.gamma_multiply(0.65)
                     }
                 } else {
                     colors.control_border
@@ -127,6 +129,23 @@ pub(crate) fn state_button_sized(
         |ui| state_button(ui, selected, label, accent),
     )
     .inner
+}
+
+/// Settings selections share one light-theme color, independent of section
+/// accents. Keep the original dark-theme colors and semantic warning buttons.
+pub(crate) fn setting_button_sized(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: &str,
+    dark_accent: Color32,
+    size: Vec2,
+) -> Response {
+    let accent = if ui.visuals().dark_mode {
+        dark_accent
+    } else {
+        palette(ui).green
+    };
+    state_button_sized(ui, selected, label, accent, size)
 }
 
 struct SelectionButtonStyle {
