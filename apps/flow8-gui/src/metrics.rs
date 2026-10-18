@@ -8,7 +8,7 @@ pub(super) const UI_SCALE_MIN: f32 = 0.85;
 pub(super) const UI_SCALE_MAX: f32 = 1.40;
 
 pub(super) const MIXER_COMPACT_WIDTH: f32 = 1180.0;
-pub(super) const SETTINGS_CONTENT_MAX_WIDTH: f32 = 1180.0;
+pub(super) const SETTINGS_CONTENT_MAX_WIDTH: f32 = 1400.0;
 pub(super) const ROUTING_CONTENT_MAX_WIDTH: f32 = 1440.0;
 pub(super) const TOPOLOGY_CONTENT_MAX_WIDTH: f32 = 1180.0;
 pub(super) const TAB_BUTTON_MIN_WIDTH: f32 = 72.0;
@@ -129,6 +129,11 @@ pub(super) struct SettingsGridLayout {
     pub(super) two_columns: bool,
     pub(super) column_width: f32,
     pub(super) label_width: f32,
+    pub(super) control_width: f32,
+    pub(super) choice_width: f32,
+    pub(super) row_height: f32,
+    pub(super) control_gap: f32,
+    pub(super) row_gap: f32,
     pub(super) gap: f32,
     pub(super) scale: f32,
 }
@@ -140,30 +145,48 @@ impl SettingsGridLayout {
         metrics: UiMetrics,
         language: Language,
     ) -> Self {
-        let gap = (12.0 * metrics.ui_scale).round_ui();
-        let label_width = [
-            language.tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
-            language.tr("Device-linked Output Selection", "设备联动输出选择"),
-            language.tr("Show Output Delay Indicator", "显示输出延迟指示"),
-            language.tr("Connection progress", "连接进度"),
-        ]
-        .into_iter()
-        .map(|label| {
+        let gap = (18.0 * metrics.ui_scale).round_ui();
+        let measure = |text: &str| {
             ui.painter()
                 .layout_no_wrap(
-                    label.to_owned(),
+                    text.to_owned(),
                     FontId::proportional(metrics.body_font),
                     TEXT,
                 )
                 .size()
                 .x
-        })
+        };
+        let label_width = [
+            language.tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
+            language.tr("Device-linked Output Selection", "设备联动输出选择"),
+            language.tr("Show Output Delay Indicator", "显示输出延迟指示"),
+            language.tr("Connection progress", "连接进度"),
+            language.tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
+            language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
+        ]
+        .into_iter()
+        .map(measure)
         .fold(0.0, f32::max)
-            + gap;
-        // The breakpoint follows actual form needs: measured labels, a usable
-        // value/control area, card margins, and the gutter between columns.
-        let min_control_width = 220.0 * metrics.ui_scale;
-        let min_column_width = label_width + min_control_width + 26.0 + gap;
+        .min(220.0 * metrics.ui_scale)
+        .ceil();
+        let button_padding = 2.0 * ui.spacing().button_padding.x + 4.0;
+        let choice_width = [
+            "English",
+            "简体中文",
+            "USB 3/4",
+            language.tr("Parametric", "参数"),
+            language.tr("Snapshot", "快照"),
+        ]
+        .into_iter()
+        .map(measure)
+        .fold(STATE_BUTTON_MIN_WIDTH, f32::max)
+            + button_padding;
+        let choice_width = choice_width.ceil();
+        let control_gap = metrics.spacing;
+        let control_width = (3.0 * choice_width + 2.0 * control_gap).max(220.0 * metrics.ui_scale);
+        // Reserve room for three source buttons, labels (long labels may wrap),
+        // the card's 16-point padding and one-point border, and the row gap.
+        let min_column_width = label_width + control_width + 34.0 + control_gap;
         let two_columns = content_width >= 2.0 * min_column_width + gap;
         let column_width = if two_columns {
             ((content_width - gap) / 2.0).floor()
@@ -174,6 +197,11 @@ impl SettingsGridLayout {
             two_columns,
             column_width,
             label_width,
+            control_width,
+            choice_width,
+            row_height: metrics.control_height,
+            control_gap,
+            row_gap: (5.0 * metrics.ui_scale).round_ui(),
             gap,
             scale: metrics.ui_scale,
         }

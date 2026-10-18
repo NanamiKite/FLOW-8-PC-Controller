@@ -4,8 +4,8 @@ use crate::i18n::{
     session_state_text, setting_switch_text,
 };
 use crate::metrics::{SETTINGS_CONTENT_MAX_WIDTH, SettingsGridLayout, UI_SCALE_MAX, UI_SCALE_MIN};
-use crate::theme::{BLUE, GREEN, RED, SECONDARY, TEXT, YELLOW, card, section_heading};
-use crate::widgets::{committed_text, state_button};
+use crate::theme::{BLUE, GREEN, RED, SECONDARY, TEXT, YELLOW, card, card_frame, section_heading};
+use crate::widgets::{committed_text, state_button_sized};
 use eframe::egui::{self, Align, Layout, Vec2};
 use flow8_core::{KnownSetting, SemanticCommand};
 use flow8_model::{DELAY_TICKS_PER_MILLISECOND, DEVICE_NAME_MAX_BYTES};
@@ -20,9 +20,9 @@ impl Flow8App {
             .id_salt("settings-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add_space(18.0);
+                ui.add_space(20.0);
                 let content_width =
-                    (ui.available_width() - 36.0).clamp(0.0, SETTINGS_CONTENT_MAX_WIDTH);
+                    (ui.available_width() - 64.0).clamp(0.0, SETTINGS_CONTENT_MAX_WIDTH);
                 ui.with_layout(Layout::top_down(Align::Center), |ui| {
                     ui.allocate_ui_with_layout(
                         Vec2::new(content_width, 0.0),
@@ -39,7 +39,7 @@ impl Flow8App {
                                 )
                                 .color(SECONDARY),
                             );
-                            ui.add_space(10.0);
+                            ui.add_space(12.0);
                             let settings = self.store.state.routing.settings.clone();
                             let grid = SettingsGridLayout::calculate(
                                 ui,
@@ -63,7 +63,7 @@ impl Flow8App {
 
                             let device_ready = self.device_controls_ready();
                             ui.add_enabled_ui(device_ready, |ui| {
-                                ui.add_space(grid.gap);
+                                settings_row_gap(ui, grid);
                                 settings_grid_row(
                                     self,
                                     ui,
@@ -77,7 +77,7 @@ impl Flow8App {
                                     },
                                 );
 
-                                ui.add_space(grid.gap);
+                                settings_row_gap(ui, grid);
                                 settings_grid_row(
                                     self,
                                     ui,
@@ -93,7 +93,7 @@ impl Flow8App {
                             });
 
                             if !self.discovered_devices.is_empty() {
-                                ui.add_space(grid.gap);
+                                settings_row_gap(ui, grid);
                                 self.last_scan_settings_card(ui);
                             }
                         },
@@ -103,6 +103,21 @@ impl Flow8App {
     }
 
     fn application_settings_card(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
+        let mut labels = vec![
+            self.language.tr("Language", "语言"),
+            self.language.tr("UI Scale", "界面缩放"),
+            self.language.tr("Control Gesture", "控制手势"),
+            self.language.tr("EQ Editing Mode", "EQ 编辑模式"),
+            self.language.tr("Mode", "模式"),
+            self.language.tr("Status", "状态"),
+        ];
+        if self.native_stage.is_some() {
+            labels.push(self.language.tr("Connection progress", "连接进度"));
+        }
+        if self.last_ble_error.is_some() {
+            labels.push(self.language.tr("Last connection error", "最近连接错误"));
+        }
+        let grid = settings_labels(ui, grid, &labels);
         settings_card(ui, grid, |ui| {
             self.application_preferences_section(ui, grid);
             self.connection_settings_section(ui, grid);
@@ -112,17 +127,27 @@ impl Flow8App {
     fn application_preferences_section(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
         section_heading(ui, self.language.tr("APPLICATION", "应用"), BLUE);
         settings_form_row(ui, grid, self.language.tr("Language", "语言"), |ui| {
-            if ui
-                .selectable_label(self.language == Language::English, "English")
-                .clicked()
+            if settings_button(
+                ui,
+                grid,
+                self.language == Language::English,
+                "English",
+                BLUE,
+            )
+            .clicked()
             {
                 self.language = Language::English;
                 self.message = localized_status_message(self.store.state.session, self.language);
                 ui.ctx().request_repaint();
             }
-            if ui
-                .selectable_label(self.language == Language::Chinese, "简体中文")
-                .clicked()
+            if settings_button(
+                ui,
+                grid,
+                self.language == Language::Chinese,
+                "简体中文",
+                BLUE,
+            )
+            .clicked()
             {
                 self.language = Language::Chinese;
                 self.message = localized_status_message(self.store.state.session, self.language);
@@ -155,8 +180,13 @@ impl Flow8App {
                         (ControlGesture::Linear, self.language.tr("Linear", "线性")),
                         (ControlGesture::Rotary, self.language.tr("Rotary", "旋转")),
                     ] {
-                        let _ =
-                            ui.selectable_label(self.preferences.control_gesture == mode, label);
+                        let _ = settings_button(
+                            ui,
+                            grid,
+                            self.preferences.control_gesture == mode,
+                            label,
+                            BLUE,
+                        );
                     }
                 },
             );
@@ -175,8 +205,13 @@ impl Flow8App {
                             self.language.tr("Parametric", "参数"),
                         ),
                     ] {
-                        let _ =
-                            ui.selectable_label(self.preferences.eq_editing_mode == mode, label);
+                        let _ = settings_button(
+                            ui,
+                            grid,
+                            self.preferences.eq_editing_mode == mode,
+                            label,
+                            BLUE,
+                        );
                     }
                 },
             );
@@ -225,6 +260,16 @@ impl Flow8App {
     }
 
     fn mixer_display_settings_card(&mut self, ui: &mut egui::Ui, grid: SettingsGridLayout) {
+        let grid = settings_labels(
+            ui,
+            grid,
+            &[
+                self.language.tr("Show Mute Buttons", "显示静音按钮"),
+                self.language.tr("Show Channel Icons", "显示通道图标"),
+                self.language
+                    .tr("Show Output Delay Indicator", "显示输出延迟指示"),
+            ],
+        );
         settings_card(ui, grid, |ui| {
             section_heading(ui, self.language.tr("MIXER DISPLAY", "混音器显示"), YELLOW);
             settings_form_row(
@@ -280,6 +325,16 @@ impl Flow8App {
         grid: SettingsGridLayout,
         settings: &DeviceSettingsState,
     ) {
+        let grid = settings_labels(
+            ui,
+            grid,
+            &[
+                self.language.tr("Device Name", "设备名称"),
+                self.language.tr("Footswitch Mode", "脚踏开关模式"),
+                self.language
+                    .tr("Device-linked Output Selection", "设备联动输出选择"),
+            ],
+        );
         settings_card(ui, grid, |ui| {
             section_heading(
                 ui,
@@ -315,7 +370,7 @@ impl Flow8App {
                     for (fx_mode, label) in
                         [(true, "FX"), (false, self.language.tr("Snapshot", "快照"))]
                     {
-                        if state_button(ui, footswitch == fx_mode, label, BLUE).clicked() {
+                        if settings_button(ui, grid, footswitch == fx_mode, label, BLUE).clicked() {
                             self.dispatch(SemanticCommand::SetSetting(
                                 KnownSetting::FootswitchFxMode(fx_mode),
                             ));
@@ -334,8 +389,14 @@ impl Flow8App {
                 self.language
                     .tr("Device-linked Output Selection", "设备联动输出选择"),
                 |ui| {
-                    if state_button(ui, linked, setting_switch_text(self.language, linked), BLUE)
-                        .clicked()
+                    if settings_button(
+                        ui,
+                        grid,
+                        linked,
+                        setting_switch_text(self.language, linked),
+                        BLUE,
+                    )
+                    .clicked()
                     {
                         self.dispatch(SemanticCommand::SetSetting(
                             KnownSetting::DeviceLinkedSelection(!linked),
@@ -352,6 +413,15 @@ impl Flow8App {
         grid: SettingsGridLayout,
         settings: &DeviceSettingsState,
     ) {
+        let grid = settings_labels(
+            ui,
+            grid,
+            &[
+                self.language.tr("Monitor Source", "监听来源"),
+                self.language.tr("Monitor Tap", "监听取样点"),
+                self.language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
+            ],
+        );
         settings_card(ui, grid, |ui| {
             section_heading(ui, self.language.tr("MONITOR ROUTING", "监听路由"), GREEN);
             let current = settings
@@ -370,7 +440,9 @@ impl Flow8App {
                             (MonitorRoutingSource::Usb12, "USB 1/2"),
                             (MonitorRoutingSource::Usb34, "USB 3/4"),
                         ] {
-                            if state_button(ui, current == candidate, label, GREEN).clicked() {
+                            if settings_button(ui, grid, current == candidate, label, GREEN)
+                                .clicked()
+                            {
                                 self.dispatch(SemanticCommand::SetSetting(
                                     KnownSetting::MonitorRouting(candidate),
                                 ));
@@ -389,7 +461,9 @@ impl Flow8App {
                 grid,
                 self.language.tr("Monitor Tap", "监听取样点"),
                 |ui| {
-                    if state_button(ui, post, if post { "POST" } else { "PRE" }, GREEN).clicked() {
+                    if settings_button(ui, grid, post, if post { "POST" } else { "PRE" }, GREEN)
+                        .clicked()
+                    {
                         self.dispatch(SemanticCommand::SetSetting(KnownSetting::MonitorPostFader(
                             !post,
                         )));
@@ -410,8 +484,9 @@ impl Flow8App {
                 grid,
                 self.language.tr("MON1/2 Stereo Link", "MON1/2 立体声链接"),
                 |ui| {
-                    if state_button(
+                    if settings_button(
                         ui,
+                        grid,
                         linked,
                         setting_switch_text(self.language, linked),
                         GREEN,
@@ -433,6 +508,23 @@ impl Flow8App {
         grid: SettingsGridLayout,
         settings: &DeviceSettingsState,
     ) {
+        let grid = settings_labels(
+            ui,
+            grid,
+            &[
+                self.language.tr("USB Streaming", "USB 推流"),
+                self.language
+                    .tr("USB 1/2 → Input 5/6", "USB 1/2 → 输入 5/6"),
+                self.language
+                    .tr("USB 3/4 → Input 7/8", "USB 3/4 → 输入 7/8"),
+                self.language
+                    .tr("Bluetooth / USB to Headphones Only", "蓝牙 / USB 仅送耳机"),
+                self.language
+                    .tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
+                self.language.tr("Headphone Source", "耳机信号源"),
+                self.language.tr("Headphone Tap", "耳机取样点"),
+            ],
+        );
         settings_card(ui, grid, |ui| {
             self.usb_source_settings_section(ui, grid, settings);
             self.headphone_settings_section(ui, grid);
@@ -484,8 +576,9 @@ impl Flow8App {
             ),
         ] {
             settings_form_row(ui, grid, label, |ui| {
-                if state_button(
+                if settings_button(
                     ui,
+                    grid,
                     active,
                     setting_switch_text(self.language, active),
                     GREEN,
@@ -509,8 +602,9 @@ impl Flow8App {
             self.language
                 .tr("Bluetooth / USB source switch", "蓝牙 / USB 信号源切换"),
             |ui| {
-                if state_button(
+                if settings_button(
                     ui,
+                    grid,
                     bt_usb_switch,
                     setting_switch_text(self.language, bt_usb_switch),
                     GREEN,
@@ -544,7 +638,8 @@ impl Flow8App {
                     (HeadphoneSource::Main, "MAIN"),
                     (HeadphoneSource::Monitor, "MON"),
                 ] {
-                    if state_button(ui, headphone_source == source, label, GREEN).clicked() {
+                    if settings_button(ui, grid, headphone_source == source, label, GREEN).clicked()
+                    {
                         self.dispatch(SemanticCommand::SetSetting(
                             KnownSetting::HeadphonesUseMonitor(source == HeadphoneSource::Monitor),
                         ));
@@ -567,7 +662,7 @@ impl Flow8App {
             self.language.tr("Headphone Tap", "耳机取样点"),
             |ui| {
                 for (tap, label) in [(TapPoint::PreFader, "PRE"), (TapPoint::PostFader, "POST")] {
-                    if state_button(ui, headphone_tap == tap, label, GREEN).clicked() {
+                    if settings_button(ui, grid, headphone_tap == tap, label, GREEN).clicked() {
                         self.dispatch(SemanticCommand::SetSetting(
                             KnownSetting::HeadphonesPostFader(tap == TapPoint::PostFader),
                         ));
@@ -583,6 +678,11 @@ impl Flow8App {
         grid: SettingsGridLayout,
         settings: &DeviceSettingsState,
     ) {
+        let grid = settings_labels(
+            ui,
+            grid,
+            &["MAIN -10 dBV", "MON -10 dBV", "MAIN", "MON1", "MON2"],
+        );
         settings_card(ui, grid, |ui| {
             section_heading(ui, self.language.tr("OUTPUT", "输出"), TEXT);
             ui.label(
@@ -596,8 +696,9 @@ impl Flow8App {
                 .copied()
                 .unwrap_or(false);
             settings_form_row(ui, grid, "MAIN -10 dBV", |ui| {
-                if state_button(
+                if settings_button(
                     ui,
+                    grid,
                     main_pad,
                     setting_switch_text(self.language, main_pad),
                     TEXT,
@@ -615,8 +716,9 @@ impl Flow8App {
                 .copied()
                 .unwrap_or(false);
             settings_form_row(ui, grid, "MON -10 dBV", |ui| {
-                if state_button(
+                if settings_button(
                     ui,
+                    grid,
                     monitor_pad,
                     setting_switch_text(self.language, monitor_pad),
                     TEXT,
@@ -784,7 +886,7 @@ fn settings_grid_row(
         ));
     } else {
         left(app, ui);
-        ui.add_space(layout.gap);
+        settings_row_gap(ui, layout);
         right(app, ui);
     }
 }
@@ -794,10 +896,17 @@ fn settings_card<R>(
     layout: SettingsGridLayout,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    card(ui, |ui| {
-        ui.set_width((layout.column_width - 26.0).max(0.0));
-        add(ui)
-    })
+    card_frame()
+        .corner_radius(6)
+        .inner_margin(16)
+        .show(ui, |ui| {
+            ui.set_width((layout.column_width - 34.0).max(0.0));
+            ui.spacing_mut().item_spacing = Vec2::new(layout.control_gap, layout.row_gap);
+            ui.spacing_mut().icon_width = (18.0 * layout.scale).round();
+            ui.spacing_mut().icon_width_inner = (12.0 * layout.scale).round();
+            add(ui)
+        })
+        .inner
 }
 
 fn settings_form_row(
@@ -806,19 +915,68 @@ fn settings_form_row(
     label: &str,
     add: impl FnOnce(&mut egui::Ui),
 ) {
-    let min_value_width = 220.0 * layout.scale;
-    if ui.available_width() < layout.label_width + min_value_width + layout.gap {
+    let row_width = layout.label_width + layout.control_width + layout.control_gap;
+    if ui.available_width() < row_width {
         ui.vertical(|ui| {
             ui.label(label);
-            add(ui);
+            ui.horizontal_wrapped(add);
         });
     } else {
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [layout.label_width, ui.spacing().interact_size.y],
-                egui::Label::new(label),
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::new(layout.label_width, layout.row_height),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.set_min_size(Vec2::new(layout.label_width, layout.row_height));
+                    ui.add(egui::Label::new(label).wrap());
+                },
             );
-            add(ui);
+            ui.allocate_ui_with_layout(
+                Vec2::new(layout.control_width, layout.row_height),
+                Layout::left_to_right(Align::Center),
+                add,
+            );
         });
     }
+}
+
+fn settings_row_gap(ui: &mut egui::Ui, layout: SettingsGridLayout) {
+    // The preceding row already advanced the cursor by item_spacing.y.
+    ui.add_space((layout.gap - ui.spacing().item_spacing.y).max(0.0));
+}
+
+fn settings_labels(
+    ui: &egui::Ui,
+    mut layout: SettingsGridLayout,
+    labels: &[&str],
+) -> SettingsGridLayout {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    layout.label_width = labels
+        .iter()
+        .map(|label| {
+            ui.painter()
+                .layout_no_wrap((*label).to_owned(), font.clone(), TEXT)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max)
+        .ceil()
+        .min(layout.label_width);
+    layout
+}
+
+fn settings_button(
+    ui: &mut egui::Ui,
+    layout: SettingsGridLayout,
+    selected: bool,
+    label: &str,
+    accent: egui::Color32,
+) -> egui::Response {
+    state_button_sized(
+        ui,
+        selected,
+        label,
+        accent,
+        Vec2::new(layout.choice_width, layout.row_height),
+    )
 }
