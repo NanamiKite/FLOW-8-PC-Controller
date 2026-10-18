@@ -83,6 +83,21 @@ pub(crate) fn mute_button(ui: &mut egui::Ui, muted: bool, label: &str) -> Respon
     state_button(ui, muted, label, RED)
 }
 
+pub(crate) fn state_button_sized(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: &str,
+    accent: Color32,
+    size: Vec2,
+) -> Response {
+    ui.allocate_ui_with_layout(
+        size,
+        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        |ui| state_button(ui, selected, label, accent),
+    )
+    .inner
+}
+
 struct SelectionButtonStyle {
     text: Color32,
     fill: Color32,

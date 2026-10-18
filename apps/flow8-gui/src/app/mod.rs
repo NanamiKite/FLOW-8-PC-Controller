@@ -603,7 +603,10 @@ impl eframe::App for Flow8App {
             }
             ui.spacing_mut().item_spacing = Vec2::splat(self.metrics.spacing);
             let device_ready = self.device_controls_ready();
-            if !device_ready && !self.disconnect_request_pending && self.page != Page::Settings {
+            if !device_ready
+                && !self.disconnect_request_pending
+                && !matches!(self.page, Page::Settings | Page::Routing)
+            {
                 device_unsynced_notice(ui, self.store.state.session, self.language);
             }
             match self.page {
@@ -631,7 +634,7 @@ impl eframe::App for Flow8App {
                         .id_salt("routing-scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.add_enabled_ui(device_ready, |ui| self.routing_page(ui));
+                            self.routing_page(ui);
                         });
                 }
                 Page::Snapshots => {
